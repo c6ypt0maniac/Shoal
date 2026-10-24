@@ -128,6 +128,7 @@
   <section class="card step" data-step="3" hidden>
     <h2>Which parts can agents see?</h2>
     <p class="sub">Untick folders or files you don't want to share. Agents only read, test and change files in the folders you share.</p>
+    <p class="sub" id="headLine"></p>
     <div class="toolbar">
       <button class="link" id="selectAll">Select all</button>
       <button class="link" id="selectNone">Clear</button>
@@ -278,21 +279,42 @@ const isVisible = (f) => !f.secret && !sel.hidden.has(f.path);
 // Every non-secret file in a folder and its subfolders (root "." means only the root's own files).
 const filesInside = (p) => sel.files.filter((f) => !f.secret && (p === "." ? dirOf(f.path) === "." : f.path.startsWith(p + "/")));
 
-async function loadTree() {
-  if (sel.files.length) return renderTree();
-  $("tree").innerHTML = `<div class="empty">Loading files…</div>`;
+// Always the repo's latest commit. Re-checks every 20s while this step is
+// open, so a push shows up without reloading. Unticked choices are kept; new
+// files are marked 🆕 and shared like their folder.
+sel.newFiles = new Set();
+async function loadTree({ fresh = false } = {}) {
+  if (!sel.files.length) $("tree").innerHTML = `<div class="empty">Loading files…</div>`;
   try {
-    const res = await fetch(`/api/repo-files?repo=${encodeURIComponent(sel.repo)}`);
+    const res = await fetch(`/api/repo-files?repo=${encodeURIComponent(sel.repo)}${fresh ? "&fresh=1" : ""}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
+    const known = new Set(sel.files.map((f) => f.path));
+    if (known.size) for (const f of data.files) if (!known.has(f.path)) sel.newFiles.add(f.path);
+    // A new file lands in a folder the team unticked (every file already there is hidden): keep it hidden too.
+    for (const f of data.files) {
+      if (known.has(f.path)) continue;
+      const siblings = sel.files.filter((g) => dirOf(g.path) === dirOf(f.path));
+      if (siblings.length && siblings.every((g) => sel.hidden.has(g.path))) sel.hidden.add(f.path);
+    }
     sel.files = data.files;
+    sel.head = data.head;
     if (data.truncated) $("err").textContent = "This repo is very large, so only part of its file list is shown.";
   } catch (err) {
-    $("tree").innerHTML = `<div class="empty">Couldn't load files: ${esc(err.message)}</div>`;
+    if (!sel.files.length) $("tree").innerHTML = `<div class="empty">Couldn't load files: ${esc(err.message)}</div>`;
     return;
   }
+  $("headLine").innerHTML = sel.head
+    ? `Showing the latest commit <code>${esc(sel.head.sha.slice(0, 7))}</code> “${esc(sel.head.message)}” · <button class="link" id="refreshFiles">↻ Refresh</button>
+       ${sel.newFiles.size ? ` · <b>🆕 ${sel.newFiles.size} new file${sel.newFiles.size === 1 ? "" : "s"}</b> since you opened this page` : ""}`
+    : "";
+  if ($("refreshFiles")) $("refreshFiles").onclick = () => loadTree({ fresh: true });
   renderTree();
 }
+setInterval(() => {
+  const step = document.querySelector('[data-step="3"]');
+  if (sel.repo && sel.repo !== "demo" && step && !step.hidden && !document.hidden) loadTree();
+}, 20_000);
 
 const FILE_ICONS = [[/\.(test|spec)\./, "🧪"], [/\.(png|jpe?g|gif|webp|svg|ico)$/i, "🖼️"], [/\.(md|mdx|txt)$/i, "📝"],
   [/\.(json|ya?ml|toml|lock)$|config|^\.|rc$/i, "⚙️"], [/\.(css|scss|less)$/i, "🎨"], [/\.(html)$/i, "🌐"]];
@@ -307,13 +329,14 @@ function renderTree() {
     const name = f.path.split("/").pop();
     const hidden = !isVisible(f);
     const badges = [
+      sel.newFiles.has(f.path) && `<span class="b test" title="Added to the repo since this page loaded">🆕 New</span>`,
       f.secret && `<span class="b secret" title="Never sent to agents, even in a shared folder">🔒 Never shared</span>`,
       !f.secret && hidden && `<span class="b hidden" title="Not shared with agents">🙈 Hidden from agents</span>`,
       f.test && !hidden && `<span class="b test" title="Shoal runs this to find flaky tests">🧪 Test</span>`,
       f.protected && !hidden && `<span class="b ro" title="Agents can read it but never change it">🛡️ Read-only</span>`,
     ].filter(Boolean).join("");
     rows.push(`<div class="file ${hidden ? "off" : ""}" style="padding-left:${34 + depth * 20}px">
-      <label class="fname"><input type="checkbox" data-file="${esc(f.path)}" ${hidden ? "" : "checked"} ${f.secret ? "disabled" : ""}> ${fileIcon(name)} ${esc(name)}</label>
+      <label class="fname"><input type="checkbox" data-file="${esc(f.path)}" ${hidden ? "" : "checked"} ${f.secret ? "disabled" : ""}> ${f.test ? "🧪" : fileIcon(name)} ${esc(name)}</label>
       <span class="desc">${esc(f.description ?? "")}</span>${badges}</div>`);
   };
   const walk = (node, depth) => {
