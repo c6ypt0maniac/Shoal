@@ -289,12 +289,36 @@ function renderSetup(conn, pains = []) {
           <span class="hint">· found from ${esc(t.evidence)} · runs <code>${esc(t.example)}</code></span>
           ${t.toolOk ? "" : `<div class="hint" style="color:#b42318">${esc(t.toolMessage)}. Its tests can't be scanned until it's installed.</div>`}</div>`).join("")
       : `<span class="hint">No test setup found yet. Shoal reads package.json, pyproject.toml, go.mod, Cargo.toml, pom.xml, build.gradle, Gemfile, composer.json, .csproj and your CI workflow.</span>`}</div></div>
+    ${conn.type === "github" && conn.sync ? `<div class="setup-row"><b>Sync</b><div>
+      ${conn.sync.syncing ? "⏳ Pulling new commits…" : conn.sync.error ? `⚠ <span style="color:#b42318">${esc(conn.sync.error)}</span>` : "✓ Up to date"}
+      ${conn.sync.head ? ` with <code>${esc(conn.sync.head.sha.slice(0, 7))}</code> <span class="hint">"${esc(conn.sync.head.message)}"</span>` : ""}
+      <span class="hint">· checked ${esc(ago(conn.sync.checkedAt))}${conn.sync.waiting ? ` · waiting: ${esc(conn.sync.waiting)}` : ""}</span>
+      <div style="margin-top:4px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <label class="hint"><input type="checkbox" ${conn.sync.auto ? "checked" : ""} onchange="setAutoSync(this.checked)"> Auto-sync every minute</label>
+        <button type="button" id="syncBtn" onclick="syncRepo()">↻ Sync now</button>
+      </div></div></div>` : ""}
+    ${conn.sync?.newPaths?.length ? `<div class="claude-box warn"><span class="grow">🆕 New in the repo and not shared with agents: ${conn.sync.newPaths.map((p) => `<b>${esc(pathLabel(p))}</b>`).join(", ")}</span>
+      <button type="button" class="cta" id="shareNewBtn" onclick="shareNew()">Share with agents</button></div>` : ""}
     <div class="setup-row"><b>Agents can see</b><div>${shared.length
       ? shared.slice(0, 8).map((p) => `<span class="chip">${esc(pathLabel(p))}</span>`).join("") + (shared.length > 8 ? `<span class="chip">+${shared.length - 8} more</span>` : "")
       : "The whole repo"} <span class="hint">· secrets never shared</span></div></div>
     ${hidden.length ? `<div class="claude-box warn"><span class="grow">⚠ Flaky tests import code agents can't see, so they can't fix it.</span>
       <button type="button" class="cta" id="shareBtn" onclick="shareHidden()">Share ${hidden.map(esc).join(", ")} with agents</button></div>` : ""}`;
 }
+
+// "20s ago", "3 min ago"
+function ago(iso) {
+  if (!iso) return "never";
+  const s = Math.max(0, Math.round((Date.now() - new Date(iso)) / 1000));
+  return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
+}
+
+window.syncRepo = () => busy($("syncBtn"), () => post("/api/sync"));
+window.setAutoSync = (on) => post("/api/sync/auto", { on }).then(refresh);
+window.shareNew = () => busy($("shareNewBtn"), async () => {
+  const conn = await get("/api/connection");
+  await post("/api/connection/share", { add: conn.sync?.newPaths ?? [] });
+});
 
 window.shareHidden = () => busy($("shareBtn"), async () => {
   const pains = await get("/api/pains");
