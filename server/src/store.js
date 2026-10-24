@@ -20,6 +20,8 @@ export const state = {
   proofs: {},
   // Test files the scan found but can't run here (toolchain missing).
   cantRun: [],
+  // Auto-sync with GitHub (see sync.js).
+  sync: { auto: true, checkedAt: null, syncedAt: null, waiting: null, error: null },
   // Measured API cost per fix for each model, from the latest trial run.
   // Kept across resets: it describes the models, not one repo.
   modelCost: {},
