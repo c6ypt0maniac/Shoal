@@ -1,0 +1,10 @@
+{
+  "name": "shoal-verify-repo",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Test fixture for Shoal's verifier: one file with wrong code, one with correct code.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}

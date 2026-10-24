@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Set Up Shoal</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: #f4f4f4; color: #1f2328; }
+  header { background: #500000; color: #fff; padding: 12px 20px; display: flex; gap: 12px; align-items: center; }
+  header h1 { margin: 0; font-size: 22px; } header h1 a { color: inherit; text-decoration: none; }
+  .tag { font-size: 12px; padding: 2px 8px; border-radius: 10px; background: rgba(255,255,255,.18); }
+  header .skip { margin-left: auto; color: #fff; opacity: .8; font-size: 14px; }
+  main { max-width: 820px; margin: 0 auto; padding: 24px 16px 48px; }
+  .stepper { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+  .stepper div { flex: 1; min-width: 120px; padding: 8px 10px; border-radius: 8px; background: #e8e8e8; color: #666; font-size: 13px; font-weight: 600; }
+  .stepper div.active { background: #500000; color: #fff; }
+  .stepper div.done { background: #dafbe1; color: #1a7f37; }
+  .card { background: #fff; border: 1px solid #ddd; border-radius: 12px; padding: 24px; }
+  h2 { margin: 0 0 6px; font-size: 21px; }
+  .sub { margin: 0 0 20px; color: #59636e; line-height: 1.45; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  .opt { position: relative; text-align: left; border: 2px solid #d0d7de; border-radius: 10px; padding: 14px; background: #fff; cursor: pointer; font: inherit; color: inherit; }
+  .opt:hover { border-color: #8c959f; }
+  .opt.selected { border-color: #500000; background: #fff5f5; }
+  .opt.selected::after { content: "✓"; position: absolute; top: 10px; right: 12px; color: #500000; font-weight: 700; }
+  .opt .icon { font-size: 26px; }
+  .opt b { display: block; margin: 6px 0 4px; }
+  .opt span.desc { font-size: 13px; color: #59636e; line-height: 1.4; }
+  .badge { display: inline-block; margin-top: 8px; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; background: #eee; color: #555; }
+  .badge.live { background: #dafbe1; color: #1a7f37; }
+  textarea, input[type=text], select { width: 100%; padding: 9px 11px; border: 1px solid #ccc; border-radius: 8px; font: inherit; }
+  textarea { min-height: 70px; resize: vertical; }
+  label.field { display: grid; gap: 6px; font-weight: 600; margin-top: 18px; }
+  .hint { font-size: 13px; color: #59636e; font-weight: 400; }
+  .nav { display: flex; justify-content: space-between; align-items: center; margin-top: 22px; gap: 12px; }
+  button.btn { padding: 9px 18px; border-radius: 8px; border: 1px solid #ccc; background: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  button.primary { background: #2da44e; border-color: #2a8f46; color: #fff; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .err { color: #b3261e; margin-top: 12px; }
+  .repo-list { max-height: 300px; overflow-y: auto; border: 1px solid #d0d7de; border-radius: 8px; margin-top: 8px; }
+  .repo { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border: none; border-bottom: 1px solid #eee; background: #fff; padding: 11px 14px; font: inherit; cursor: pointer; }
+  .repo:last-child { border-bottom: none; }
+  .repo:hover { background: #f6f8fa; }
+  .repo.selected { background: #fff5f5; box-shadow: inset 3px 0 0 #500000; }
+  .repo .name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .repo .meta { font-size: 12px; color: #666; white-space: nowrap; }
+  .repo.demo .name::after { content: " · built-in sample with flaky tests"; font-weight: 400; color: #666; font-size: 13px; }
+  .empty { padding: 14px; color: #666; font-size: 14px; }
+  .signin { display: inline-flex; align-items: center; gap: 8px; background: #24292f; color: #fff; padding: 8px 14px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px; }
+  .tree { border: 1px solid #d0d7de; border-radius: 8px; padding: 8px 4px; max-height: 360px; overflow: auto; font-size: 14px; }
+  .node { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 4px; font-weight: 600; }
+  .node:hover { background: #f6f8fa; }
+  .node label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  .node input { width: 16px; height: 16px; margin: 0; }
+  .node .count { margin-left: auto; color: #888; font-size: 12px; font-weight: 400; }
+  .twisty { border: none; background: none; width: 20px; padding: 0; font-size: 12px; color: #59636e; cursor: pointer; }
+  .file { display: flex; align-items: center; gap: 10px; padding: 4px 8px; font-size: 13px; flex-wrap: wrap; border-left: 2px solid transparent; }
+  .file:hover { background: #fafbfc; border-left-color: #d0d7de; }
+  .file .fname { font-family: ui-monospace, monospace; min-width: 160px; display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  .file .desc { color: #59636e; flex: 1; min-width: 180px; }
+  .file.off .fname, .file.off .desc { color: #aaa; }
+  .file.off .fname { text-decoration: line-through; }
+  .b { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 10px; white-space: nowrap; }
+  .b.test { background: #ddf4ff; color: #0969da; }
+  .b.ro { background: #fff8c5; color: #7d4e00; }
+  .b.secret { background: #ffebe9; color: #b3261e; }
+  .b.hidden { background: #eee; color: #666; }
+  .legend { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; font-size: 12px; color: #59636e; align-items: center; }
+  .toolbar { display: flex; gap: 12px; margin-bottom: 8px; font-size: 13px; align-items: center; flex-wrap: wrap; }
+  .toolbar .summary { margin-left: auto; color: #59636e; }
+  .link { background: none; border: none; color: #0969da; cursor: pointer; padding: 0; font: inherit; font-size: 13px; }
+  .note { background: #f6f8fa; border-radius: 8px; padding: 12px 14px; font-size: 13px; color: #3d444d; margin-top: 14px; line-height: 1.5; }
+  .review { display: grid; gap: 14px; }
+  .review .row { display: grid; grid-template-columns: 160px 1fr; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid #eee; }
+  @media (max-width: 560px) { .review .row { grid-template-columns: 1fr; gap: 4px; } }
+  .review .row b { color: #59636e; font-size: 13px; }
+  .chip { display: inline-block; padding: 3px 10px; border-radius: 12px; background: #eee; font-size: 13px; margin: 0 6px 6px 0; }
+  .progress { list-style: none; padding: 0; margin: 16px 0 0; display: grid; gap: 6px; }
+  .progress li { color: #999; } .progress li.active { color: #1f2328; font-weight: 600; } .progress li.done { color: #1a7f37; }
+  .progress li.active::before { content: "⏳ "; } .progress li.done::before { content: "✓ "; } .progress li:not(.active):not(.done)::before { content: "○ "; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1><a href="/">🐟 Shoal</a></h1>
+  <span class="tag">Team setup</span>
+  <a class="skip" href="/team">Skip to dashboard →</a>
+</header>
+
+<main>
+  <div class="stepper" id="stepper">
+    <div>1 · Problems</div><div>2 · Repository</div><div>3 · What agents see</div><div>4 · Review</div>
+  </div>
+
+  <!-- Step 1 -->
+  <section class="card step" data-step="1">
+    <h2>What problems is your team facing?</h2>
+    <p class="sub">Pick everything that slows you down. Shoal measures these in your repo and turns them into bounties.</p>
+    <div class="grid" id="problems"></div>
+    <label class="field">Anything else we should know? <span class="hint">Optional. E.g. "checkout tests fail every few runs on CI."</span>
+      <textarea id="problemNote"></textarea>
+    </label>
+  </section>
+
+  <!-- Step 2 -->
+  <section class="card step" data-step="2" hidden>
+    <h2>Select your repository</h2>
+    <p class="sub">Shoal clones it and reads its CI history. Nothing changes in your repo until you approve a verified fix.</p>
+    <div id="signedOut" hidden class="note">Sign in to see your own repositories (including private ones).<br><br>
+      <a class="signin" href="/api/auth/github?return=/setup">Sign in with GitHub</a></div>
+    <input type="text" id="repoSearch" placeholder="Search your repositories..." autocomplete="off">
+    <div class="repo-list" id="repoList"></div>
+    <label class="field">Or paste any public repo <input type="text" id="repoInput" placeholder="owner/repo or https://github.com/owner/repo"></label>
+    <label class="field">How do you run tests?
+      <select id="cmdSelect">
+        <option value="node --test">node --test</option>
+        <option value="npx jest">npx jest</option>
+        <option value="npx vitest run">npx vitest run</option>
+        <option value="npx mocha">npx mocha</option>
+      </select>
+      <span class="hint">Shoal adds test file paths to the end of this command.</span>
+    </label>
+  </section>
+
+  <!-- Step 3 -->
+  <section class="card step" data-step="3" hidden>
+    <h2>Which parts can agents see?</h2>
+    <p class="sub">Untick folders or files you don't want to share. Agents only read, test and change files in the folders you share.</p>
+    <div class="toolbar">
+      <button class="link" id="selectAll">Select all</button>
+      <button class="link" id="selectNone">Clear</button>
+      <span style="color:#ccc">|</span>
+      <button class="link" id="expandAll">Expand all</button>
+      <button class="link" id="collapseAll">Collapse all</button>
+      <span class="summary" id="treeSummary"></span>
+    </div>
+    <div class="tree" id="tree"><div class="empty">Loading files…</div></div>
+    <div class="legend">
+      <span class="b test">🧪 Test</span> Shoal runs it to find flaky tests
+      <span class="b ro">🛡️ Read-only</span> agents can read, never change
+      <span class="b secret">🔒 Never shared</span> secrets, always hidden
+      <span class="b hidden">🙈 Hidden</span> not shared
+    </div>
+    <div class="note">
+      🔒 <b>Never shared:</b> <code>.env</code> files, keys, certificates and <code>secrets/</code> folders, even if their folder is ticked.<br>
+      🧪 Share the folders with your <b>tests</b> and the <b>code they test</b>, or Shoal can't find flaky tests to fix.
+    </div>
+  </section>
+
+  <!-- Step 4 -->
+  <section class="card step" data-step="4" hidden>
+    <h2>Review and connect</h2>
+    <p class="sub">Check everything looks right. You can change it later by running setup again.</p>
+    <div class="review" id="review"></div>
+    <ul class="progress" id="progress" hidden>
+      <li data-step="repo">Find repository</li>
+      <li data-step="ci">Read CI history</li>
+      <li data-step="clone">Clone &amp; install</li>
+      <li data-step="scan">Scan for flaky tests</li>
+    </ul>
+  </section>
+
+  <div class="err" id="err"></div>
+  <div class="nav">
+    <button class="btn" id="back">← Back</button>
+    <button class="btn primary" id="next">Continue →</button>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const ICONS = { "flaky-tests": "🎲", "slow-ci": "🐢", "failing-builds": "🔴", "slow-reviews": "⏳", "outdated-deps": "📦", other: "💬" };
+const DESCS = {
+  "flaky-tests": "Tests pass or fail at random, so people re-run CI.",
+  "slow-ci": "Pipelines take too long, so everyone waits.",
+  "failing-builds": "The main branch breaks often.",
+  "slow-reviews": "PRs sit for hours or days before review.",
+  "outdated-deps": "Libraries are old, deprecated or vulnerable.",
+  other: "Something else is slowing the team down.",
+};
+
+const DEMO = "demo";
+const sel = { problems: new Set(), repo: null, files: [], hidden: new Set() };
+let step = 1;
+let repos = [];
+
+// ---------- Step 1: problems ----------
+async function loadProblems() {
+  const list = await fetch("/api/problems").then((r) => r.json());
+  $("problems").innerHTML = list.map((p) => `
+    <button class="opt" data-id="${p.id}">
+      <div class="icon">${ICONS[p.id] ?? "•"}</div>
+      <b>${esc(p.label)}</b>
+      <span class="desc">${esc(DESCS[p.id] ?? "")}</span><br>
+      <span class="badge ${p.supported ? "live" : ""}">${p.supported ? "Agents fix this today" : "Coming soon"}</span>
+    </button>`).join("");
+  $("problems").onclick = (e) => {
+    const opt = e.target.closest(".opt");
+    if (!opt) return;
+    const id = opt.dataset.id;
+    sel.problems.has(id) ? sel.problems.delete(id) : sel.problems.add(id);
+    opt.classList.toggle("selected", sel.problems.has(id));
+  };
+}
+
+// ---------- Step 2: repo ----------
+async function loadRepos() {
+  const { viewer } = await fetch("/api/me").then((r) => r.json());
+  $("signedOut").hidden = Boolean(viewer);
+  $("repoSearch").hidden = !viewer;
+  repos = viewer ? await fetch("/api/github/repos").then((r) => r.json()) : [];
+  renderRepos();
+}
+
+function renderRepos() {
+  const q = $("repoSearch").value.trim().toLowerCase();
+  const shown = repos.filter((r) => r.fullName.toLowerCase().includes(q));
+  const demo = `<button class="repo demo ${sel.repo === DEMO ? "selected" : ""}" data-repo="${DEMO}"><span>🧪</span><span class="name">Demo repo</span></button>`;
+  $("repoList").innerHTML = shown.map((r) => `
+    <button class="repo ${sel.repo === r.fullName ? "selected" : ""}" data-repo="${esc(r.fullName)}">
+      <span>${r.private ? "🔒" : "📁"}</span><span class="name">${esc(r.fullName)}</span>
+      <span class="meta">${esc(r.language ?? "")}${r.pushedAt ? ` · ${new Date(r.pushedAt).toLocaleDateString()}` : ""}</span>
+    </button>`).join("") + (q && !shown.length ? `<div class="empty">No repositories match "${esc(q)}".</div>` : "") + demo;
+}
+
+function chooseRepo(repo) {
+  if (repo !== sel.repo) { sel.files = []; sel.hidden = new Set(); sel.expanded = null; }
+  sel.repo = repo;
+  if (repo !== DEMO && $("repoInput").value.trim() !== repo) $("repoInput").value = "";
+  renderRepos();
+}
+
+$("repoSearch").oninput = renderRepos;
+$("repoList").onclick = (e) => {
+  const item = e.target.closest(".repo");
+  if (item) chooseRepo(item.dataset.repo);
+};
+$("repoInput").oninput = () => {
+  const v = $("repoInput").value.trim();
+  if (v) chooseRepo(v.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$|\/$/g, ""));
+};
+
+// ---------- Step 3: folder tree ----------
+// Every file is shared or not on its own; sel.hidden holds the files that
+// are NOT shared. Ticking a folder shares everything inside it; unticking
+// hides everything inside. Secrets are never shared either way.
+function buildTree(files) {
+  const root = { path: ".", name: "Files in the repo root", children: new Map(), files: 0, secret: 0, fileList: [] };
+  const dirs = new Map([[".", root]]);
+  for (const f of files) {
+    const parts = f.path.split("/");
+    let node = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const p = parts.slice(0, i + 1).join("/");
+      if (!node.children.has(p)) {
+        const child = { path: p, name: parts[i], children: new Map(), files: 0, secret: 0, total: 0, fileList: [] };
+        node.children.set(p, child);
+        dirs.set(p, child);
+      }
+      node = node.children.get(p);
+    }
+    node.files++;
+    node.fileList.push(f);
+    if (f.secret) node.secret++;
+  }
+  const total = (n) => (n.total = n.files + [...n.children.values()].reduce((s, c) => s + total(c), 0));
+  for (const c of root.children.values()) total(c);
+  return { root, dirs };
+}
+
+let tree = null;
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const dirOf = (p) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : ".");
+const isVisible = (f) => !f.secret && !sel.hidden.has(f.path);
+// Every non-secret file in a folder and its subfolders (root "." means only the root's own files).
+const filesInside = (p) => sel.files.filter((f) => !f.secret && (p === "." ? dirOf(f.path) === "." : f.path.startsWith(p + "/")));
+
+async function loadTree() {
+  if (sel.files.length) return renderTree();
+  $("tree").innerHTML = `<div class="empty">Loading files…</div>`;
+  try {
+    const res = await fetch(`/api/repo-files?repo=${encodeURIComponent(sel.repo)}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    sel.files = data.files;
+    if (data.truncated) $("err").textContent = "This repo is very large, so only part of its file list is shown.";
+  } catch (err) {
+    $("tree").innerHTML = `<div class="empty">Couldn't load files: ${esc(err.message)}</div>`;
+    return;
+  }
+  renderTree();
+}
+
+const FILE_ICONS = [[/\.(test|spec)\./, "🧪"], [/\.(png|jpe?g|gif|webp|svg|ico)$/i, "🖼️"], [/\.(md|mdx|txt)$/i, "📝"],
+  [/\.(json|ya?ml|toml|lock)$|config|^\.|rc$/i, "⚙️"], [/\.(css|scss|less)$/i, "🎨"], [/\.(html)$/i, "🌐"]];
+const fileIcon = (name) => FILE_ICONS.find(([re]) => re.test(name))?.[1] ?? "📄";
+
+function renderTree() {
+  tree = buildTree(sel.files);
+  // Small repos open fully; big ones start collapsed.
+  if (!sel.expanded) sel.expanded = new Set(sel.files.length <= 40 ? tree.dirs.keys() : []);
+  const rows = [];
+  const fileRow = (f, depth) => {
+    const name = f.path.split("/").pop();
+    const hidden = !isVisible(f);
+    const badges = [
+      f.secret && `<span class="b secret" title="Never sent to agents, even in a shared folder">🔒 Never shared</span>`,
+      !f.secret && hidden && `<span class="b hidden" title="Not shared with agents">🙈 Hidden from agents</span>`,
+      f.test && !hidden && `<span class="b test" title="Shoal runs this to find flaky tests">🧪 Test</span>`,
+      f.protected && !hidden && `<span class="b ro" title="Agents can read it but never change it">🛡️ Read-only</span>`,
+    ].filter(Boolean).join("");
+    rows.push(`<div class="file ${hidden ? "off" : ""}" style="padding-left:${34 + depth * 20}px">
+      <label class="fname"><input type="checkbox" data-file="${esc(f.path)}" ${hidden ? "" : "checked"} ${f.secret ? "disabled" : ""}> ${fileIcon(name)} ${esc(name)}</label>
+      <span class="desc">${esc(f.description ?? "")}</span>${badges}</div>`);
+  };
+  const walk = (node, depth) => {
+    const states = filesInside(node.path).map(isVisible);
+    const all = states.length > 0 && states.every(Boolean);
+    const some = states.some(Boolean);
+    const open = sel.expanded.has(node.path);
+    const kids = [...node.children.values()].sort((a, b) => a.name.localeCompare(b.name));
+    rows.push(`<div class="node" style="padding-left:${8 + depth * 20}px">
+      <button class="twisty" data-toggle="${esc(node.path)}" aria-label="${open ? "Collapse" : "Expand"}">${open ? "▾" : "▸"}</button>
+      <label><input type="checkbox" data-path="${esc(node.path)}" ${all ? "checked" : ""} ${some && !all ? 'data-partial="1"' : ""}>
+      <span>${node.path === "." ? "📦" : "📁"} ${esc(node.path === "." ? node.name : node.name + "/")}</span></label>
+      ${node.secret ? `<span title="Contains secrets that are never shared">🔒</span>` : ""}
+      <span class="count">${plural(node.path === "." ? node.files : node.total, "file")}</span></div>`);
+    if (!open) return;
+    node.fileList.sort((a, b) => a.path.localeCompare(b.path)).forEach((f) => fileRow(f, depth));
+    if (node.path !== ".") kids.forEach((c) => walk(c, depth + 1));
+  };
+  if (tree.root.files) walk({ ...tree.root, children: new Map() }, 0);
+  [...tree.root.children.values()].sort((a, b) => a.name.localeCompare(b.name)).forEach((c) => walk(c, 0));
+  $("tree").innerHTML = rows.join("") || `<div class="empty">This repo has no files.</div>`;
+  $("tree").querySelectorAll("input[data-partial]").forEach((cb) => (cb.indeterminate = true));
+
+  const visible = sel.files.filter(isVisible);
+  $("treeSummary").textContent = `Agents can see ${visible.length} of ${sel.files.length} files`;
+}
+
+$("tree").onclick = (e) => {
+  const p = e.target.closest("[data-toggle]")?.dataset.toggle;
+  if (p === undefined) return;
+  sel.expanded.has(p) ? sel.expanded.delete(p) : sel.expanded.add(p);
+  renderTree();
+};
+$("expandAll").onclick = () => { sel.expanded = new Set(tree.dirs.keys()); renderTree(); };
+$("collapseAll").onclick = () => { sel.expanded = new Set(); renderTree(); };
+
+$("tree").onchange = (e) => {
+  const { path: dir, file } = e.target.dataset;
+  const paths = file ? [file] : dir !== undefined ? filesInside(dir).map((f) => f.path) : [];
+  for (const p of paths) e.target.checked ? sel.hidden.delete(p) : sel.hidden.add(p);
+  renderTree();
+};
+$("selectAll").onclick = () => { sel.hidden.clear(); renderTree(); };
+$("selectNone").onclick = () => { sel.hidden = new Set(sel.files.filter((f) => !f.secret).map((f) => f.path)); renderTree(); };
+
+// What agents may see: a folder whose own files are all shared goes in whole
+// (so agents can add files there); otherwise just its shared files.
+// Empty list = whole repo.
+function sharedPaths() {
+  if (!sel.hidden.size) return [];
+  const out = [];
+  for (const [dir, node] of tree.dirs) {
+    const files = node.fileList.filter((f) => !f.secret);
+    const shown = files.filter(isVisible);
+    if (shown.length && shown.length === files.length) out.push(dir);
+    else out.push(...shown.map((f) => f.path));
+  }
+  return out;
+}
+
+// ---------- Step 4: review + connect ----------
+function renderReview() {
+  const probs = [...sel.problems].map((id) => `<span class="chip">${ICONS[id] ?? ""} ${esc($("problems").querySelector(`[data-id="${id}"] b`).textContent)}</span>`).join("") || "<i>None selected</i>";
+  const shared = sharedPaths();
+  $("review").innerHTML = `
+    <div class="row"><b>Problems</b><div>${probs}${$("problemNote").value.trim() ? `<div class="hint">"${esc($("problemNote").value.trim())}"</div>` : ""}</div></div>
+    <div class="row"><b>Repository</b><div>${sel.repo === DEMO ? "🧪 Demo repo (built-in sample)" : `📁 ${esc(sel.repo)}`}<div class="hint">Tests run with <code>${esc($("cmdSelect").value)}</code></div></div></div>
+    <div class="row"><b>Agents can see</b><div>${shared.length
+      ? shared.slice(0, 10).map((p) => `<span class="chip">${p === "." ? "root files" : tree.dirs.has(p) ? esc(p) + "/" : esc(p)}</span>`).join("") + (shared.length > 10 ? `<span class="chip">+${shared.length - 10} more</span>` : "")
+      : "The whole repo"}
+      <div class="hint">${$("treeSummary").textContent}. Secrets are never shared.</div></div></div>
+    <div class="row"><b>Agents can never edit</b><div class="hint" style="font-size:14px">Tests, CI config (<code>.github/</code>), <code>package.json</code> and lockfiles</div></div>
+    <div class="row" style="border:none"><b>You pay</b><div class="hint" style="font-size:14px">Only for fixes that pass verification. Nothing merges without your approval.</div></div>`;
+}
+
+async function connect() {
+  const note = $("problemNote").value.trim();
+  const ids = sel.problems.size ? [...sel.problems] : ["other"];
+  const body = {
+    repo: sel.repo,
+    testCommand: $("cmdSelect").value,
+    problems: ids.map((id) => ({ id, note })),
+    sharedPaths: sharedPaths(),
+  };
+  $("progress").hidden = sel.repo === DEMO;
+  setProgress("repo");
+  if (sel.repo !== DEMO) watchProgress();
+  const res = await fetch(sel.repo === DEMO ? "/api/connect/demo" : "/api/connect", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  watching = false;
+  if (!res.ok) throw new Error((await res.json()).error ?? "Connect failed");
+  setProgress("done");
+  await fetch("/api/me/role", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role: "team" }) });
+  setTimeout(() => (location.href = "/team"), 600);
+}
+
+function setProgress(name) {
+  const items = [...$("progress").children];
+  const idx = name === "done" ? items.length : items.findIndex((li) => li.dataset.step === name);
+  items.forEach((li, i) => (li.className = i < idx ? "done" : i === idx ? "active" : ""));
+}
+// Connect progress: poll for connect.step events only while connecting.
+let watching = false;
+async function watchProgress() {
+  watching = true;
+  let { last } = await fetch("/api/events/poll").then((r) => r.json());
+  while (watching) {
+    await new Promise((r) => setTimeout(r, 700));
+    const res = await fetch(`/api/events/poll?after=${last}`).then((r) => r.json()).catch(() => null);
+    if (!res) continue;
+    last = res.last;
+    for (const e of res.events) if (e.type === "connect.step") setProgress(e.step);
+  }
+}
+
+// ---------- Navigation ----------
+function show(n) {
+  step = n;
+  $("err").textContent = "";
+  document.querySelectorAll(".step").forEach((s) => (s.hidden = Number(s.dataset.step) !== n));
+  [...$("stepper").children].forEach((d, i) => (d.className = i + 1 < n ? "done" : i + 1 === n ? "active" : ""));
+  $("back").style.visibility = n === 1 ? "hidden" : "visible";
+  $("next").textContent = n === 4 ? "Connect & scan" : "Continue →";
+  if (n === 3) loadTree();
+  if (n === 4) renderReview();
+  window.scrollTo(0, 0);
+}
+
+$("back").onclick = () => show(step - 1);
+$("next").onclick = async () => {
+  $("err").textContent = "";
+  if (step === 1 && !sel.problems.size && !$("problemNote").value.trim()) return ($("err").textContent = "Pick at least one problem, or describe it.");
+  if (step === 2 && !sel.repo) return ($("err").textContent = "Choose a repository, paste one, or use the demo repo.");
+  if (step === 3 && sel.files.length && !sel.files.some(isVisible)) return ($("err").textContent = "Share at least one file.");
+  if (step === 3 && sel.files.some((f) => f.test) && !sel.files.some((f) => f.test && isVisible(f))) return ($("err").textContent = "Share at least one test file (🧪), or Shoal has no tests to scan.");
+  if (step < 4) return show(step + 1);
+  $("next").disabled = $("back").disabled = true;
+  try { await connect(); }
+  catch (err) { $("err").textContent = err.message; $("next").disabled = $("back").disabled = false; }
+};
+
+loadProblems();
+loadRepos();
+show(1);
+</script>
+</body>
+</html>
