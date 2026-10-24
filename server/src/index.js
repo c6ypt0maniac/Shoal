@@ -19,6 +19,7 @@ import { MODELS, costPerFix, overallPick, scoreboard, trialSummary } from "./tri
 import { PACKS, addCredits, balanceCents, creditsSummary, fixPriceCents } from "./credits.js";
 import { mountMcp } from "./mcp.js";
 import { proofFor, proveProblem, resetProofs } from "./proof.js";
+import { markConnected, setAutoSync, syncNow, syncStatus } from "./sync.js";
 import { detectClaude, finishLogin, startLogin, startTrialRun, stopTrialRun, trialRun } from "./claude-runner.js";
 import {
   authorizeUrl, ciStats, cloneRepo, completeOAuth, getRepo, getViewer, hasToken, listRepos, oauthConfigured, parseRepo, repoFiles, signOut,
@@ -60,7 +61,7 @@ app.get("/api/health", (_req, res) =>
 
 // --- Repo connection -------------------------------------------------------
 
-app.get("/api/connection", (_req, res) => res.json({ ...state.connection, githubToken: hasToken(), tests: getStacks().map(describeStack) }));
+app.get("/api/connection", (_req, res) => res.json({ ...state.connection, githubToken: hasToken(), tests: getStacks().map(describeStack), sync: syncStatus() }));
 app.get("/api/ci", (_req, res) => res.json(state.ci));
 
 app.get("/api/github/me", async (_req, res) =>
@@ -70,10 +71,14 @@ app.get("/api/github/repos", async (_req, res) => res.json(await listRepos()));
 
 // Files in a repo (or the demo repo), for the "what can agents see" picker.
 // Secrets are flagged so the UI can show them as never shared.
+// Always the latest commit: pass fresh=1 to skip even the few-second cache.
 app.get("/api/repo-files", async (req, res) => {
-  const { files, truncated } =
-    req.query.repo === "demo" ? { files: await listAllFiles(DEMO_REPO), truncated: false } : await repoFiles(parseRepo(req.query.repo));
+  const { files, truncated, head = null } =
+    req.query.repo === "demo"
+      ? { files: await listAllFiles(DEMO_REPO), truncated: false }
+      : await repoFiles(parseRepo(req.query.repo), { fresh: req.query.fresh === "1" });
   res.json({
+    head,
     files: files.map((p) => ({
       path: p,
       description: describeFile(p),
@@ -178,6 +183,7 @@ async function connect(body, step, res) {
   setSource(dir, body?.testCommand);
   await resetWorkspace();
   resetState();
+  const connectedTo = dir;
   state.connection = {
     type: "github",
     ...repo,
@@ -187,6 +193,7 @@ async function connect(body, step, res) {
     connectedAt: new Date().toISOString(),
   };
   state.ci = ci;
+  await markConnected(connectedTo);
   emit("connect.done", {
     message: `Connected to ${repo.fullName}: ${describeTests()}, ${ci.length} CI workflows found, ${describeScope()}, ${repo.canWrite ? "can open PRs" : "read-only (no PRs)"}`,
     connection: state.connection,
@@ -331,9 +338,15 @@ app.post("/api/connection/share", async (req, res) => {
   const current = state.connection.sharedPaths ?? [];
   if (current.length) state.connection.sharedPaths = [...new Set([...current, ...add])];
   await refreshSources();
+  state.connection.newPaths = (state.connection.newPaths ?? []).filter((p) => !state.connection.sharedPaths.includes(p));
   emit("connect.done", { message: `Agents can now also see ${add.map(pathLabel).join(", ")}`, connection: state.connection });
   res.json({ sharedPaths: state.connection.sharedPaths, pains: state.pains });
 });
+
+// Sync with GitHub: pull new commits now, or turn the every-minute check on/off.
+app.get("/api/sync", (_req, res) => res.json(syncStatus()));
+app.post("/api/sync", async (_req, res) => res.json(await syncNow()));
+app.post("/api/sync/auto", (req, res) => res.json(setAutoSync(req.body?.on)));
 
 // Build (or rebuild) the proof report for a test, e.g. after manual trials.
 app.post("/api/proofs", (req, res) => {

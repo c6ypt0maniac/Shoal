@@ -7,7 +7,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { rm, mkdir, readdir } from "node:fs/promises";
 import { REPOS_DIR, sh } from "./repo.js";
-import { detectStacks, installCommand } from "./stack.js";
+import { MANIFESTS, detectStacks, installCommand } from "./stack.js";
 
 const API = "https://api.github.com";
 
@@ -198,15 +198,60 @@ export async function getRepo(fullName) {
 
 // Every file path in the repo's default branch, for the "what can agents
 // see" folder picker. Large repos may come back truncated by GitHub.
-export async function repoFiles(fullName) {
-  return cached(`files:${fullName}`, 5 * 60_000, async () => {
-    const repo = await getRepo(fullName);
-    const tree = await gh(`/repos/${repo.fullName}/git/trees/${encodeURIComponent(repo.defaultBranch)}?recursive=1`);
+// The latest commit on a branch. A cheap call, so new pushes are noticed
+// within seconds; everything keyed on it refreshes by itself.
+export async function headSha(fullName, branch, { fresh = false } = {}) {
+  if (fresh) cache.delete(`head:${fullName}:${branch}`);
+  return cached(`head:${fullName}:${branch}`, 10_000, async () => {
+    const commit = await gh(`/repos/${fullName}/commits/${encodeURIComponent(branch)}`);
+    return { sha: commit.sha, message: commit.commit?.message?.split("\n")[0] ?? "", at: commit.commit?.committer?.date ?? null };
+  });
+}
+
+// Every file on the default branch. Keyed by the branch's latest commit, so a
+// push shows up right away instead of after a cache timeout.
+export async function repoFiles(fullName, { fresh = false } = {}) {
+  const repo = await getRepo(fullName);
+  const head = await headSha(repo.fullName, repo.defaultBranch, { fresh });
+  return cached(`files:${repo.fullName}:${head.sha}`, Infinity, async () => {
+    const tree = await gh(`/repos/${repo.fullName}/git/trees/${head.sha}?recursive=1`);
     return {
       files: (tree?.tree ?? []).filter((e) => e.type === "blob").map((e) => e.path),
       truncated: Boolean(tree?.truncated),
+      head,
     };
   });
+}
+
+// Brings an existing clone up to the branch's latest commit. Returns the old
+// and new commit and which files changed between them.
+export async function pullRepo(dir, fullName, branch) {
+  const before = (await sh("git rev-parse HEAD", dir)).output.trim();
+  const auth = token() ? `x-access-token:${token()}@` : "";
+  const fetch = await sh(`git fetch --depth 50 "https://${auth}github.com/${fullName}.git" ${JSON.stringify(branch)}`, dir, 300_000);
+  if (!fetch.ok) throw new Error(`git fetch failed: ${redact(fetch.output).slice(-400)}`);
+  const after = (await sh("git rev-parse FETCH_HEAD", dir)).output.trim();
+  if (after === before) return { before, after, changed: [] };
+  // Which files changed; if history is too shallow to compare, treat every file as changed.
+  const diff = await sh(`git diff --name-only ${before} ${after}`, dir);
+  const reset = await sh(`git reset --hard ${after}`, dir);
+  if (!reset.ok) throw new Error(`git reset failed: ${reset.output.slice(-300)}`);
+  const changed = diff.ok ? diff.output.split(/\r?\n/).filter(Boolean) : (await sh("git ls-files", dir)).output.split(/\r?\n/).filter(Boolean);
+  return { before, after, changed };
+}
+
+// Re-runs dependency installs for projects whose manifest changed.
+export async function reinstall(dir, changed, onStep = () => {}) {
+  for (const stack of await detectStacks(dir)) {
+    const mine = changed.filter((f) => (stack.root === "." || f.startsWith(stack.root + "/")) && MANIFESTS.some((re) => re.test(f)));
+    if (!mine.length || !stack.toolOk) continue;
+    const cwd = path.join(dir, stack.root);
+    const cmd = installCommand(stack, await readdir(cwd));
+    if (!cmd) continue;
+    onStep(`${mine.join(", ")} changed: reinstalling ${stack.def.language} dependencies`);
+    const install = await sh(cmd, cwd, 600_000);
+    if (!install.ok) onStep(`Dependency install failed; some tests may fail for that reason: ${install.output.slice(-300)}`);
+  }
 }
 
 // Shallow-clones the repo and installs each project's dependencies the way

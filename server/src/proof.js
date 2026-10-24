@@ -37,10 +37,15 @@ const CHALLENGE_RUNS = 3;
 const CHECKS = ["stress", "suite", "rules", "challenge", "review"];
 
 const running = new Set();
+const CHECKS = ["stress", "suite", "rules", "challenge", "review"];
+
+const running = new Set();
 // Challenge tests per problem, reused when proving resumes after a review
 // (same fixes, same tests), and the full prompt each waiting review needs.
 const challenges = new Map(); // painId -> { key, challenge }
 const reviewPrompts = new Map(); // trialId -> prompt
+
+export const isProving = () => running.size > 0;
 
 // Proof status for one problem: every candidate checked so far and the first
 // one that's proven (the one the team can buy).

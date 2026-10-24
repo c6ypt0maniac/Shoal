@@ -317,14 +317,19 @@ export async function detectStacks(dir) {
       stacks.push({ def, root, ...(await def.framework(root, ctx)) });
     }
   }
-  // Test files that no manifest claims still need a way to run.
+  // Test files that no manifest claims still need a way to run, from the
+  // right folder: a Python project without a manifest is rooted at the folder
+  // holding its tests/ folder, so `from inventory import ...` resolves the way
+  // it does when you run the tests yourself.
   for (const f of files.filter(isTestPath)) {
-    if (stacks.some((s) => owns(s, f))) continue;
+    if (stacks.some((s) => !s.fallback && owns(s, f))) continue;
     const id = LANGUAGE_OF.find(([re]) => re.test(f))?.[1];
-    if (!id || stacks.some((s) => s.root === "." && s.def.id === id)) continue;
+    if (!id) continue;
+    const root = id === "python" ? pythonRoot(f) : ".";
+    if (stacks.some((s) => s.root === root && languageId(s.def.id) === languageId(id))) continue;
     const def = STACKS.find((s) => s.id === id);
-    const found = await def.framework(".", ctx);
-    stacks.push({ def, root: ".", ...found, evidence: `test files like ${f} (no ${def.language} manifest); ${found.evidence}` });
+    const found = await def.framework(root, ctx);
+    stacks.push({ def, root, fallback: true, ...found, evidence: `test files like ${f} (no ${def.language} manifest); ${found.evidence}` });
   }
 
   const basePython = (await sh("python --version", dir)).ok ? "python" : (await sh("python3 --version", dir)).ok ? "python3" : "py -3";
@@ -346,6 +351,14 @@ export async function detectStacks(dir) {
 }
 
 const exists = (p) => access(p).then(() => true, () => false);
+
+// "seatkeeper/tests/test_booking.py" -> "seatkeeper"; "test_util.py" -> ".".
+function pythonRoot(file) {
+  const parts = dirOf(file) === "." ? [] : dirOf(file).split("/");
+  const at = parts.map((p) => p.toLowerCase()).lastIndexOf("tests") >= 0 ? parts.map((p) => p.toLowerCase()).lastIndexOf("tests") : parts.map((p) => p.toLowerCase()).lastIndexOf("test");
+  if (at >= 0) return parts.slice(0, at).join("/") || ".";
+  return parts.join("/") || ".";
+}
 const owns = (s, file) => (s.root === "." || file.startsWith(s.root + "/")) && isTestPath(file) && (LANGUAGE_OF.find(([re]) => re.test(file))?.[1] ?? s.def.id) === languageId(s.def.id);
 const languageId = (id) => (id === "gradle" ? "maven" : id);
 
