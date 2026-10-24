@@ -1,6 +1,5 @@
 // Text helpers. This file is CORRECT: Shoal should leave it alone.
 
-// "Hello World!" -> "hello-world"
 export function slugify(text) {
   return text
     .toLowerCase()

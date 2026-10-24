@@ -9,16 +9,63 @@ import { state, newId } from "./store.js";
 import { readRepoFile } from "./repo.js";
 
 // Models a trial can be tagged with: the ones Shoal can later run through
-// the API. Prices are $ per million tokens (input, output).
+// the API. Prices are $ per million tokens: input, cached input, output.
+// Claude also bills cache writes at 1.25x input; OpenAI has no write charge.
+// OpenAI prices are the standard tier for prompts under 272K tokens
+// (developers.openai.com/api/docs/pricing, checked 2026-10-24). Models with
+// no cached price bill cached input at the full input price. reasoning: takes
+// a reasoning effort. maxOutput: the model's output-token ceiling, if lower
+// than what a fix asks for.
+const claude = (name, input, output) => ({ provider: "anthropic", name, input, cached: 0.1 * input, cacheWrite: 1.25 * input, output });
+const gpt = (name, input, cached, output, extra = {}) => ({ provider: "openai", name, input, cached: cached ?? input, cacheWrite: input, output, reasoning: true, ...extra });
+const NO_REASONING = { reasoning: false };
+
 export const MODELS = {
-  "claude-haiku-5-5": { name: "Haiku 5.5", input: 0.1, output: 0.5 },
-  "claude-sonnet-5-5": { name: "Sonnet 5.5", input: 2, output: 10 },
-  "claude-opus-5-5": { name: "Opus 5.5", input: 4, output: 20 },
-  "claude-fable-5-1": { name: "Fable 5.1", input: 10, output: 50 },
+  "claude-haiku-5-5": claude("Haiku 5.5", 0.1, 0.5),
+  "claude-sonnet-5-5": claude("Sonnet 5.5", 2, 10),
+  "claude-opus-5-5": claude("Opus 5.5", 4, 20),
+  "claude-fable-5-1": claude("Fable 5.1", 10, 50),
+
+  "gpt-6-astra": gpt("GPT-6 Astra", 10, 1, 50),
+  "gpt-6.1-sol": gpt("GPT-6.1 Sol", 2, 0.1, 10),
+  "gpt-6-sol": gpt("GPT-6 Sol", 2, 0.2, 10),
+  "gpt-6-luna": gpt("GPT-6 Luna", 0.1, 0.01, 0.5),
+  "gpt-5.6-sol": gpt("GPT-5.6 Sol", 4, 0.4, 20),
+  "gpt-5.6-terra": gpt("GPT-5.6 Terra", 2, 0.2, 12),
+  "gpt-5.6-luna": gpt("GPT-5.6 Luna", 0.2, 0.02, 1.2),
+  "gpt-5.5": gpt("GPT-5.5", 5, 0.5, 30),
+  "gpt-5.5-pro": gpt("GPT-5.5 Pro", 30, null, 180),
+  "gpt-5.4": gpt("GPT-5.4", 2.5, 0.25, 15),
+  "gpt-5.4-pro": gpt("GPT-5.4 Pro", 30, null, 180),
+  "gpt-5.4-mini": gpt("GPT-5.4 mini", 0.75, 0.075, 4.5),
+  "gpt-5.4-nano": gpt("GPT-5.4 nano", 0.2, 0.02, 1.25),
+  "gpt-5.3-codex": gpt("GPT-5.3 Codex", 1.75, 0.175, 14),
+  "gpt-5.2": gpt("GPT-5.2", 1.75, 0.175, 14),
+  "gpt-5.2-pro": gpt("GPT-5.2 Pro", 21, null, 168),
+  "gpt-5.1": gpt("GPT-5.1", 1.25, 0.125, 10),
+  "gpt-5": gpt("GPT-5", 1.25, 0.125, 10),
+  "gpt-5-mini": gpt("GPT-5 mini", 0.25, 0.025, 2),
+  "gpt-5-nano": gpt("GPT-5 nano", 0.05, 0.005, 0.4),
+  "gpt-5-pro": gpt("GPT-5 Pro", 15, null, 120),
+  "gpt-4.1": gpt("GPT-4.1", 2, 0.5, 8, NO_REASONING),
+  "gpt-4.1-mini": gpt("GPT-4.1 mini", 0.4, 0.1, 1.6, NO_REASONING),
+  "gpt-4.1-nano": gpt("GPT-4.1 nano", 0.1, 0.025, 0.4, NO_REASONING),
+  "gpt-4o": gpt("GPT-4o", 2.5, 1.25, 10, { ...NO_REASONING, maxOutput: 16_384 }),
+  "gpt-4o-mini": gpt("GPT-4o mini", 0.15, 0.075, 0.6, { ...NO_REASONING, maxOutput: 16_384 }),
+  o3: gpt("o3", 2, 0.5, 8),
+  "o3-pro": gpt("o3-pro", 20, null, 80),
+  "o4-mini": gpt("o4-mini", 1.1, 0.275, 4.4),
+  "o3-mini": gpt("o3-mini", 1.1, 0.55, 4.4),
+  o1: gpt("o1", 15, 7.5, 60),
+  "o1-pro": gpt("o1-pro", 150, null, 600),
 };
 export const MODEL_IDS = Object.keys(MODELS);
+export const OPENAI_MODEL_IDS = MODEL_IDS.filter((id) => MODELS[id].provider === "openai");
+export const providerLabel = (model) => (MODELS[model]?.provider === "openai" ? "OpenAI API" : "Claude API");
 
-export async function submitTrial({ painId, model, summary, files }) {
+// client: the app that sent it over MCP (e.g. ChatGPT, Codex, Claude Code)
+// and the GitHub login it signed in with. The model tag is self-reported.
+export async function submitTrial({ painId, model, summary, files, client = null }) {
   const pain = state.pains.find((p) => p.id === painId);
   if (!pain) throw httpError(404, `Unknown problem ${painId}. Call list_problems for valid ids.`);
   if (pain.healthy) throw httpError(400, `${pain.testFile} isn't flaky; nothing to fix`);
@@ -30,6 +77,7 @@ export async function submitTrial({ painId, model, summary, files }) {
     painId,
     testFile: pain.testFile,
     model,
+    client,
     summary: String(summary ?? "").slice(0, 500),
     files,
     linesChanged: await linesChanged(files),
@@ -71,12 +119,15 @@ const QUALITY_MARGIN = 5;
 // (e.g. trials submitted from someone's own Claude Code session).
 const DEFAULT_TOKENS = { input_tokens: 25_000, output_tokens: 3_000 };
 
-// $ for one API call's usage. Cache writes bill at 1.25x input, reads at 0.1x.
+// $ for one API call's usage, in Claude's shape: input_tokens excludes cache
+// reads and writes (agents.js converts OpenAI usage to this shape).
 export function tokenCost(model, usage) {
   const price = MODELS[model] ?? MODELS["claude-opus-5-5"];
   const input =
-    (usage.input_tokens ?? 0) + 1.25 * (usage.cache_creation_input_tokens ?? 0) + 0.1 * (usage.cache_read_input_tokens ?? 0);
-  return (input * price.input + (usage.output_tokens ?? 0) * price.output) / 1e6;
+    (usage.input_tokens ?? 0) * price.input +
+    (usage.cache_creation_input_tokens ?? 0) * price.cacheWrite +
+    (usage.cache_read_input_tokens ?? 0) * price.cached;
+  return (input + (usage.output_tokens ?? 0) * price.output) / 1e6;
 }
 
 // Expected API cost of one fix with this model: measured in the latest trial

@@ -28,10 +28,16 @@ export const oauthConfigured = () => Boolean(process.env.GITHUB_CLIENT_ID && pro
 export function authorizeUrl(callbackUrl, returnTo = "/") {
   const state = randomUUID();
   pendingStates.set(state, returnTo);
+  return githubAuthorizeUrl(callbackUrl, state);
+}
+
+// GitHub's consent page. callbackUrl may be a subpath of the OAuth App's
+// registered callback (GitHub allows that), e.g. .../callback/mcp.
+export function githubAuthorizeUrl(callbackUrl, state, scope = OAUTH_SCOPES) {
   const params = new URLSearchParams({
     client_id: process.env.GITHUB_CLIENT_ID,
     redirect_uri: callbackUrl,
-    scope: OAUTH_SCOPES,
+    scope,
     state,
     allow_signup: "true",
   });
@@ -43,6 +49,15 @@ export function authorizeUrl(callbackUrl, returnTo = "/") {
 export async function completeOAuth({ code, state, callbackUrl }) {
   const returnTo = pendingStates.get(state);
   if (!pendingStates.delete(state)) throw Object.assign(new Error("Sign-in expired or was tampered with; try again"), { status: 400 });
+  oauthToken = await exchangeCode(code, callbackUrl);
+  cache.clear();
+  // Warm the caches now so the pages after sign-in don't wait on GitHub.
+  listRepos().catch(() => {});
+  return returnTo;
+}
+
+// The one-time code from GitHub's redirect -> an access token.
+export async function exchangeCode(code, callbackUrl) {
   const res = await fetch("https://github.com/login/oauth/access_token", {
     signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
     method: "POST",
@@ -56,11 +71,27 @@ export async function completeOAuth({ code, state, callbackUrl }) {
   });
   const data = await res.json();
   if (!data.access_token) throw Object.assign(new Error(data.error_description ?? "GitHub sign-in failed"), { status: 401 });
-  oauthToken = data.access_token;
-  cache.clear();
-  // Warm the caches now so the pages after sign-in don't wait on GitHub.
-  listRepos().catch(() => {});
-  return returnTo;
+  return data.access_token;
+}
+
+// Someone else's token (an MCP client's sign-in), not the dashboard's.
+export async function loginFor(userToken) {
+  const me = await gh("/user", { token: userToken });
+  if (!me?.login) throw Object.assign(new Error("GitHub didn't say who signed in"), { status: 401 });
+  return me.login;
+}
+
+// Whether that token can read the repo. Cached for 5 minutes per token+repo,
+// since every MCP request asks.
+const access = new Map();
+export async function canAccessRepo(fullName, userToken) {
+  const key = `${fullName}\0${userToken}`;
+  const hit = access.get(key);
+  if (hit && Date.now() - hit.at < 5 * 60_000) return hit.ok;
+  const ok = Boolean(await gh(`/repos/${fullName}`, { token: userToken }).catch(() => null));
+  if (access.size > 1000) access.clear();
+  access.set(key, { ok, at: Date.now() });
+  return ok;
 }
 
 export function signOut() {
@@ -100,7 +131,8 @@ async function cached(key, maxAgeMs, load) {
 
 const GITHUB_TIMEOUT_MS = 15_000;
 
-async function gh(endpoint, { method = "GET", body } = {}) {
+async function gh(endpoint, { method = "GET", body, token: asUser } = {}) {
+  const auth = asUser ?? token();
   const res = await fetch(API + endpoint, {
     signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
     method,
@@ -108,7 +140,7 @@ async function gh(endpoint, { method = "GET", body } = {}) {
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
       "User-Agent": "shoal-hackathon",
-      ...(token() && { Authorization: `Bearer ${token()}` }),
+      ...(auth && { Authorization: `Bearer ${auth}` }),
       ...(body && { "Content-Type": "application/json" }),
     },
     body: body && JSON.stringify(body),
