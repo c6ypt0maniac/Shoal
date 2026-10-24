@@ -6,7 +6,8 @@ import { refreshSources, scan } from "./scanner.js";
 import { collectBids, createBounty, getBounty, leaderboard, morningSettlement, runBounty } from "./bounties.js";
 import { eventsAfter, emit } from "./events.js";
 import { state, resetState, DEMO_CONNECTION } from "./store.js";
-import { isTestFile, listAllFiles, resetWorkspace, setSource, DEMO_REPO, WORKSPACE } from "./repo.js";
+import { getStacks, isTestFile, listAllFiles, resetWorkspace, setSource, DEMO_REPO, WORKSPACE } from "./repo.js";
+import { describeStack } from "./stack.js";
 import { zip } from "./zip.js";
 import { readFile } from "node:fs/promises";
 import { describeFile } from "./describe.js";
@@ -46,7 +47,7 @@ app.get("/api/health", (_req, res) =>
 
 // --- Repo connection -------------------------------------------------------
 
-app.get("/api/connection", (_req, res) => res.json({ ...state.connection, githubToken: hasToken() }));
+app.get("/api/connection", (_req, res) => res.json({ ...state.connection, githubToken: hasToken(), tests: getStacks().map(describeStack) }));
 app.get("/api/ci", (_req, res) => res.json(state.ci));
 
 app.get("/api/github/me", async (_req, res) =>
@@ -148,7 +149,7 @@ async function connect(body, step, res) {
     return [];
   });
   step("clone", `Cloning ${fullName} (${repo.defaultBranch}) and installing dependencies`);
-  const dir = await cloneRepo(fullName);
+  const dir = await cloneRepo(fullName, (message) => step("install", message));
 
   setSource(dir, body?.testCommand);
   await resetWorkspace();
@@ -156,14 +157,14 @@ async function connect(body, step, res) {
   state.connection = {
     type: "github",
     ...repo,
-    testCommand: body?.testCommand || "node --test",
+    testCommand: body?.testCommand || null,
     problems: cleanProblems(body?.problems),
     sharedPaths: cleanSharedPaths(body?.sharedPaths),
     connectedAt: new Date().toISOString(),
   };
   state.ci = ci;
   emit("connect.done", {
-    message: `Connected to ${repo.fullName}: ${ci.length} CI workflows found, ${describeScope()}, ${repo.canWrite ? "can open PRs" : "read-only (no PRs)"}`,
+    message: `Connected to ${repo.fullName}: ${describeTests()}, ${ci.length} CI workflows found, ${describeScope()}, ${repo.canWrite ? "can open PRs" : "read-only (no PRs)"}`,
     connection: state.connection,
   });
   res.json({ connection: state.connection, ci });
@@ -180,6 +181,13 @@ app.post("/api/connect/demo", async (req, res) => {
   emit("connect.done", { message: `Using the bundled demo repo, ${describeScope()}`, connection: state.connection });
   res.json({ connection: state.connection });
 });
+
+// e.g. "tests: Python (pytest) in api/, JavaScript/TypeScript (vitest)"
+function describeTests() {
+  const stacks = getStacks();
+  if (!stacks.length) return "no test setup found";
+  return `tests: ${stacks.map((s) => `${s.def.language} (${s.framework})${s.root === "." ? "" : ` in ${s.root}/`}${s.toolOk ? "" : " [toolchain missing]"}`).join(", ")}`;
+}
 
 function describeScope() {
   const shared = state.connection.sharedPaths;

@@ -10,6 +10,7 @@
 //      isn't blamed for a different bug.
 import { createSandbox, destroySandbox, isTestFile, runTestMany, runTestOnce, writeFiles } from "./repo.js";
 import { emit } from "./events.js";
+import { MANIFESTS } from "./stack.js";
 import { inScope } from "./scope.js";
 
 export const VERIFY_RUNS = 10;
@@ -66,11 +67,9 @@ export async function verify({ bountyId, agentId, testFile, files, stableTestFil
 }
 
 const PROTECTED = [
-  /(^|\/)(test|tests|__tests__|spec|__mocks__|fixtures)\//, // test folders
-  /^\.github\//, // CI workflows
-  /(^|\/)(package\.json|package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$/, // manifests
-  /(^|\/)(jest|vitest|mocha|karma|playwright)\.config\.[cm]?[jt]s$/, // test runner config
-  /(^|\/)\.mocharc/,
+  /(^|\/)(test|tests|__tests__|spec|__mocks__|fixtures|testdata)\//, // test folders, any language
+  /^\.github\/|^\.circleci\/|(^|\/)(\.gitlab-ci\.yml|azure-pipelines\.yml|Jenkinsfile|\.travis\.yml)$/, // CI config
+  ...MANIFESTS, // package manifests, lockfiles and test-runner config in every language (stack.js)
 ];
 
 // Agents can read these (if shared) but never change them.

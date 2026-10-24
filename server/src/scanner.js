@@ -1,12 +1,12 @@
 // Pain Graph scanner: runs every test file repeatedly in a sandbox and turns
 // flake rates into a ranked, priced list of pain points.
-import { createSandbox, destroySandbox, listTestFiles, runTestMany, sourcesForTest, WORKSPACE } from "./repo.js";
+import { createSandbox, destroySandbox, getStacks, listTestFiles, runTestMany, sourcesForTest, WORKSPACE } from "./repo.js";
+import { NO_TESTS, stackFor } from "./stack.js";
 import { emit } from "./events.js";
 import { state, newId } from "./store.js";
 import { inScope, isSecret } from "./scope.js";
 
 const RUNS_PER_FILE = 10;
-const MAX_TEST_FILES = 20;
 // Rough cost model, shown in the UI so judges can see the math.
 const CI_RUNS_PER_WEEK = 150;
 const HOURS_LOST_PER_FLAKE = 0.25; // rerun + "is it me?" investigation
@@ -18,11 +18,21 @@ export async function scan() {
   try {
     // Only tests inside the folders the team shared with agents.
     const allTestFiles = (await listTestFiles(sandbox)).filter(inScope);
-    const testFiles = allTestFiles.slice(0, MAX_TEST_FILES);
-    if (allTestFiles.length > MAX_TEST_FILES) {
-      emit("scan.warning", { message: `Repo has ${allTestFiles.length} test files; scanning the first ${MAX_TEST_FILES}` });
+    if (!allTestFiles.length) emit("scan.warning", { message: "No test files found in the shared code" });
+    // Every test file is scanned, in whatever language. A test that can't run
+    // here (its toolchain isn't installed) is reported loudly instead of being
+    // counted as failing, which would invent problems that aren't real.
+    const stacks = getStacks();
+    const cantRun = allTestFiles
+      .map((f) => ({ testFile: f, stack: stackFor(stacks, f) }))
+      .filter(({ stack }) => !stack || !stack.toolOk)
+      .map(({ testFile, stack }) => ({ testFile, reason: stack ? stack.toolMessage : "no supported test setup found for this file" }));
+    state.cantRun = cantRun;
+    for (const reason of new Set(cantRun.map((c) => c.reason))) {
+      const files = cantRun.filter((c) => c.reason === reason).map((c) => c.testFile);
+      emit("scan.error", { message: `Can't run ${files.length} test file${files.length > 1 ? "s" : ""} (${files.slice(0, 5).join(", ")}${files.length > 5 ? ", …" : ""}): ${reason}` });
     }
-    if (!testFiles.length) emit("scan.warning", { message: "No *.test.* or *.spec.* files found in the shared folders" });
+    const testFiles = allTestFiles.filter((f) => !cantRun.some((c) => c.testFile === f));
 
     // One file at a time (its runs in parallel) so big repos don't spawn
     // hundreds of test processes at once.
@@ -31,6 +41,13 @@ export async function scan() {
       const runs = await runTestMany(sandbox, testFile, RUNS_PER_FILE);
       const failures = runs.filter((r) => !r.passed).length;
       const sampleFailure = runs.find((r) => !r.passed)?.log ?? null;
+      // The runner found no tests in the file: a setup mismatch, not a bug.
+      if (failures === runs.length && NO_TESTS.test(sampleFailure ?? "")) {
+        const reason = "the test runner found no tests in this file (it may be written for a different framework)";
+        state.cantRun.push({ testFile, reason });
+        emit("scan.error", { message: `Can't run ${testFile}: ${reason}` });
+        continue;
+      }
       results.push({ testFile, failures, runs: runs.length, sampleFailure });
       emit("scan.file", { testFile, failures, message: `${testFile}: ${failures}/${runs.length} failed` });
     }

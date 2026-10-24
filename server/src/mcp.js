@@ -42,7 +42,7 @@ function buildServer() {
           testFile: p.testFile,
           failures: `${p.failures}/${p.runs} runs`,
           sourceFiles: p.sourceFiles,
-          sampleFailure: p.sampleFailure?.slice(-1200) ?? null,
+          sampleFailure: p.sampleFailure ?? null,
         })),
         note: flaky.length ? undefined : "No flaky tests yet. Ask the team to click Scan repo on the Shoal dashboard.",
       });
@@ -87,7 +87,7 @@ function buildServer() {
       description:
         "Run a test file several times in a throwaway sandbox, optionally with your candidate patch applied. Use it to check a fix before submitting. Nothing is saved.",
       inputSchema: {
-        test_file: z.string().describe("Test file to run, e.g. test/cart.test.js"),
+        test_file: z.string().describe("Test file to run, as list_problems shows it (any language, e.g. test/cart.test.js or tests/test_api.py)"),
         files: z.array(FileSchema).optional().describe("Candidate patch: files to replace before running"),
         times: z.number().int().min(1).max(10).optional().describe("How many runs (default 5)"),
       },

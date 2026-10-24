@@ -5,8 +5,9 @@
 // opening PRs needs a token with write access.
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { rm, mkdir } from "node:fs/promises";
+import { rm, mkdir, readdir } from "node:fs/promises";
 import { REPOS_DIR, sh } from "./repo.js";
+import { detectStacks, installCommand } from "./stack.js";
 
 const API = "https://api.github.com";
 
@@ -176,8 +177,10 @@ export async function repoFiles(fullName) {
   });
 }
 
-// Shallow-clones the repo and installs dependencies if it has a package.json.
-export async function cloneRepo(fullName) {
+// Shallow-clones the repo and installs each project's dependencies the way
+// its language does (npm, pip into a private venv, go mod, cargo, bundler,
+// composer, dotnet...). Returns the clone folder and a note per project.
+export async function cloneRepo(fullName, onStep = () => {}) {
   const dir = path.join(REPOS_DIR, fullName.replace("/", "__"));
   await rm(dir, { recursive: true, force: true });
   await mkdir(REPOS_DIR, { recursive: true });
@@ -185,10 +188,18 @@ export async function cloneRepo(fullName) {
   const clone = await sh(`git clone --depth 1 "https://${auth}github.com/${fullName}.git" "${dir}"`, REPOS_DIR);
   if (!clone.ok) throw new Error(`git clone failed: ${redact(clone.output).slice(-400)}`);
 
-  const hasPackageJson = (await sh("node -e \"require('./package.json')\"", dir)).ok;
-  if (hasPackageJson) {
-    const install = await sh("npm install --no-audit --no-fund", dir, 300_000);
-    if (!install.ok) throw new Error(`npm install failed: ${install.output.slice(-400)}`);
+  for (const stack of await detectStacks(dir)) {
+    const where = stack.root === "." ? "" : ` in ${stack.root}/`;
+    if (!stack.toolOk) {
+      onStep(`Can't install ${stack.def.language} dependencies${where}: ${stack.toolMessage}`);
+      continue;
+    }
+    const cwd = path.join(dir, stack.root);
+    const cmd = installCommand(stack, await readdir(cwd));
+    if (!cmd) continue;
+    onStep(`Installing ${stack.def.language} dependencies${where}: ${cmd}`);
+    const install = await sh(cmd, cwd, 600_000);
+    if (!install.ok) onStep(`Dependency install${where} failed; some tests may fail for that reason: ${install.output.slice(-300)}`);
   }
   return dir;
 }

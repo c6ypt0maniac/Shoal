@@ -18,6 +18,8 @@ export const state = {
   trialRun: null,
   // Proof reports keyed by trial id (see proof.js).
   proofs: {},
+  // Test files the scan found but can't run here (toolchain missing).
+  cantRun: [],
   // Measured API cost per fix for each model, from the latest trial run.
   // Kept across resets: it describes the models, not one repo.
   modelCost: {},
@@ -40,4 +42,5 @@ export function resetState() {
   state.trials = [];
   state.trialRun = null;
   state.proofs = {};
+  state.cantRun = [];
 }
