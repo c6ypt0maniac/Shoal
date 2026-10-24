@@ -14,24 +14,37 @@ import { describeFile } from "./describe.js";
 import { confirmCreditPurchase, confirmFunding, paymentsMode, startCheckout, startCreditCheckout, stripeConfigured, stripeKeyProblem } from "./escrow.js";
 import { isProtected } from "./verifier.js";
 import { PROBLEMS, cleanProblems, cleanSharedPaths, isSecret } from "./scope.js";
-import { MOCK } from "./agents.js";
+import { MOCK, modelUnavailable } from "./agents.js";
 import { MODELS, costPerFix, overallPick, scoreboard, trialSummary } from "./trials.js";
 import { PACKS, addCredits, balanceCents, creditsSummary, fixPriceCents } from "./credits.js";
 import { mountMcp } from "./mcp.js";
-import { proofFor, proveProblem } from "./proof.js";
+import { proofFor, proveProblem, resetProofs } from "./proof.js";
 import { detectClaude, finishLogin, startLogin, startTrialRun, stopTrialRun, trialRun } from "./claude-runner.js";
 import {
   authorizeUrl, ciStats, cloneRepo, completeOAuth, getRepo, getViewer, hasToken, listRepos, oauthConfigured, parseRepo, repoFiles, signOut,
 } from "./github.js";
 
 const PORT = Number(process.env.PORT) || 4000;
+// Where this server is reachable from outside: OAuth redirects and the MCP
+// URL are built from it. On Vercel it defaults to the production domain.
+const BASE_URL = (
+  process.env.SHOAL_PUBLIC_URL ||
+  (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : `http://localhost:${PORT}`)
+).replace(/\/$/, "");
+// The website, when it's hosted separately (e.g. its own Vercel project):
+// those origins may call the API from the browser, with cookies.
+const WEB_ORIGINS = (process.env.SHOAL_WEB_ORIGINS ?? "").split(",").map((o) => o.trim().replace(/\/$/, "")).filter(Boolean);
+
 const app = express();
-app.use(cors());
+// Behind Vercel's (or any) proxy, trust X-Forwarded-* for the client IP and https.
+if (process.env.VERCEL || process.env.SHOAL_TRUST_PROXY === "1") app.set("trust proxy", 1);
+app.use(WEB_ORIGINS.length ? cors({ origin: WEB_ORIGINS, credentials: true }) : cors());
 // Trial patches carry whole files, so allow more than the 100kb default.
 app.use(express.json({ limit: "2mb" }));
 
-// MCP endpoint for the team's own Claude: the trial round (see mcp.js).
-mountMcp(app);
+// MCP endpoint for the team's own AI app (Claude, ChatGPT, Codex): the free
+// trial round, plus its GitHub sign-in (see mcp.js and oauth.js).
+mountMcp(app, { baseUrl: BASE_URL });
 
 // Long-running steps run in the background; the dashboard follows along on
 // the SSE stream instead of waiting on the HTTP response.
@@ -76,10 +89,19 @@ app.get("/api/problems", (_req, res) => res.json(Object.entries(PROBLEMS).map(([
 
 // Sign in with GitHub: redirect to GitHub's login/consent page, then GitHub
 // redirects back to the callback with a one-time code.
-const callbackUrl = (req) => `${req.protocol}://${req.get("host")}/api/auth/github/callback`;
+const callbackUrl = (req) => `${process.env.SHOAL_PUBLIC_URL ? BASE_URL : `${req.protocol}://${req.get("host")}`}/api/auth/github/callback`;
 
-// Only same-site paths, so the redirect can't be pointed at another site.
-const safeReturn = (p) => (typeof p === "string" && /^\/(?!\/)/.test(p) ? p : "/");
+// Only same-site paths or the website's own origins, so the redirect can't
+// be pointed at another site.
+const safeReturn = (p) => {
+  if (typeof p !== "string") return "/";
+  if (/^\/(?!\/)/.test(p)) return p;
+  try {
+    return WEB_ORIGINS.includes(new URL(p).origin) ? p : "/";
+  } catch {
+    return "/";
+  }
+};
 
 app.get("/api/auth/github", (req, res) => {
   if (!oauthConfigured()) return res.status(400).send("GitHub sign-in isn't set up: start the server with GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET.");
@@ -92,11 +114,13 @@ app.get("/api/auth/github/callback", async (req, res) => {
     returnTo = safeReturn(await completeOAuth({ code: req.query.code, state: req.query.state, callbackUrl: callbackUrl(req) }));
     const viewer = await getViewer();
     emit("auth.signed_in", { message: `Signed in to GitHub as @${viewer.login}` });
-    res.redirect(`${returnTo}?github=signed-in`);
+    res.redirect(withQuery(returnTo, "github=signed-in"));
   } catch (err) {
-    res.redirect(`${returnTo}?github_error=${encodeURIComponent(err.message)}`);
+    res.redirect(withQuery(returnTo, `github_error=${encodeURIComponent(err.message)}`));
   }
 });
+
+const withQuery = (url, query) => `${url}${url.includes("?") ? "&" : "?"}${query}`;
 
 app.post("/api/auth/github/logout", (_req, res) => {
   signOut();
@@ -283,6 +307,8 @@ app.post("/api/trials/approve", (req, res) => {
       error: proof.checking ? "Still building the proof report for this test" : "No fix for this test is proven yet, so it can't be bought",
     });
   }
+  const unavailable = modelUnavailable(trial.model);
+  if (unavailable) return res.status(503).json({ error: `${MODELS[trial.model].name} can't run yet: ${unavailable}` });
   if (state.bounties.some((b) => b.painId === painId && b.apiModel && !["failed", "settled", "payment_failed"].includes(b.status))) {
     return res.status(409).json({ error: "An API fix for this problem is already running" });
   }
@@ -315,7 +341,7 @@ app.post("/api/proofs", (req, res) => {
   if (!state.trials.some((t) => t.painId === painId && t.status === "passed")) {
     return res.status(400).json({ error: "This test has no verified trial fix to prove yet" });
   }
-  if (req.body?.fresh) for (const [id, p] of Object.entries(state.proofs)) if (p.painId === painId) delete state.proofs[id];
+  if (req.body?.fresh) resetProofs(painId);
   background(() => proveProblem(painId));
   res.status(202).json(proofFor(painId));
 });
@@ -428,9 +454,17 @@ app.use((err, _req, res, _next) => {
 });
 
 await resetWorkspace();
-app.listen(PORT, () => {
-  console.log(`Shoal server on http://localhost:${PORT} (${MOCK ? "MOCK agents: set ANTHROPIC_API_KEY for real Claude" : "live Claude agents"})`);
-  console.log(`MCP: claude mcp add --transport http shoal http://localhost:${PORT}/mcp`);
+
+// On Vercel the platform serves the exported app; locally we listen.
+export default app;
+if (!process.env.VERCEL) app.listen(PORT, () => {
+  const keys = [process.env.ANTHROPIC_API_KEY && "Claude", process.env.OPENAI_API_KEY && "OpenAI"].filter(Boolean);
+  console.log(`Shoal server on http://localhost:${PORT} (${MOCK ? "MOCK agents: set ANTHROPIC_API_KEY / OPENAI_API_KEY for real paid runs" : `paid runs: ${keys.join(" + ")} API`})`);
+  console.log(
+    oauthConfigured()
+      ? `MCP: ${BASE_URL}/mcp (ChatGPT, Codex and Claude sign in with GitHub)${process.env.SHOAL_AUTH_SECRET ? "" : "; set SHOAL_AUTH_SECRET so sign-ins survive restarts"}`
+      : `MCP: claude mcp add --transport http shoal http://localhost:${PORT}/mcp (local only; set GITHUB_CLIENT_ID/SECRET for ChatGPT and Codex)`,
+  );
   console.log(`GitHub:${hasToken() ? "GITHUB_TOKEN set" : "no GITHUB_TOKEN (public repos read-only, no PRs)"}`);
   console.log(
     `Payments: ${{ "stripe-live": "Stripe LIVE escrow: REAL MONEY", "stripe-test": "Stripe TEST mode escrow" }[paymentsMode()] ?? (stripeKeyProblem() ? `${stripeKeyProblem()}; using simulated escrow` : "simulated escrow (set STRIPE_SECRET_KEY for Stripe)")}`,

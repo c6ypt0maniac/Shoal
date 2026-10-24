@@ -26,7 +26,7 @@ export function stripeKeyProblem() {
   if (!key() || stripeConfigured()) return null;
   if (!isLiveKey()) return "STRIPE_SECRET_KEY isn't a Stripe secret key";
   if (process.env.STRIPE_ALLOW_LIVE !== "1") return "STRIPE_SECRET_KEY is a LIVE key; set STRIPE_ALLOW_LIVE=1 to take real money";
-  return "live payments need real Claude agents; set ANTHROPIC_API_KEY (mock agents can't take real money)";
+  return "live payments need real agents; set ANTHROPIC_API_KEY or OPENAI_API_KEY (mock agents can't take real money)";
 }
 
 let client = null;

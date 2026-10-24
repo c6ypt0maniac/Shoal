@@ -5,7 +5,7 @@
 // next-best bidder. Nobody gets paid unless the verifier says the fix is real:
 // a verified fix charges the escrow, no verified fix releases it.
 import { AGENTS, getAgent, requestBid, requestFix, requestModelFix } from "./agents.js";
-import { MODELS, costPerFix } from "./trials.js";
+import { MODELS, costPerFix, providerLabel } from "./trials.js";
 import { balanceCents, fixPriceCents } from "./credits.js";
 import { verify } from "./verifier.js";
 import { emit } from "./events.js";
@@ -146,7 +146,7 @@ const API_ATTEMPTS = 3;
 // any bounty: charged only if a fix is verified, otherwise the hold is released.
 async function runApprovedModel(bounty, pain) {
   const name = MODELS[bounty.apiModel].name;
-  const payee = { id: bounty.apiModel, name, builder: "Claude API" };
+  const payee = { id: bounty.apiModel, name, builder: providerLabel(bounty.apiModel) };
   const trial = state.trials.find((t) => t.id === bounty.trialId);
   let lastFailure = null;
 

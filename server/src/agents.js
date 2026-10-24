@@ -2,8 +2,13 @@
 // builder sets the strategy and pricing rules once, then the agent bids and
 // writes fixes on its own. Without an API key, canned responses from mock.js
 // are used so the demo still runs end to end.
+//
+// Paid runs go through Shoal's own keys: ANTHROPIC_API_KEY for Claude models,
+// OPENAI_API_KEY for OpenAI models. Trials never use these keys (see mcp.js).
 import Anthropic from "@anthropic-ai/sdk";
 import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
+import OpenAI from "openai";
+import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
 import { readRepoFile } from "./repo.js";
 import { mockBid, mockFix } from "./mock.js";
@@ -11,9 +16,20 @@ import { inScope } from "./scope.js";
 import { MODELS, costPerFix, tokenCost } from "./trials.js";
 
 const MODEL = process.env.SHOAL_MODEL ?? "claude-opus-5-5";
-export const MOCK = process.env.SHOAL_MOCK === "1" || (!process.env.ANTHROPIC_API_KEY && process.env.SHOAL_MOCK !== "0");
+const KEYS = { anthropic: Boolean(process.env.ANTHROPIC_API_KEY), openai: Boolean(process.env.OPENAI_API_KEY) };
+export const MOCK = process.env.SHOAL_MOCK === "1" || (!KEYS.anthropic && !KEYS.openai && process.env.SHOAL_MOCK !== "0");
 
-const client = MOCK ? null : new Anthropic();
+const client = MOCK || !KEYS.anthropic ? null : new Anthropic();
+// Pro and o-series models can think for many minutes on one fix.
+const openai = MOCK || !KEYS.openai ? null : new OpenAI({ timeout: 20 * 60_000 });
+
+// Why Shoal can't run this model through the API right now, or null.
+export function modelUnavailable(model) {
+  const provider = MODELS[model]?.provider;
+  if (!provider) return `Unknown model ${model}`;
+  if (MOCK || KEYS[provider]) return null;
+  return provider === "openai" ? "Set OPENAI_API_KEY to run OpenAI models" : "Set ANTHROPIC_API_KEY to run Claude models";
+}
 
 export const AGENTS = [
   {
@@ -76,6 +92,7 @@ async function repoContext(pain) {
 }
 
 async function ask(agent, prompt, schema, effort) {
+  if (!client) throw new Error("Marketplace agents run on Claude: set ANTHROPIC_API_KEY");
   const response = await client.beta.messages.parse({
     model: MODEL,
     max_tokens: 16000,
@@ -126,11 +143,14 @@ export async function requestModelFix(model, bounty, pain, { trial, lastFailure 
     "It's accepted only if the test passes 10 runs in a row and every previously stable test still passes.",
     "Return the complete new contents of every file you change (paths relative to the repo root). Only include files you actually change.",
   ].join("\n\n");
+  const unavailable = modelUnavailable(model);
+  if (unavailable) throw new Error(unavailable);
+  if (MODELS[model].provider === "openai") return openaiFix(model, prompt);
   const response = await client.beta.messages.parse({
     model,
     max_tokens: 16000,
     ...(FALLBACK_MODELS.has(model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" } : {}),
-    system: "You are a senior engineer fixing a flaky test. Your patch is verified automatically before anyone pays for it.",
+    system: FIX_SYSTEM,
     messages: [{ role: "user", content: prompt }],
     output_config: { effort: "high", format: betaZodOutputFormat(FixSchema) },
   });
@@ -139,6 +159,36 @@ export async function requestModelFix(model, bounty, pain, { trial, lastFailure 
     throw Object.assign(new Error(`no usable output (stop_reason: ${response.stop_reason})`), { cost });
   }
   return { fix: response.parsed_output, cost };
+}
+
+const FIX_SYSTEM = "You are a senior engineer fixing a flaky test. Your patch is verified automatically before anyone pays for it.";
+
+// OpenAI's Responses API with structured output in the same FixSchema.
+// Exported for scripts/openai-smoke.js.
+export async function openaiFix(model, prompt, { effort = "high" } = {}) {
+  const spec = MODELS[model];
+  const response = await openai.responses.parse({
+    model,
+    instructions: FIX_SYSTEM,
+    input: prompt,
+    max_output_tokens: spec.maxOutput ?? 32_000,
+    ...(spec.reasoning ? { reasoning: { effort } } : {}),
+    text: { format: zodTextFormat(FixSchema, "fix") },
+    store: false,
+  });
+  const cost = tokenCost(model, openaiUsage(response.usage));
+  const refusal = response.output?.flatMap((o) => o.content ?? []).find((c) => c.type === "refusal");
+  if (refusal || !response.output_parsed) {
+    const why = refusal ? "refusal" : response.status === "incomplete" ? `incomplete: ${response.incomplete_details?.reason}` : response.status;
+    throw Object.assign(new Error(`no usable output (${why})`), { cost });
+  }
+  return { fix: response.output_parsed, cost };
+}
+
+// OpenAI counts cached tokens inside input_tokens; tokenCost wants them apart.
+function openaiUsage(usage = {}) {
+  const cached = usage.input_tokens_details?.cached_tokens ?? 0;
+  return { input_tokens: (usage.input_tokens ?? 0) - cached, cache_read_input_tokens: cached, output_tokens: usage.output_tokens ?? 0 };
 }
 
 export async function requestFix(agent, bounty, pain, bid) {

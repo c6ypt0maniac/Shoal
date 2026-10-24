@@ -150,9 +150,9 @@
       </table>
       <div id="proofReports"></div>
       <details id="trialLogWrap" hidden><summary>Every trial</summary><ul id="trialLog"></ul></details>
-      <details class="manual"><summary>Use your own Claude Code session instead</summary>
-        <div class="cmd"><code id="mcpCmd"></code><button type="button" onclick="copyMcp()">Copy</button></div>
-        <p class="hint">Run that in a terminal, then type <code>/mcp__shoal__run_trials</code> in Claude Code.</p>
+      <details class="manual"><summary>Run trials from your own AI app (Claude, ChatGPT, Codex)</summary>
+        <div id="mcpClients"></div>
+        <p class="hint">Trials run on your own plan, so they're free. Each fix is tagged with the model that wrote it; switch models and run again to compare.</p>
       </details>
     </section>
     <section id="ciSection" hidden>
@@ -446,6 +446,8 @@ function renderTrials({ scoreboard, problems, trials, run, pick }) {
             ? `<span class="hint">Waiting for a verified trial</span>`
             : proof.checking
               ? `<span class="proof-badge checking">⏳ Proving…</span>`
+              : proof.awaitingReview
+                ? `<span class="proof-badge checking">⏳ Waiting for ${esc(proof.awaitingReview.checks.review.judges.filter((j) => j.status === "waiting").map((j) => j.name).join(" + "))}'s review</span>`
               : !proof.candidates.length
                 ? `<button type="button" onclick="buildProof('${p.painId}', this)">Build proof report</button>`
                 : !proven
@@ -499,6 +501,8 @@ function renderProofs(problems) {
 function proofCard(c, proof) {
   const head = c.status === "checking"
     ? `<span class="proof-badge checking">⏳ Checking</span>`
+    : c.status === "awaiting_review"
+      ? `<span class="proof-badge checking">⏳ Waiting for review</span>`
     : c.verdict === "safe"
       ? `<span class="proof-badge good">✓ Safe to buy</span>`
       : `<span class="proof-badge bad">✗ Failed</span>`;
@@ -528,12 +532,18 @@ function proofCard(c, proof) {
        ${k.challenge.source ? `<details><summary class="hint">Show the challenge tests</summary><div class="diff"><div class="diff-file">${esc(k.challenge.file)}</div>${k.challenge.source.split("\n").map((l) => `<div class="dl">${esc(l)}</div>`).join("")}</div></details>` : ""}`));
   } else if (c.status === "checking") parts.push(row(null, "Challenge tests", `<span class="hint">Writing and running challenge tests…</span>`));
   if (k.review) {
-    parts.push(row(k.review.ok, `Second opinion from ${esc(k.review.reviewer)}: ${k.review.ok ? "every root cause fixed" : "not fixed"}`,
-      `${esc(k.review.summary)}
-       ${k.review.remaining?.length ? `<div><b>Still broken:</b><ul>${k.review.remaining.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></div>` : ""}
-       ${k.review.risks?.length ? `<div>Risks:<ul>${k.review.risks.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></div>` : ""}
-       ${k.review.filesSeen ? `<span class="hint">Read all ${k.review.filesSeen} shared files with the fix applied.</span>` : ""}`));
-  } else if (c.status === "checking") parts.push(row(null, "Second opinion", `<span class="hint">Another model is reading all the code…</span>`));
+    // Two judges, Claude and OpenAI; both must pass.
+    for (const j of k.review.judges ?? []) {
+      parts.push(j.status === "waiting"
+        ? row(null, `Second opinion from ${esc(j.name)}: waiting`,
+            `<span class="hint">Connect ${j.provider === "openai" ? "ChatGPT or Codex" : "Claude"} to Shoal's MCP, switch to ${esc(j.name)}, and ask it to review Shoal's fixes (prompt <code>review_fixes</code>).</span>`)
+        : row(j.ok, `Second opinion from ${esc(j.name)}: ${j.ok ? "every root cause fixed" : "not fixed"}`,
+            `${esc(j.summary)}
+             ${j.remaining?.length ? `<div><b>Still broken:</b><ul>${j.remaining.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></div>` : ""}
+             ${j.risks?.length ? `<div>Risks:<ul>${j.risks.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></div>` : ""}
+             <span class="hint">${j.via ? `Via ${esc(j.via)}. ` : ""}${k.review.filesSeen ? `Read all ${k.review.filesSeen} shared files with the fix applied.` : ""}</span>`));
+    }
+  } else if (c.status === "checking") parts.push(row(null, "Second opinion", `<span class="hint">Two judges will read all the code…</span>`));
   if (k.record) parts.push(row(null, "Track record on this repo", `${k.record.verified} of ${k.record.attempts} trial fixes verified · first try on ${k.record.firstTry} of ${k.record.problems} tests <span class="hint">(shown for context, not part of pass/fail)</span>`));
   if (k.diff) {
     parts.push(`<div class="check"><span class="mark na">±</span><div><b>The exact change: +${k.diff.added} −${k.diff.removed} lines</b>
@@ -543,15 +553,18 @@ function proofCard(c, proof) {
         `<div class="dl ${l.type === "+" ? "add" : l.type === "-" ? "del" : ""}">${l.type === " " ? "&nbsp;" : l.type} ${esc(l.text)}</div>`).join("")).join(`<div class="dl gap">⋯</div>`)}</div>`).join("")}</div></div>`);
   }
   if (c.breakdown) {
-    const label = { stress: "stress test", suite: "other tests", rules: "rules", challenge: "challenge tests", review: "second opinion" };
+    const label = { stress: "stress test", suite: "other tests", rules: "rules", challenge: "challenge tests", review: "second opinions" };
     parts.push(`<p class="hint">Checks: ${Object.entries(c.breakdown).map(([name, ok]) => `${ok ? "✓" : "✗"} ${label[name] ?? name}`).join(" · ")}. Pass or fail: safe to buy only when every check passes.</p>`);
   }
   const open = openProofs.has(c.trialId) || (c.verdict === "safe" && !openProofs.size) ? "open" : "";
   return `<details class="proof ${c.verdict ?? "checking"}" data-proof="${esc(c.trialId)}" ${open}><summary>${summary}</summary><div class="checks">${parts.join("")}</div></details>`;
 }
 
-window.copyMcp = () => navigator.clipboard?.writeText($("mcpCmd").textContent);
-$("mcpCmd").textContent = `claude mcp add --transport http shoal ${location.origin}/mcp`;
+window.copyMcp = (btn) => navigator.clipboard?.writeText(btn.previousElementSibling.textContent);
+get("/api/mcp").then((mcp) => {
+  $("mcpClients").innerHTML = mcp.clients.map((c) => `<p><b>${esc(c.app)}</b>: ${esc(c.steps)}</p>
+    <div class="cmd"><code>${esc(c.command)}</code><button type="button" onclick="copyMcp(this)">Copy</button></div>`).join("");
+}).catch(() => {});
 
 function renderBounty(b) {
   const bids = b.bids.map((bid) => `<li>${esc(agentNames[bid.agentId] ?? bid.agentId)}: <b>$${bid.price}</b>
@@ -561,7 +574,7 @@ function renderBounty(b) {
   const canRun = b.status === "open" || b.status === "awarding";
   return `<div class="bounty">
       <span class="status ${b.status}">${b.status.replace("_", " ")}</span> <b>${esc(b.title)}</b>${b.escrow?.mode === "credits" ? "" : `: reward up to $${b.reward}`}
-      ${b.apiModel ? `<span class="hint">· approved ${esc(agentNames[b.apiModel] ?? b.apiModel)} via Claude API · API cost $${b.apiCost.toFixed(4)}</span>` : ""}
+      ${b.apiModel ? `<span class="hint">· approved ${esc(agentNames[b.apiModel] ?? b.apiModel)} via ${b.apiModel.startsWith("claude-") ? "Claude" : "OpenAI"} API · API cost $${b.apiCost.toFixed(4)}</span>` : ""}
       ${canRun ? `<button onclick="runBounty('${b.id}')">Run</button>` : ""}
       ${b.status === "awaiting_funding" ? `<button class="fund" onclick="fundBounty('${b.id}')">💳 Fund with Stripe</button>` : ""}
       ${escrowLine(b.escrow)}

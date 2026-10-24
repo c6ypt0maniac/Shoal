@@ -11,8 +11,9 @@
 //                   and every model's fix, aimed at root causes a fix might
 //                   dodge (e.g. a lock that never releases). A fix must pass
 //                   every challenge test that at least one fix passes.
-//   second opinion  a different model reads ALL the shared code with the fix
-//                   applied and must find that every root cause is fixed.
+//   second opinion  two judges, the best Sonnet and the top OpenAI model,
+//                   each read ALL the shared code with the fix applied, and
+//                   both must find that every root cause is fixed.
 //   track record    how this model's trials have gone on this repo (shown,
 //                   not counted: it describes the model, not this fix).
 //   code diff       exactly which lines would land.
@@ -36,6 +37,10 @@ const CHALLENGE_RUNS = 3;
 const CHECKS = ["stress", "suite", "rules", "challenge", "review"];
 
 const running = new Set();
+// Challenge tests per problem, reused when proving resumes after a review
+// (same fixes, same tests), and the full prompt each waiting review needs.
+const challenges = new Map(); // painId -> { key, challenge }
+const reviewPrompts = new Map(); // trialId -> prompt
 
 // Proof status for one problem: every candidate checked so far and the first
 // one that's proven (the one the team can buy).
@@ -45,11 +50,23 @@ export function proofFor(painId) {
     checking: running.has(painId),
     candidates: proofs,
     proven: proofs.find((p) => p.verdict === "safe") ?? null,
+    awaitingReview: proofs.find((p) => p.status === "awaiting_review") ?? null,
   };
 }
 
+// Throws away a problem's proof reports so they're built again from scratch.
+export function resetProofs(painId) {
+  for (const [id, p] of Object.entries(state.proofs)) {
+    if (p.painId !== painId) continue;
+    delete state.proofs[id];
+    reviewPrompts.delete(id);
+  }
+  challenges.delete(painId);
+}
+
 // Writes the challenge tests, runs them against every fix, then checks
-// candidates best-value first until one passes everything.
+// candidates best-value first until one passes everything. Stops while a
+// candidate waits for a judge; submitReview picks it up again.
 export async function proveProblem(painId) {
   if (running.has(painId)) return;
   const pain = state.pains.find((p) => p.id === painId);
@@ -58,15 +75,18 @@ export async function proveProblem(painId) {
   running.add(painId);
   try {
     const code = await allSharedCode();
-    const challenge = await challengeFor(pain, options, code);
+    const key = options.map((o) => o.trial.id).join(",");
+    if (challenges.get(painId)?.key !== key) challenges.set(painId, { key, challenge: await challengeFor(pain, options, code) });
+    const { challenge } = challenges.get(painId);
     for (const [rank, option] of options.entries()) {
       const existing = state.proofs[option.trial.id];
+      if (existing?.status === "awaiting_review") return;
       if (existing?.status === "done") {
         if (existing.verdict === "safe") return;
         continue;
       }
       const proof = await prove(pain, option, rank, { code, challenge, options });
-      if (proof.verdict === "safe") return;
+      if (proof.status === "awaiting_review" || proof.verdict === "safe") return;
       if (options[rank + 1]) {
         emit("proof.next", { message: `${option.name}'s fix isn't proven for ${pain.testFile}; checking ${options[rank + 1].name} next` });
       }
@@ -108,8 +128,20 @@ async function prove(pain, option, rank, { code, challenge, options }) {
   } finally {
     await destroySandbox(sandbox);
   }
-  proof.checks.review = await secondOpinion(pain, trial, proof.checks.diff, { code, options });
+  proof.checks.review = await startReview(pain, trial, proof.checks.diff, { code, options });
+  const waiting = proof.checks.review.judges.filter((j) => j.status === "waiting");
+  if (waiting.length) {
+    proof.status = "awaiting_review";
+    emit("proof.awaiting_review", {
+      message: `Proof: ${proof.name}'s fix for ${pain.testFile} needs a review from ${waiting.map((j) => j.name).join(" and ")}. In ${waiting.map((j) => (j.provider === "openai" ? "ChatGPT or Codex" : "Claude")).join(" / ")}, connected to Shoal, ask it to review the fixes.`,
+    });
+    return proof;
+  }
+  return finishProof(proof, pain);
+}
 
+function finishProof(proof, pain) {
+  finishReview(proof.checks.review);
   score(proof);
   proof.status = "done";
   proof.finishedAt = new Date().toISOString();
@@ -288,14 +320,32 @@ function challengeCheck(challenge, trialId) {
 
 // --- Second opinion -----------------------------------------------------------
 
-// A different model reads ALL the shared code with the fix applied and must
-// conclude that every root cause is fixed. Sonnet reviews by default; Opus
-// reviews Sonnet's fixes, so nobody grades their own work. No answer = fail.
-async function secondOpinion(pain, trial, diff, { code, options }) {
-  const reviewer = trial.model === "claude-sonnet-5-5" ? { alias: "opus", id: "claude-opus-5-5" } : { alias: "sonnet", id: "claude-sonnet-5-5" };
+// Two judges from different labs, both on the team's own plan, never the
+// model that wrote the fix: the best Sonnet (Opus for Sonnet's fixes) and the
+// top OpenAI model (GPT-6.1 Sol for GPT-6 Astra's). Claude Code is asked
+// directly when it's installed here; otherwise each judge answers over MCP
+// (list_reviews / get_review / submit_review in mcp.js). Both must pass.
+const JUDGES = {
+  anthropic: [{ id: "claude-sonnet-5-5", alias: "sonnet" }, { id: "claude-opus-5-5", alias: "opus" }],
+  openai: [{ id: "gpt-6-astra" }, { id: "gpt-6.1-sol" }],
+};
+
+const judgesFor = (model) => Object.entries(JUDGES).map(([provider, [best, backup]]) => ({ provider, ...(model === best.id ? backup : best) }));
+
+async function startReview(pain, trial, diff, { code, options }) {
+  const prompt = reviewPrompt(pain, trial, diff, { code, options });
+  reviewPrompts.set(trial.id, prompt);
+  const judges = judgesFor(trial.model).map((j) => ({ provider: j.provider, model: j.id, alias: j.alias ?? null, name: MODELS[j.id].name, status: "waiting" }));
+  const claude = judges.find((j) => j.provider === "anthropic");
+  const answer = await askClaude(prompt, { model: claude.alias, timeout: 8 * 60_000 });
+  if (answer) recordVerdict(claude, parseVerdict(answer.text), "Claude Code");
+  return { ok: null, filesSeen: code.length, judges };
+}
+
+function reviewPrompt(pain, trial, diff, { code, options }) {
   const mine = new Set(trial.files.map((f) => clean(f.path)));
   const othersTouched = [...new Set(options.filter((o) => o.trial.id !== trial.id).flatMap((o) => o.trial.files.map((f) => clean(f.path))))].filter((p) => !mine.has(p));
-  const prompt = [
+  return [
     `You are reviewing a fix for the failing test ${pain.testFile}, written by another AI model. Be strict.`,
     `The test failed ${pain.failures}/${pain.runs} runs before the fix.`,
     pain.sampleFailure ? `Sample failure:\n${pain.sampleFailure}` : "",
@@ -305,23 +355,82 @@ async function secondOpinion(pain, trial, diff, { code, options }) {
     "Pass it only if every root cause behind the failures is fixed. Fail it if it hides a symptom (longer sleeps, retries, looser assertions, swallowed errors) or works around a bug instead of fixing it, leaving broken code that the test just doesn't reach.",
     'Reply with only JSON: {"verdict": "pass" | "fail", "summary": "one or two sentences", "remaining_bugs": ["file: what is still broken", ...], "risks": ["short risk", ...]}',
   ].join("\n\n");
-  const answer = await askClaude(prompt, { model: reviewer.alias, timeout: 8 * 60_000 });
-  const name = MODELS[reviewer.id].name;
-  if (!answer) return { ok: false, reviewer: name, verdict: "fail", summary: "No second opinion: Claude Code isn't available or signed in, so this fix can't be proven." };
+}
+
+function parseVerdict(text) {
   let parsed = null;
   try {
-    parsed = JSON.parse(answer.text.slice(answer.text.indexOf("{"), answer.text.lastIndexOf("}") + 1));
+    parsed = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
   } catch {}
-  const pass = parsed?.verdict === "pass";
   return {
-    ok: pass,
-    reviewer: name,
-    verdict: pass ? "pass" : "fail",
-    summary: String(parsed?.summary ?? `Unreadable review, counted as a fail: ${answer.text}`),
-    remaining: (Array.isArray(parsed?.remaining_bugs) ? parsed.remaining_bugs : []).map(String),
-    risks: (Array.isArray(parsed?.risks) ? parsed.risks : []).map(String),
-    filesSeen: code.length,
+    verdict: parsed?.verdict === "pass" ? "pass" : "fail",
+    summary: String(parsed?.summary ?? `Unreadable review, counted as a fail: ${text}`),
+    remaining: Array.isArray(parsed?.remaining_bugs) ? parsed.remaining_bugs : [],
+    risks: Array.isArray(parsed?.risks) ? parsed.risks : [],
   };
+}
+
+function recordVerdict(judge, { verdict, summary, remaining, risks }, via) {
+  Object.assign(judge, {
+    status: "done",
+    verdict,
+    ok: verdict === "pass",
+    summary: String(summary).slice(0, 2000),
+    remaining: remaining.map(String).slice(0, 20),
+    risks: risks.map(String).slice(0, 20),
+    via,
+    at: new Date().toISOString(),
+  });
+}
+
+// Both judges answered: the check passes only if both passed.
+function finishReview(review) {
+  const { judges } = review;
+  review.ok = judges.every((j) => j.ok);
+  review.verdict = review.ok ? "pass" : "fail";
+  review.reviewer = judges.map((j) => j.name).join(" + ");
+  review.summary = judges.map((j) => `${j.name}: ${j.summary}`).join(" ");
+  review.remaining = judges.flatMap((j) => j.remaining.map((r) => `${r} (${j.name})`));
+  review.risks = judges.flatMap((j) => j.risks);
+}
+
+// Reviews waiting on a judge, for the MCP's list_reviews.
+export function pendingReviews() {
+  return Object.values(state.proofs)
+    .filter((p) => p.status === "awaiting_review")
+    .map((p) => ({
+      trialId: p.trialId,
+      testFile: p.testFile,
+      fixBy: p.name,
+      needs: p.checks.review.judges.filter((j) => j.status === "waiting").map((j) => ({ model: j.model, name: j.name })),
+    }));
+}
+
+// Everything a judge needs to review one fix (MCP get_review).
+export function reviewRequest(trialId) {
+  const proof = state.proofs[trialId];
+  if (proof?.status !== "awaiting_review" || !reviewPrompts.has(trialId)) throw httpError(404, `No review is waiting for ${trialId}. Call list_reviews.`);
+  return { ...pendingReviews().find((r) => r.trialId === trialId), instructions: reviewPrompts.get(trialId) };
+}
+
+// A judge's verdict over MCP. When the last judge answers the proof finishes,
+// and if the fix isn't proven the next-best model's fix is checked.
+export function submitReview({ trialId, model, verdict, summary, remaining = [], risks = [], via }) {
+  const proof = state.proofs[trialId];
+  if (proof?.status !== "awaiting_review") throw httpError(404, `No review is waiting for ${trialId}. Call list_reviews.`);
+  const waiting = proof.checks.review.judges.filter((j) => j.status === "waiting");
+  const judge = waiting.find((j) => j.model === model);
+  if (!judge) {
+    throw httpError(400, `This review needs ${waiting.map((j) => `${j.name} (model "${j.model}")`).join(" or ")}. Switch to that model and submit again, tagged with its id.`);
+  }
+  recordVerdict(judge, { verdict, summary, remaining, risks }, via);
+  emit("proof.review", { message: `Proof: ${judge.name} ${judge.ok ? "passed" : "failed"} ${proof.name}'s fix for ${proof.testFile}${via ? ` (via ${via})` : ""}` });
+  const left = proof.checks.review.judges.filter((j) => j.status === "waiting");
+  if (!left.length) {
+    finishProof(proof, state.pains.find((p) => p.id === proof.painId));
+    if (proof.verdict !== "safe") proveProblem(proof.painId).catch((err) => emit("error", { message: `Proof report failed: ${err.message}` }));
+  }
+  return { trialId, judge: judge.name, recorded: judge.verdict, proofStatus: proof.status, verdict: proof.verdict, stillWaitingFor: left.map((j) => j.name) };
 }
 
 // --- Verdict ------------------------------------------------------------------
@@ -340,7 +449,9 @@ function score(proof) {
     const failed = c.challenge.tests.filter((t) => !t.passed);
     proof.failures.push(failed.length ? `failed challenge test${failed.length > 1 ? "s" : ""}: ${failed.map((t) => `"${t.name}"`).join(", ")}` : c.challenge.error);
   }
-  if (!c.review.ok) proof.failures.push(`${c.review.reviewer}'s review: ${c.review.remaining?.length ? `still broken: ${c.review.remaining.join("; ")}` : "not every root cause is fixed"}`);
+  for (const j of c.review.judges.filter((j) => !j.ok)) {
+    proof.failures.push(`${j.name}'s review: ${j.remaining.length ? `still broken: ${j.remaining.join("; ")}` : "not every root cause is fixed"}`);
+  }
   proof.verdict = proof.failures.length ? "not_proven" : "safe";
 }
 
@@ -395,6 +506,10 @@ function hunks(ops, context = 2) {
     current.lines.push({ type: o.type, text: o.text });
   });
   return out;
+}
+
+function httpError(status, message) {
+  return Object.assign(new Error(message), { status });
 }
 
 const clean = (p) => String(p).replace(/\\/g, "/").replace(/^\.\//, "");
