@@ -2,7 +2,8 @@
 // a GitHub repo cloned into .repos/. The workspace is a working copy of the
 // source that settled fixes get merged into; sandboxes are throwaway copies
 // of the workspace where agent patches are tested.
-import { access, cp, mkdtemp, readFile, readdir, rm, writeFile, mkdir } from "node:fs/promises";
+import { cp, mkdtemp, readFile, readdir, rm, writeFile, mkdir } from "node:fs/promises";
+import { SKIP_DIRS, commandFor, detectStacks, isTestPath, parseResults, sourcesFor, stackFor } from "./stack.js";
 import { exec } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -15,33 +16,35 @@ export const REPOS_DIR = path.resolve(here, "../.repos");
 // clobbering the main one's checkout.
 export const WORKSPACE = path.resolve(here, "..", process.env.SHOAL_WORKSPACE || ".workspace");
 
-const DEFAULT_TEST_COMMAND = "node --test";
-const SKIP_DIRS = new Set([".git", "node_modules", "dist", "build", "coverage", ".next"]);
-const TEST_FILE = /\.(test|spec)\.[cm]?[jt]sx?$/;
-
-let source = { dir: DEMO_REPO, testCommand: DEFAULT_TEST_COMMAND };
+// testCommand: only when the team typed one in setup; otherwise each test runs
+// with the command its stack calls for (see stack.js).
+let source = { dir: DEMO_REPO, testCommand: null, stacks: [] };
 
 export function setSource(dir, testCommand) {
-  source = { dir, testCommand: testCommand?.trim() || DEFAULT_TEST_COMMAND };
+  source = { dir, testCommand: testCommand?.trim() || null, stacks: [] };
 }
 
 export const getSource = () => source;
+export const getStacks = () => source.stacks;
 
+// Fresh working copy of the source, then learn how its tests run.
 export async function resetWorkspace() {
   await rm(WORKSPACE, { recursive: true, force: true });
   await cp(source.dir, WORKSPACE, { recursive: true, filter: (src) => path.basename(src) !== ".git" });
+  source.stacks = await detectStacks(WORKSPACE);
 }
 
-export const isTestFile = (relPath) => TEST_FILE.test(relPath);
+// A test file in any supported language (see stack.js).
+export const isTestFile = (relPath) => isTestPath(relPath);
 
-// Every *.test.* / *.spec.* file in the repo, as posix paths relative to root.
+// Every test file in the repo, as posix paths relative to root.
 export async function listTestFiles(dir = WORKSPACE, rel = "") {
   const found = [];
   for (const entry of await readdir(path.join(dir, rel), { withFileTypes: true })) {
     if (SKIP_DIRS.has(entry.name)) continue;
     const relPath = rel ? `${rel}/${entry.name}` : entry.name;
     if (entry.isDirectory()) found.push(...(await listTestFiles(dir, relPath)));
-    else if (isTestFile(entry.name)) found.push(relPath);
+    else if (isTestFile(relPath)) found.push(relPath);
   }
   return found.sort();
 }
@@ -62,36 +65,11 @@ export function readRepoFile(relPath, dir = WORKSPACE) {
   return readFile(path.join(dir, relPath), "utf8");
 }
 
-// Local files a test imports, resolved to repo-relative paths,
-// e.g. test/cart.test.js importing "../src/cart.js" -> "src/cart.js".
-// Every local file a test depends on, following imports through the files it
-// imports too (a bug can sit several files away from the test).
+// Every local source file a test depends on, in whatever language: imports are
+// followed through the files they import too (a bug can sit several files away
+// from the test). See sourcesFor in stack.js.
 export async function sourcesForTest(testFile, dir = WORKSPACE) {
-  const seen = new Set([testFile]);
-  const queue = [testFile];
-  while (queue.length && seen.size < 200) {
-    const file = queue.shift();
-    const code = await readRepoFile(file, dir).catch(() => "");
-    const specifiers = [...code.matchAll(/(?:from\s+|require\(\s*|import\(\s*)["'](\.{1,2}\/[^"']+)["']/g)].map((m) => m[1]);
-    for (const p of await Promise.all(specifiers.map((s) => resolveImport(dir, path.posix.dirname(file), s)))) {
-      if (p && !seen.has(p)) {
-        seen.add(p);
-        queue.push(p);
-      }
-    }
-  }
-  return [...seen].filter((p) => p !== testFile && !isTestFile(p));
-}
-
-async function resolveImport(dir, fromDir, specifier) {
-  const base = path.posix.normalize(path.posix.join(fromDir, specifier));
-  for (const candidate of [base, ...[".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", "/index.js", "/index.ts"].map((ext) => base + ext)]) {
-    try {
-      await access(path.join(dir, candidate));
-      if (path.posix.extname(candidate)) return candidate;
-    } catch {}
-  }
-  return null;
+  return sourcesFor(stackFor(source.stacks, testFile), testFile, dir, await listAllFiles(dir));
 }
 
 export async function createSandbox() {
@@ -121,12 +99,51 @@ export function sh(command, cwd, timeout = 120_000) {
   });
 }
 
-// Runs the repo's test command once on one file, a list of files, or (if
-// omitted) the whole suite. Resolves with pass/fail and a trimmed log.
+// Runs test files once (or, if omitted, every test file), each with its own
+// stack's command, from that stack's folder. Resolves with pass/fail and a
+// trimmed log. A test whose toolchain is missing fails with a clear reason
+// rather than looking like a broken test.
 export async function runTestOnce(dir, testFiles) {
-  const files = [testFiles ?? []].flat().map((f) => JSON.stringify(f));
-  const { ok, output } = await sh([source.testCommand, ...files].join(" "), dir, 60_000);
-  return { passed: ok, log: output.slice(-1500) };
+  const files = testFiles ? [testFiles].flat() : await listTestFiles(dir);
+  if (source.testCommand) {
+    const { ok, output } = await sh([source.testCommand, ...files.map((f) => JSON.stringify(f))].join(" "), dir, 120_000);
+    return { passed: ok, log: output.slice(-1500) };
+  }
+  const groups = new Map();
+  for (const f of files) {
+    const stack = stackFor(source.stacks, f);
+    if (!groups.has(stack)) groups.set(stack, []);
+    groups.get(stack).push(f);
+  }
+  let passed = true;
+  let log = "";
+  for (const [stack, group] of groups) {
+    if (!stack) {
+      passed = false;
+      log += `Shoal doesn't know how to run ${group.join(", ")} (no supported test setup found).\n`;
+      continue;
+    }
+    if (!stack.toolOk) {
+      passed = false;
+      log += `${stack.toolMessage}.\n`;
+      continue;
+    }
+    const { cmd, cwd } = commandFor(stack, group);
+    const run = await sh(cmd, path.join(dir, cwd), 180_000);
+    passed &&= run.ok;
+    log += run.output;
+  }
+  return { passed, log: log.slice(-1500) };
+}
+
+// One test file with per-test results where the framework reports them:
+// { passed, log, results: { testName: passed } | null }.
+export async function runTestDetail(dir, testFile) {
+  const stack = stackFor(source.stacks, testFile);
+  if (source.testCommand || !stack?.toolOk) return { ...(await runTestOnce(dir, testFile)), results: null };
+  const { cmd, cwd } = commandFor(stack, [testFile], { detail: true });
+  const run = await sh(cmd, path.join(dir, cwd), 180_000);
+  return { passed: run.ok, log: run.output.slice(-3000), results: parseResults(stack, run.output) };
 }
 
 export async function runTestMany(dir, testFile, times) {

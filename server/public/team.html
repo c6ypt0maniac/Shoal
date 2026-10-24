@@ -284,6 +284,11 @@ function renderSetup(conn, pains = []) {
     <div class="setup-row"><b>Repository</b><div>${conn.type === "github"
       ? `<a href="${esc(conn.url)}" target="_blank">${esc(conn.fullName)}</a> <span class="hint">(${esc(conn.defaultBranch)}, ${conn.canWrite ? "can open PRs" : "read-only"})</span>`
       : `🧪 ${esc(conn.fullName)}`}</div></div>
+    <div class="setup-row"><b>Tests</b><div>${(conn.tests ?? []).length
+      ? conn.tests.map((t) => `<div>${t.toolOk ? "✓" : "⚠"} <b>${esc(t.language)}</b> · ${esc(t.framework)}${t.root !== "." ? ` <span class="chip">${esc(t.root)}/</span>` : ""}
+          <span class="hint">· found from ${esc(t.evidence)} · runs <code>${esc(t.example)}</code></span>
+          ${t.toolOk ? "" : `<div class="hint" style="color:#b42318">${esc(t.toolMessage)}. Its tests can't be scanned until it's installed.</div>`}</div>`).join("")
+      : `<span class="hint">No test setup found yet. Shoal reads package.json, pyproject.toml, go.mod, Cargo.toml, pom.xml, build.gradle, Gemfile, composer.json, .csproj and your CI workflow.</span>`}</div></div>
     <div class="setup-row"><b>Agents can see</b><div>${shared.length
       ? shared.slice(0, 8).map((p) => `<span class="chip">${esc(pathLabel(p))}</span>`).join("") + (shared.length > 8 ? `<span class="chip">+${shared.length - 8} more</span>` : "")
       : "The whole repo"} <span class="hint">· secrets never shared</span></div></div>
@@ -444,12 +449,12 @@ function renderTrials({ scoreboard, problems, trials, run, pick }) {
               : !proof.candidates.length
                 ? `<button type="button" onclick="buildProof('${p.painId}', this)">Build proof report</button>`
                 : !proven
-                  ? `<span class="proof-badge bad">✗ Not proven</span> <button type="button" onclick="buildProof('${p.painId}', this, true)">Re-check</button>`
+                  ? `<span class="proof-badge bad">✗ Failed</span> <button type="button" onclick="buildProof('${p.painId}', this, true)">Re-check</button>`
                   : creditBalance >= p.fixPrice
                     ? `<button class="cta" onclick="approveModel('${p.painId}', this)">Buy fix · ~${money(p.fixPrice)}</button>`
                     : `<button type="button" onclick="document.getElementById('packs').scrollIntoView({block:'center'})">Buy credits to fix</button>`;
         const model = proven
-          ? `<span class="proof-badge good">✓ Safe to buy</span> <b>${esc(proven.name)}</b> <span class="hint">trust ${proven.score}/100${proven.rank ? ` · cheaper picks weren't proven` : ""}</span>`
+          ? `<span class="proof-badge good">✓ Safe to buy</span> <b>${esc(proven.name)}</b> <span class="hint">passed every check${proven.rank ? ` · cheaper picks failed` : ""}</span>`
           : done
             ? `<span class="hint">No model's fix is proven</span>`
             : rec
@@ -496,8 +501,8 @@ function proofCard(c, proof) {
     ? `<span class="proof-badge checking">⏳ Checking</span>`
     : c.verdict === "safe"
       ? `<span class="proof-badge good">✓ Safe to buy</span>`
-      : `<span class="proof-badge bad">✗ Not proven</span>`;
-  const summary = `${head} <b>${esc(c.name)}</b> on ${esc(c.testFile)}${c.score != null ? ` · trust ${c.score}/100` : ""}
+      : `<span class="proof-badge bad">✗ Failed</span>`;
+  const summary = `${head} <b>${esc(c.name)}</b> on ${esc(c.testFile)}${c.score != null ? ` · ${c.verdict === "safe" ? "passed every check" : `passed ${Object.values(c.breakdown ?? {}).filter(Boolean).length} of ${Object.keys(c.breakdown ?? {}).length} checks`}` : ""}
     ${c.failures?.length ? `<span class="hint">· ${esc(c.failures.join("; "))}</span>` : ""}`;
   const k = c.checks;
   const row = (ok, title, body) => `<div class="check"><span class="mark ${ok === true ? "ok" : ok === false ? "no" : "na"}">${ok === true ? "✓" : ok === false ? "✗" : "–"}</span><div><b>${title}</b><div>${body}</div></div></div>`;
@@ -508,17 +513,28 @@ function proofCard(c, proof) {
        <span class="hint">Before the fix: failed ${k.stress.before.failures} of ${k.stress.before.runs} runs. 40 runs under parallel load, 10 inside the full suite in random order.</span>`));
   } else parts.push(row(null, "Stress test", `<span class="hint">Running 50 times…</span>`));
   if (k.suite) {
-    parts.push(row(k.suite.ok, k.suite.ok ? "Nothing else broke" : "Broke other tests",
-      `${k.suite.files.length ? `${k.suite.files.map(esc).join(", ")} still ${k.suite.ok ? "pass" : "<b>fail</b>"}` : esc(k.suite.note ?? "")}
-       ${k.suite.skipped.length ? `<span class="hint">· not counted (flaky on their own): ${k.suite.skipped.map(esc).join(", ")}</span>` : ""}`));
+    parts.push(row(k.suite.ok, k.suite.ok ? "Every other test is fine" : "Made other tests worse",
+      `${k.suite.files.length ? `Stable: ${k.suite.files.map(esc).join(", ")} ${k.suite.stableOk ? "still pass" : "<b>now fail</b>"}` : ""}
+       ${(k.suite.flaky ?? []).map((f) => `<br>${f.ok ? "✓" : "✗"} Already flaky: ${esc(f.testFile)} failed ${esc(f.before)} before, ${esc(f.after)} with the fix`).join("")}
+       ${k.suite.note ? esc(k.suite.note) : ""}`));
   }
   if (k.rules) parts.push(row(k.rules.ok, "Played by the rules", k.rules.rules.map((r) => `${r.ok ? "✓" : "✗"} ${esc(r.label)}${r.files.length ? `: ${r.files.map(esc).join(", ")}` : ""}`).join("<br>")));
+  if (k.challenge) {
+    const t = k.challenge.tests ?? [];
+    parts.push(row(k.challenge.ok, t.length ? `Challenge tests: passed ${t.filter((x) => x.passed).length} of ${t.length}` : "Challenge tests",
+      `${t.map((x) => `${x.passed ? "✓" : "✗"} ${esc(x.name)}${x.failsOnOriginal ? ` <span class="hint">(the original code fails this)</span>` : ""}`).join("<br>")}
+       ${k.challenge.error ? `<b>${esc(k.challenge.error)}</b>` : ""}
+       ${k.challenge.author ? `<br><span class="hint">Written by ${esc(k.challenge.author)} after reading all the shared code and every model's fix. Each test ran 3 times.</span>` : ""}
+       ${k.challenge.source ? `<details><summary class="hint">Show the challenge tests</summary><div class="diff"><div class="diff-file">${esc(k.challenge.file)}</div>${k.challenge.source.split("\n").map((l) => `<div class="dl">${esc(l)}</div>`).join("")}</div></details>` : ""}`));
+  } else if (c.status === "checking") parts.push(row(null, "Challenge tests", `<span class="hint">Writing and running challenge tests…</span>`));
   if (k.review) {
-    const v = { root_cause: "Fixes the root cause", symptom_patch: "Hides the symptom", unclear: "Unclear" }[k.review.verdict];
-    parts.push(row(k.review.ok, `Second opinion from ${esc(k.review.reviewer)}${v ? `: ${v}` : ""}`,
-      `${esc(k.review.summary)}${k.review.risks?.length ? `<ul>${k.review.risks.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>` : ""}`));
-  } else if (c.status === "checking") parts.push(row(null, "Second opinion", `<span class="hint">Another model is reviewing the change…</span>`));
-  if (k.record) parts.push(row(k.record.rate >= 0.5, "Track record on this repo", `${k.record.verified} of ${k.record.attempts} trial fixes verified · first try on ${k.record.firstTry} of ${k.record.problems} tests`));
+    parts.push(row(k.review.ok, `Second opinion from ${esc(k.review.reviewer)}: ${k.review.ok ? "every root cause fixed" : "not fixed"}`,
+      `${esc(k.review.summary)}
+       ${k.review.remaining?.length ? `<div><b>Still broken:</b><ul>${k.review.remaining.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></div>` : ""}
+       ${k.review.risks?.length ? `<div>Risks:<ul>${k.review.risks.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></div>` : ""}
+       ${k.review.filesSeen ? `<span class="hint">Read all ${k.review.filesSeen} shared files with the fix applied.</span>` : ""}`));
+  } else if (c.status === "checking") parts.push(row(null, "Second opinion", `<span class="hint">Another model is reading all the code…</span>`));
+  if (k.record) parts.push(row(null, "Track record on this repo", `${k.record.verified} of ${k.record.attempts} trial fixes verified · first try on ${k.record.firstTry} of ${k.record.problems} tests <span class="hint">(shown for context, not part of pass/fail)</span>`));
   if (k.diff) {
     parts.push(`<div class="check"><span class="mark na">±</span><div><b>The exact change: +${k.diff.added} −${k.diff.removed} lines</b>
       <a class="dl-btn" href="/api/trials/${encodeURIComponent(c.trialId)}/repo">⬇ Fixed repo (.zip)</a>
@@ -527,7 +543,8 @@ function proofCard(c, proof) {
         `<div class="dl ${l.type === "+" ? "add" : l.type === "-" ? "del" : ""}">${l.type === " " ? "&nbsp;" : l.type} ${esc(l.text)}</div>`).join("")).join(`<div class="dl gap">⋯</div>`)}</div>`).join("")}</div></div>`);
   }
   if (c.breakdown) {
-    parts.push(`<p class="hint">Trust score: ${Object.entries(c.breakdown).map(([name, b]) => `${name} ${b.earned ?? "skipped"}/${b.max}`).join(" · ")}. Safe to buy needs 80+ and no failed check.</p>`);
+    const label = { stress: "stress test", suite: "other tests", rules: "rules", challenge: "challenge tests", review: "second opinion" };
+    parts.push(`<p class="hint">Checks: ${Object.entries(c.breakdown).map(([name, ok]) => `${ok ? "✓" : "✗"} ${label[name] ?? name}`).join(" · ")}. Pass or fail: safe to buy only when every check passes.</p>`);
   }
   const open = openProofs.has(c.trialId) || (c.verdict === "safe" && !openProofs.size) ? "open" : "";
   return `<details class="proof ${c.verdict ?? "checking"}" data-proof="${esc(c.trialId)}" ${open}><summary>${summary}</summary><div class="checks">${parts.join("")}</div></details>`;

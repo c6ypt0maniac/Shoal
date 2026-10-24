@@ -148,17 +148,14 @@ export function bestTrial(painId) {
   return pickForProblem(painId)?.trial ?? null;
 }
 
-// Every verified option for a problem, in the order the optimizer would pick
-// them: the proof report checks them in this order until one is proven.
+// Every verified option for a problem, cheapest first. The proof report is
+// pass or fail, so it checks them in this order and the first one that
+// passes everything is the one sold: the cheapest model that truly fixed it.
+// (Fix size and other quality points don't override a cheaper pass.)
 export function rankedOptions(painId) {
-  const left = optionsFor(painId);
-  const ranked = [];
-  while (left.length) {
-    const pick = cheapestNearTop(left);
-    ranked.push(pick);
-    left.splice(left.findIndex((o) => o.model === pick.model), 1);
-  }
-  return ranked;
+  return optionsFor(painId)
+    .sort((a, b) => a.cost - b.cost || b.quality - a.quality)
+    .map((o) => ({ ...o, reason: "Cheapest model whose fix passed every check" }));
 }
 
 // One row per model that has tried anything. Its quality is the average of

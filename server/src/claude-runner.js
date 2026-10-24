@@ -18,7 +18,6 @@ import { proveProblem } from "./proof.js";
 const CLAUDE = process.env.CLAUDE_BIN ?? "claude";
 const IS_WIN = process.platform === "win32";
 const RUN_TIMEOUT_MS = 20 * 60_000;
-const MAX_PROBLEMS = 5;
 
 // Subagent alias -> the model id its trials are tagged with.
 const TRIAL_MODELS = [
@@ -181,11 +180,11 @@ export async function startTrialRun(baseUrl) {
   if (!info.loggedIn) throw httpError(400, "Sign in to Claude Code first");
   const flaky = state.pains.filter((p) => !p.healthy);
   if (!flaky.length) throw httpError(400, "No flaky tests to try. Scan the repo first.");
-  // A test whose code the team didn't share can't be fixed: don't spend a
-  // trial on it. (A test that imports nothing local is still worth a try.)
-  const blind = flaky.filter((p) => p.hiddenSources?.length && !p.sourceFiles.length);
-  const problems = flaky.filter((p) => !blind.includes(p)).slice(0, MAX_PROBLEMS);
-  if (!problems.length) {
+  // Every flaky test is tried; none is skipped. If any test imports code the
+  // team didn't share, stop and say so: agents must see all the code.
+  const blind = flaky.filter((p) => p.hiddenSources?.length);
+  const problems = flaky;
+  if (blind.length) {
     const files = [...new Set(blind.flatMap((p) => p.hiddenSources))];
     throw httpError(400, `Agents can't see the code these tests need (${files.join(", ")}). Share them with agents first.`);
   }
@@ -215,7 +214,6 @@ export async function startTrialRun(baseUrl) {
     emit("trials.progress", { message });
   };
   note(`Claude Code started: Haiku, Sonnet and Opus will each try ${problems.length} flaky test${problems.length > 1 ? "s" : ""}`);
-  if (blind.length) note(`Skipped ${blind.map((p) => p.testFile).join(", ")}: agents can't see the code it needs`);
 
   const proc = claude(
     [
@@ -308,7 +306,9 @@ function subagent({ alias, id }) {
     prompt: [
       `You are a Shoal trial agent running on ${MODELS[id].name}. You get one flaky test to fix.`,
       "Use only the Shoal tools: list_files and read_file to read the code, run_tests to check a candidate patch.",
-      "Find the real cause and fix it in application code. Test files, test folders, CI config and package manifests are protected; changing them fails the trial.",
+      "Read ALL the shared code first (list_files, then read_file on every file), not just the files the test imports.",
+      "Fix every root cause in application code. Working around a bug instead of fixing it, or leaving a related bug the test happens not to reach, counts as a FAILED fix: Shoal runs hidden challenge tests on the whole codebase.",
+      "Test files, test folders, CI config and package manifests are protected; changing them fails the trial.",
       `When run_tests passes, call submit_trial with model "${id}", the problem id, a one-sentence summary and the complete new contents of every file you changed.`,
       "If the trial fails, read the failure log, fix the patch and submit once more. Then stop.",
       "Reply with one line: passed or failed, and what you changed.",
