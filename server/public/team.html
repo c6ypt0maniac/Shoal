@@ -1,0 +1,728 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shoal</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; background: #f4f4f4; color: #222; }
+  header { background: #500000; color: #fff; padding: 12px 20px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  header h1 { margin: 0 12px 0 0; font-size: 22px; }
+  header h1 a { color: inherit; text-decoration: none; }
+  button { cursor: pointer; padding: 6px 12px; border: 1px solid #999; border-radius: 4px; background: #fff; }
+  button:disabled { opacity: .5; cursor: wait; }
+  main { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; padding: 16px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  main > div { min-width: 0; }
+  section { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 12px 16px; margin-bottom: 16px; overflow-x: auto; }
+  h2 { font-size: 16px; margin: 0 0 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid #eee; }
+  .flaky { color: #b00; font-weight: bold; }
+  .ok { color: #070; }
+  .bounty { border: 1px solid #eee; border-radius: 4px; padding: 8px; margin-bottom: 8px; font-size: 14px; }
+  .status { font-weight: bold; text-transform: uppercase; font-size: 12px; padding: 2px 6px; border-radius: 3px; background: #eee; }
+  .status.settled { background: #cfc; } .status.failed { background: #fcc; }
+  #ticker { height: 420px; overflow-y: auto; font-family: ui-monospace, monospace; font-size: 12px; background: #111; color: #0f0; padding: 8px; border-radius: 4px; }
+  #ticker div { padding: 2px 0; border-bottom: 1px solid #222; }
+  #ticker .bad { color: #f66; } #ticker .good { color: #6f6; font-weight: bold; } #ticker .info { color: #ccc; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .stat { background: #f7f7f7; padding: 8px; border-radius: 4px; }
+  .stat b { display: block; font-size: 20px; }
+  #mode { margin-left: auto; font-size: 13px; opacity: .85; }
+  .gh-btn { display: inline-flex; align-items: center; gap: 8px; background: #24292f; color: #fff; border: 1px solid #1b1f23; border-radius: 6px; padding: 7px 14px; font-weight: 600; font-size: 14px; text-decoration: none; }
+  .gh-btn:hover { background: #32383f; }
+  .gh-btn svg { width: 18px; height: 18px; fill: currentColor; }
+  .gh-btn .dot { width: 8px; height: 8px; border-radius: 50%; background: #3fb950; }
+  .user-chip { display: inline-flex; align-items: center; gap: 8px; color: #fff; text-decoration: none; font-size: 13px; padding: 4px 10px 4px 4px; border-radius: 20px; background: rgba(255,255,255,.12); }
+  .user-chip:hover { background: rgba(255,255,255,.22); }
+  .user-chip img { width: 26px; height: 26px; border-radius: 50%; }
+  .role-tag { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; opacity: .8; }
+  #fileBanner { background: #fff3cd; padding: 10px 20px; border-bottom: 1px solid #e0c870; }
+  .setup-head { display: flex; align-items: center; gap: 8px; }
+  .setup-head a { margin-left: auto; font-size: 13px; color: #0969da; }
+  .setup-row { display: flex; gap: 10px; padding: 6px 0; font-size: 14px; flex-wrap: wrap; align-items: baseline; }
+  .setup-row > b { width: 130px; color: #59636e; font-size: 13px; font-weight: 600; }
+  .chip { display: inline-block; padding: 2px 9px; border-radius: 12px; background: #eee; font-size: 13px; margin: 0 4px 4px 0; }
+  .chip.live { background: #dafbe1; color: #1a7f37; }
+  .hint { font-size: 12px; color: #666; }
+  .escrow { margin-top: 6px; font-size: 13px; padding: 5px 9px; border-radius: 5px; background: #f6f8fa; display: inline-block; }
+  .escrow.held { background: #fff8c5; } .escrow.charged { background: #dafbe1; } .escrow.released { background: #ddf4ff; }
+  .escrow.charge_failed { background: #ffebe9; }
+  .status.awaiting_funding { background: #fff8c5; } .status.payment_failed { background: #fcc; }
+  button.fund { background: #635bff; color: #fff; border-color: #635bff; font-weight: 600; }
+  button.cta { background: #2da44e; color: #fff; border-color: #2a8f46; font-weight: 700; font-size: 15px; padding: 8px 16px; border-radius: 6px; }
+  button.cta:hover { background: #2c974b; }
+  .section-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .section-head h2 { margin: 0; }
+  .section-head button { margin-left: auto; }
+  dialog { border: 1px solid #ccc; border-radius: 8px; padding: 20px 22px; width: min(460px, calc(100vw - 32px)); box-sizing: border-box; }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  dialog label { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 4px; color: #444; }
+  dialog select, dialog input { width: 100%; box-sizing: border-box; padding: 7px 8px; font-size: 14px; border: 1px solid #bbb; border-radius: 4px; }
+  dialog p { font-size: 14px; line-height: 1.45; margin: 8px 0; }
+  .pay-note { background: #f3f2ff; border: 1px solid #d8d5ff; border-radius: 6px; padding: 8px 10px; font-size: 13px; margin-top: 12px; }
+  .claude-box { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 14px; padding: 10px 12px; border: 1px solid #e3e3e3; border-radius: 6px; background: #fafafa; margin: 8px 0 12px; }
+  .claude-box .grow { flex: 1; min-width: 200px; }
+  .claude-box.ok { border-color: #b7e4c0; background: #f2fbf4; }
+  .claude-box.warn { border-color: #f0d58a; background: #fffbea; }
+  .login-code { flex-basis: 100%; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 13px; }
+  .login-code span { flex-basis: 100%; }
+  .login-code input { flex: 1; min-width: 180px; padding: 6px 8px; font-family: ui-monospace, monospace; font-size: 13px; border: 1px solid #bbb; border-radius: 4px; }
+  .run-live { font-size: 13px; margin: 0 0 12px; }
+  .run-live ul { margin: 6px 0; padding-left: 18px; color: #444; }
+  .report { border: 2px solid #2da44e; border-radius: 8px; padding: 12px 14px; margin: 0 0 14px; }
+  .report.none { border-color: #d0d0d0; }
+  .report h3 { margin: 0 0 6px; font-size: 17px; }
+  .report p { margin: 6px 0; font-size: 14px; line-height: 1.5; }
+  .manual { margin-top: 12px; font-size: 13px; }
+  .proof-title { font-size: 15px; margin: 16px 0 6px; }
+  .proof-badge { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
+  .proof-badge.good { background: #dafbe1; color: #1a7f37; }
+  .proof-badge.bad { background: #ffebe9; color: #b42318; }
+  .proof-badge.checking { background: #fff8c5; color: #7a5b00; }
+  details.proof { border: 1px solid #e3e3e3; border-radius: 6px; margin: 6px 0; padding: 8px 10px; font-size: 13px; }
+  details.proof.safe { border-color: #b7e4c0; }
+  details.proof.not_proven { border-color: #f3c4c0; }
+  details.proof summary { cursor: pointer; line-height: 1.6; }
+  .checks { margin-top: 8px; }
+  .check { display: flex; gap: 10px; padding: 8px 0; border-top: 1px solid #f0f0f0; line-height: 1.5; }
+  .check ul { margin: 4px 0 0; padding-left: 18px; }
+  .mark { flex: 0 0 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px; }
+  .mark.ok { background: #dafbe1; color: #1a7f37; } .mark.no { background: #ffebe9; color: #b42318; } .mark.na { background: #eee; color: #555; }
+  .dots { display: flex; flex-wrap: wrap; gap: 3px; margin: 4px 0; }
+  .dots i { width: 9px; height: 9px; border-radius: 50%; } .dots i.g { background: #2da44e; } .dots i.r { background: #cf222e; }
+  .diff { margin-top: 6px; border: 1px solid #e3e3e3; border-radius: 4px; overflow-x: auto; font-family: ui-monospace, monospace; font-size: 12px; }
+  .diff-file { background: #f6f8fa; padding: 3px 8px; border-bottom: 1px solid #e3e3e3; display: flex; justify-content: space-between; gap: 8px; }
+  .dl-btn { display: inline-block; margin: 4px 0 2px; font-size: 13px; font-weight: 600; }
+  .dl { white-space: pre; padding: 0 8px; } .dl.add { background: #e6ffec; } .dl.del { background: #ffebe9; } .dl.gap { color: #888; }
+  .credit-balance { margin: 4px 0 10px; }
+  .credit-balance b { font-size: 28px; }
+  .packs { display: flex; gap: 8px; flex-wrap: wrap; }
+  .credit-activity { font-size: 13px; padding-left: 18px; margin: 6px 0 0; color: #444; }
+  .cmd code { background: #f3f3f3; padding: 1px 5px; border-radius: 3px; font-size: 12.5px; }
+  .cmd { display: flex; gap: 8px; align-items: center; margin: 4px 0 6px; flex-wrap: wrap; }
+  .cmd code { overflow-wrap: anywhere; }
+  table.approve { margin-top: 14px; }
+  table.approve input { width: 80px; padding: 4px; }
+  #trialLog { font-size: 13px; margin: 6px 0; padding-left: 18px; }
+  .dlg-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; flex-wrap: wrap; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1><a href="/">🐟 Shoal</a></h1>
+  <button class="cta" onclick="openBountyDialog()">+ Post a bounty</button>
+  <button id="scanBtn">Scan repo</button>
+  <button id="demoBtn">Run demo bounty</button>
+  <button id="resetBtn">Reset</button>
+  <span id="mode"></span>
+  <a class="gh-btn" id="ghBtn" href="/setup"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg><span id="ghBtnLabel">Connect to GitHub</span></a>
+  <a class="user-chip" id="userChip" href="/?switch=1" title="Switch path or sign out" hidden></a>
+</header>
+<div id="fileBanner" hidden>⚠ This page was opened as a file, so it can't reach Shoal. Start the server (<code>npm start</code>) and open <a href="http://localhost:4000">http://localhost:4000</a>.</div>
+
+<main>
+  <div>
+    <section>
+      <div class="setup-head"><h2>Your setup</h2><a href="/setup">Edit setup →</a></div>
+      <div id="setup"></div>
+    </section>
+    <section>
+      <h2>Pain Graph</h2>
+      <table>
+        <thead><tr><th>Test file</th><th>Failures</th><th>Dev-hours / week</th><th>Suggested bounty</th><th></th></tr></thead>
+        <tbody id="pains"><tr><td colspan="5">Click "Scan repo" to find flaky tests.</td></tr></tbody>
+      </table>
+    </section>
+    <section>
+      <h2>Model trials <span class="hint">· Haiku, Sonnet and Opus compete on your flaky tests, free on your Claude plan</span></h2>
+      <div id="claudeBox" class="claude-box">Looking for Claude Code on this computer…</div>
+      <div id="runBox"></div>
+      <table>
+        <thead><tr><th>Model</th><th>Tests fixed</th><th>Quality</th><th>Cost per fix</th><th>Avg lines changed</th></tr></thead>
+        <tbody id="scoreboard"></tbody>
+      </table>
+      <table class="approve">
+        <thead><tr><th>Flaky test</th><th>Proven best value</th><th>Fix price</th><th></th></tr></thead>
+        <tbody id="trialProblems"></tbody>
+      </table>
+      <div id="proofReports"></div>
+      <details id="trialLogWrap" hidden><summary>Every trial</summary><ul id="trialLog"></ul></details>
+      <details class="manual"><summary>Use your own Claude Code session instead</summary>
+        <div class="cmd"><code id="mcpCmd"></code><button type="button" onclick="copyMcp()">Copy</button></div>
+        <p class="hint">Run that in a terminal, then type <code>/mcp__shoal__run_trials</code> in Claude Code.</p>
+      </details>
+    </section>
+    <section id="ciSection" hidden>
+      <h2>CI health (live from GitHub Actions)</h2>
+      <table>
+        <thead><tr><th>Workflow</th><th>Runs</th><th>Failure rate</th><th>Rerun rate</th><th>Avg minutes</th></tr></thead>
+        <tbody id="ci"></tbody>
+      </table>
+    </section>
+    <section>
+      <div class="section-head"><h2>Bounties</h2><button class="cta" onclick="openBountyDialog()">+ Post a bounty</button></div>
+      <div id="bounties">No bounties yet.</div>
+    </section>
+  </div>
+  <div>
+    <section>
+      <div class="section-head"><h2>Credits</h2><span id="creditMode" class="hint"></span></div>
+      <div class="credit-balance"><b id="creditBalance">$0.00</b> <span class="hint">for verified API fixes</span></div>
+      <div class="packs" id="packs"></div>
+      <p class="hint">A verified fix uses its real API cost plus a 15% Shoal fee. A fix that isn't verified costs nothing.</p>
+      <ul id="creditActivity" class="credit-activity"></ul>
+    </section>
+    <section>
+      <h2>Morning Settlement</h2>
+      <div class="stats" id="settlement"></div>
+    </section>
+    <section>
+      <h2>Live ticker</h2>
+      <div id="ticker"></div>
+    </section>
+    <section>
+      <h2>Agent leaderboard</h2>
+      <table>
+        <thead><tr><th>Agent</th><th>Wins/jobs</th><th>Rollbacks</th><th>Earned</th></tr></thead>
+        <tbody id="agents"></tbody>
+      </table>
+    </section>
+  </div>
+</main>
+<dialog id="bountyDialog">
+  <form id="bountyForm">
+    <h2>Post a bounty</h2>
+    <div id="bountyBody"></div>
+    <div class="dlg-actions" id="bountyActions"></div>
+  </form>
+</dialog>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const get = (p) => fetch(p).then((r) => r.json());
+const post = (p, body) =>
+  fetch(p, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body ?? {}) }).then(async (r) => {
+    const data = await r.json();
+    if (!r.ok) alertTicker(data.error);
+    return data;
+  });
+
+let agentNames = {};
+
+async function refresh() {
+  const [pains, bounties, agents, settlement, conn, ci, trials, credits] = await Promise.all([
+    get("/api/pains"), get("/api/bounties"), get("/api/agents"), get("/api/settlement"), get("/api/connection"), get("/api/ci"),
+    get("/api/trials").catch(() => ({ scoreboard: [], problems: [], trials: [], models: {} })),
+    get("/api/credits").catch(() => null),
+  ]);
+  agentNames = {
+    ...Object.fromEntries(Object.entries(trials.models).map(([id, m]) => [id, m.name])),
+    ...Object.fromEntries(agents.map((a) => [a.id, a.name])),
+  };
+  if (credits) renderCredits(credits);
+  renderTrials(trials);
+
+  $("ghBtnLabel").innerHTML = conn.type === "github" ? `<span class="dot"></span> ${esc(conn.fullName)}` : "Connect to GitHub";
+  $("ghBtn").title = conn.type === "github"
+    ? `${conn.fullName} (${conn.defaultBranch}) · ${conn.canWrite ? "can open PRs" : "read-only"} · click to change`
+    : "Set up a GitHub repository";
+  renderSetup(conn, pains);
+
+  $("ciSection").hidden = !ci.length;
+  $("ci").innerHTML = ci.map((w) => `<tr>
+      <td>${esc(w.workflow)}</td><td>${w.runs}</td>
+      <td class="${w.failureRate > 0.1 ? "flaky" : "ok"}">${Math.round(w.failureRate * 100)}%</td>
+      <td>${Math.round(w.rerunRate * 100)}%</td><td>${w.avgMinutes ?? "-"}</td>
+    </tr>`).join("");
+
+  $("pains").innerHTML = pains.length
+    ? pains.map((p) => `<tr>
+        <td>${esc(p.testFile)}</td>
+        <td class="${p.healthy ? "ok" : "flaky"}">${p.failures}/${p.runs}${p.healthy ? " ✓" : ""}</td>
+        <td>${p.hoursPerWeek}</td>
+        <td>$${p.suggestedReward}</td>
+        <td>${p.healthy ? "" : `<button class="cta" onclick="openBountyDialog('${p.id}')">+ Post bounty</button>`}</td>
+      </tr>`).join("")
+    : `<tr><td colspan="5">Click "Scan repo" to find flaky tests.</td></tr>`;
+
+  $("bounties").innerHTML = bounties.length ? bounties.map(renderBounty).join("") : "No bounties yet.";
+
+  $("agents").innerHTML = agents.map((a) => `<tr>
+      <td><b>${esc(a.name)}</b><br><small>${esc(a.builder)}: ${esc(a.tagline)}</small></td>
+      <td>${a.wins}/${a.jobs}</td>
+      <td>${a.rollbacks} (${Math.round(a.rollbackRate * 100)}%)</td>
+      <td>$${a.earnings}</td>
+    </tr>`).join("");
+
+  const s = settlement;
+  $("settlement").innerHTML = [
+    ["Bounties settled", s.bountiesSettled], ["Bounties failed", s.bountiesFailed],
+    ["In escrow now", "$" + s.heldInEscrow], ["Paid to agents", "$" + s.totalPaid],
+    ["Platform revenue", "$" + s.platformRevenue],
+    ["Dev-hours/week returned", s.hoursReturnedPerWeek], ["Top earner", s.topEarner ?? "-"],
+  ].map(([k, v]) => `<div class="stat">${k}<b>${esc(v)}</b></div>`).join("");
+}
+
+// Code that flaky tests import but agents can't see.
+const hiddenFiles = (pains) => [...new Set(pains.filter((p) => !p.healthy).flatMap((p) => p.hiddenSources ?? []))];
+// Shared paths are folders or single files; files have an extension.
+const pathLabel = (p) => (p === "." ? "root files" : /\.[^/]+$/.test(p) ? p : p + "/");
+
+function renderSetup(conn, pains = []) {
+  const problems = conn.problems ?? [];
+  const hidden = hiddenFiles(pains);
+  const note = problems.find((p) => p.note)?.note;
+  const shared = conn.sharedPaths ?? [];
+  $("setup").innerHTML = `
+    <div class="setup-row"><b>Problems</b><div>${problems.length
+      ? problems.map((p) => `<span class="chip ${p.supported ? "live" : ""}" title="${p.supported ? "Agents fix this today" : "Coming soon"}">${esc(p.label)}${p.supported ? "" : " · soon"}</span>`).join("")
+      : `<span class="hint">None reported yet. <a href="/setup">Run setup</a> to tell Shoal what's slowing you down.</span>`}
+      ${note ? `<div class="hint">"${esc(note)}"</div>` : ""}</div></div>
+    <div class="setup-row"><b>Repository</b><div>${conn.type === "github"
+      ? `<a href="${esc(conn.url)}" target="_blank">${esc(conn.fullName)}</a> <span class="hint">(${esc(conn.defaultBranch)}, ${conn.canWrite ? "can open PRs" : "read-only"})</span>`
+      : `🧪 ${esc(conn.fullName)}`}</div></div>
+    <div class="setup-row"><b>Agents can see</b><div>${shared.length
+      ? shared.slice(0, 8).map((p) => `<span class="chip">${esc(pathLabel(p))}</span>`).join("") + (shared.length > 8 ? `<span class="chip">+${shared.length - 8} more</span>` : "")
+      : "The whole repo"} <span class="hint">· secrets never shared</span></div></div>
+    ${hidden.length ? `<div class="claude-box warn"><span class="grow">⚠ Flaky tests import code agents can't see, so they can't fix it.</span>
+      <button type="button" class="cta" id="shareBtn" onclick="shareHidden()">Share ${hidden.map(esc).join(", ")} with agents</button></div>` : ""}`;
+}
+
+window.shareHidden = () => busy($("shareBtn"), async () => {
+  const pains = await get("/api/pains");
+  await post("/api/connection/share", { add: hiddenFiles(pains) });
+});
+
+// --- One-click trial: find Claude Code, run, report -------------------------
+
+let claudeInfo = null;
+let trialRunState = null;
+
+async function checkClaude(fresh) {
+  signingIn = false;
+  $("claudeBox").className = "claude-box";
+  $("claudeBox").textContent = "Looking for Claude Code on this computer…";
+  claudeInfo = await get(`/api/claude${fresh ? "?fresh=1" : ""}`).catch(() => ({ installed: false, error: true }));
+  renderClaude();
+}
+
+// True while the paste-the-code form is showing, so refreshes don't wipe it.
+let signingIn = false;
+
+function renderClaude() {
+  const c = claudeInfo;
+  if (!c || (signingIn && !c.loggedIn)) return;
+  const running = trialRunState?.status === "running";
+  const box = $("claudeBox");
+  if (!c.installed) {
+    box.className = "claude-box warn";
+    box.innerHTML = `<span class="grow">${c.error ? "Couldn't check for Claude Code (restart the Shoal server)." : "Claude Code isn't installed on this computer. It runs the trials on your Claude plan."}</span>
+      <a href="https://claude.com/claude-code" target="_blank">Install Claude Code</a>
+      <button type="button" onclick="checkClaude(true)">Check again</button>`;
+  } else if (!c.loggedIn) {
+    box.className = "claude-box warn";
+    box.innerHTML = `<span class="grow">Found Claude Code ${esc(c.version)}, but it isn't signed in.</span>
+      <button type="button" class="cta" id="loginBtn" onclick="signInClaude()">Sign in to Claude</button>
+      <button type="button" onclick="checkClaude(true)">Check again</button>`;
+  } else {
+    box.className = "claude-box ok";
+    box.innerHTML = `<span class="grow">✓ Claude Code ready${c.email ? ` · signed in as ${esc(c.email)}` : ""}</span>
+      ${running
+        ? `<button type="button" onclick="stopTrials()">■ Stop</button>`
+        : `<button type="button" class="cta" id="runTrialBtn" onclick="runTrials()">▶ Run model trial</button>`}`;
+  }
+}
+
+window.checkClaude = checkClaude;
+window.signInClaude = () => busy($("loginBtn"), async () => {
+  const { url } = await post("/api/claude/login");
+  if (url) window.open(url, "_blank");
+  signingIn = true;
+  $("claudeBox").insertAdjacentHTML("beforeend", `
+    <form class="login-code" onsubmit="event.preventDefault(); finishSignIn()">
+      <span>Sign in on the page that opened${url ? ` (<a href="${esc(url)}" target="_blank">open it again</a>)` : ""}. If it shows a code, paste it here:</span>
+      <input id="loginCode" autocomplete="off" spellcheck="false" placeholder="Paste the code from Claude">
+      <button type="submit" class="cta" id="loginCodeBtn">Finish sign-in</button>
+    </form>`);
+  $("loginCode").focus();
+});
+window.finishSignIn = () => busy($("loginCodeBtn"), async () => {
+  const info = await post("/api/claude/login/code", { code: $("loginCode").value });
+  if (info.installed) {
+    claudeInfo = info;
+    signingIn = false;
+    renderClaude();
+  }
+});
+window.runTrials = () => busy($("runTrialBtn"), async () => {
+  const run = await post("/api/trials/run");
+  if (run.status) trialRunState = run;
+  renderClaude();
+});
+window.stopTrials = async () => {
+  await post("/api/trials/stop");
+  refresh();
+};
+
+function renderRun(run, scoreboard) {
+  trialRunState = run;
+  renderClaude();
+  if (!run) return ($("runBox").innerHTML = "");
+  const mins = (end) => Math.max(1, Math.round((new Date(end ?? Date.now()) - new Date(run.startedAt)) / 60000));
+  if (run.status === "running") {
+    $("runBox").innerHTML = `<div class="run-live">⏳ <b>Trial running</b> for ${mins()} min. Claude Code stops by itself when every model is done.
+      <ul>${run.progress.slice(-6).map((p) => `<li>${esc(p.message)}</li>`).join("")}</ul></div>`;
+    return;
+  }
+  // The live pick, so the report follows trials added after the run too.
+  const winner = currentPick ?? run.report?.winner;
+  const others = (latestScoreboard ?? []).filter((r) => r.model !== winner?.model);
+  const ended = { done: "finished", stopped: "was stopped", timed_out: "timed out", failed: "failed" }[run.status];
+  $("runBox").innerHTML = `<div class="report ${winner ? "" : "none"}">
+      <h3>${winner ? `🏆 Best value: ${esc(winner.name)}` : "No model got a fix verified"}</h3>
+      <p class="hint">Trial ${ended} after ${mins(run.finishedAt)} min · ${run.problems.length} test${run.problems.length > 1 ? "s" : ""} · ran free on your Claude plan</p>
+      ${winner ? `<p><b>${esc(winner.reason)}.</b> ${esc(winner.name)} fixed ${winner.fixed} of ${winner.tried ?? run.problems.length} tests,
+        quality ${winner.quality}/100, about ${money(winner.costPerFix)} of API cost per fix.
+        ${others.map((r) => `${esc(r.name)}: quality ${r.quality}, ${money(r.costPerFix)} per fix.`).join(" ")}</p>` : ""}
+      ${run.summary ? `<p><b>Claude's summary:</b> ${esc(run.summary)}</p>` : ""}
+      ${run.error ? `<p class="hint">⚠ ${esc(run.error)}</p>` : ""}
+      ${winner ? `<p>Fix each test below with its best-value model, paid from your credits only if the fix is verified.</p>` : ""}
+    </div>`;
+}
+
+let currentPick = null;
+let latestScoreboard = null;
+let creditBalance = 0;
+
+// Small API costs need more than 2 decimals to mean anything.
+const money = (n) => (n == null ? "-" : n < 0.01 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`);
+
+function renderCredits(c) {
+  creditBalance = c.balance;
+  $("creditBalance").textContent = `$${c.balance.toFixed(2)}`;
+  $("creditMode").textContent = { "stripe-live": "Stripe · real money", "stripe-test": "Stripe test mode" }[c.payments] ?? "simulated payments";
+  $("packs").innerHTML = c.packs.map((d) => `<button type="button" class="cta" onclick="buyCredits(${d}, this)">Buy $${d}</button>`).join("");
+  const activity = [
+    ...c.purchases.map((p) => ({ at: p.at, text: `+$${p.amount.toFixed(2)} credit pack${p.mode === "simulated" ? " (simulated)" : ""}` })),
+    ...c.charges.map((x) => ({ at: x.at, text: `−$${x.amount.toFixed(2)} verified fix by ${agentNames[x.model] ?? x.model} (API ${money(x.apiCost)} + fee)` })),
+  ].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 6);
+  $("creditActivity").innerHTML = activity.map((a) => `<li>${esc(a.text)}</li>`).join("");
+}
+
+window.buyCredits = (dollars, btn) => busy(btn, async () => {
+  const res = await post("/api/credits/buy", { dollars });
+  if (res.checkoutUrl) location.href = res.checkoutUrl;
+});
+
+function renderTrials({ scoreboard, problems, trials, run, pick }) {
+  currentPick = pick ?? null;
+  latestScoreboard = scoreboard;
+  renderRun(run ?? null, scoreboard);
+  $("scoreboard").innerHTML = scoreboard.length
+    ? scoreboard.map((r) => `<tr>
+        <td><b>${esc(r.name)}</b>${r.recommended ? " 🏆" : ""}</td>
+        <td>${r.fixed}/${r.tried}</td><td>${r.quality}</td>
+        <td>${money(r.costPerFix)}${r.costMeasured ? "" : ` <span class="hint">(est.)</span>`}</td>
+        <td>${r.avgLinesChanged ?? "-"}</td></tr>`).join("")
+    : `<tr><td colspan="5" class="hint">No trials yet. Click Run model trial.</td></tr>`;
+
+  $("trialProblems").innerHTML = problems.length
+    ? problems.map((p) => {
+        const rec = p.recommended;
+        const proof = p.proof ?? { candidates: [] };
+        const proven = proof.proven;
+        const done = proof.candidates.length && !proof.checking;
+        const action = p.bounty
+          ? `<span class="status ${esc(p.bounty.status)}">${esc(p.bounty.status.replace("_", " "))}</span> <span class="hint">API fix</span>`
+          : !rec
+            ? `<span class="hint">Waiting for a verified trial</span>`
+            : proof.checking
+              ? `<span class="proof-badge checking">⏳ Proving…</span>`
+              : !proof.candidates.length
+                ? `<button type="button" onclick="buildProof('${p.painId}', this)">Build proof report</button>`
+                : !proven
+                  ? `<span class="proof-badge bad">✗ Not proven</span> <button type="button" onclick="buildProof('${p.painId}', this, true)">Re-check</button>`
+                  : creditBalance >= p.fixPrice
+                    ? `<button class="cta" onclick="approveModel('${p.painId}', this)">Buy fix · ~${money(p.fixPrice)}</button>`
+                    : `<button type="button" onclick="document.getElementById('packs').scrollIntoView({block:'center'})">Buy credits to fix</button>`;
+        const model = proven
+          ? `<span class="proof-badge good">✓ Safe to buy</span> <b>${esc(proven.name)}</b> <span class="hint">trust ${proven.score}/100${proven.rank ? ` · cheaper picks weren't proven` : ""}</span>`
+          : done
+            ? `<span class="hint">No model's fix is proven</span>`
+            : rec
+              ? `<b>${esc(rec.name)}</b> <span class="hint">best value, not proven yet</span>`
+              : "-";
+        return `<tr>
+          <td>${esc(p.testFile)}</td>
+          <td>${model}</td>
+          <td>${proven ? `~${money(p.fixPrice)}` : "-"}</td>
+          <td>${action}</td></tr>`;
+      }).join("")
+    : `<tr><td colspan="4" class="hint">Scan the repo first: trials run on the flaky tests it finds.</td></tr>`;
+
+  renderProofs(problems);
+
+  $("trialLogWrap").hidden = !trials.length;
+  $("trialLog").innerHTML = trials.map((t) => `<li>${t.status === "passed" ? "✅" : t.status === "failed" ? "❌" : "⏳"}
+      <b>${esc(agentNames[t.model] ?? t.model)}</b> on ${esc(t.testFile)}: ${esc(t.status === "failed" ? t.reason : t.summary)}
+      <span class="hint">${t.linesChanged} lines</span>
+      ${t.status === "passed" ? `<a href="/api/trials/${encodeURIComponent(t.id)}/repo">⬇ Fixed repo (.zip)</a> ${t.files.map((p) => `<a href="${fileUrl(t.id, p)}">⬇ ${esc(p)}</a>`).join(" ")}` : ""}</li>`).join("");
+}
+
+window.approveModel = (painId, btn) => busy(btn, () => post("/api/trials/approve", { painId }));
+window.buildProof = (painId, btn, fresh) => busy(btn, () => post("/api/proofs", { painId, fresh: Boolean(fresh) }));
+
+// --- Proof reports -------------------------------------------------------------
+
+// Which reports are expanded, so a refresh doesn't collapse what someone is reading.
+const openProofs = new Set();
+document.addEventListener("toggle", (e) => {
+  const id = e.target.dataset?.proof;
+  if (id) e.target.open ? openProofs.add(id) : openProofs.delete(id);
+}, true);
+
+const fileUrl = (trialId, p) => `/api/trials/${encodeURIComponent(trialId)}/file?path=${encodeURIComponent(p)}`;
+
+function renderProofs(problems) {
+  const cards = problems.flatMap((p) => (p.proof?.candidates ?? []).map((c) => proofCard(c, p.proof)));
+  $("proofReports").innerHTML = cards.length ? `<h3 class="proof-title">Proof reports</h3>${cards.join("")}` : "";
+}
+
+function proofCard(c, proof) {
+  const head = c.status === "checking"
+    ? `<span class="proof-badge checking">⏳ Checking</span>`
+    : c.verdict === "safe"
+      ? `<span class="proof-badge good">✓ Safe to buy</span>`
+      : `<span class="proof-badge bad">✗ Not proven</span>`;
+  const summary = `${head} <b>${esc(c.name)}</b> on ${esc(c.testFile)}${c.score != null ? ` · trust ${c.score}/100` : ""}
+    ${c.failures?.length ? `<span class="hint">· ${esc(c.failures.join("; "))}</span>` : ""}`;
+  const k = c.checks;
+  const row = (ok, title, body) => `<div class="check"><span class="mark ${ok === true ? "ok" : ok === false ? "no" : "na"}">${ok === true ? "✓" : ok === false ? "✗" : "–"}</span><div><b>${title}</b><div>${body}</div></div></div>`;
+  const parts = [];
+  if (k.stress) {
+    parts.push(row(k.stress.ok, `Stress test: ${k.stress.passed}/${k.stress.total} runs passed`,
+      `<div class="dots">${k.stress.results.map((ok) => `<i class="${ok ? "g" : "r"}"></i>`).join("")}</div>
+       <span class="hint">Before the fix: failed ${k.stress.before.failures} of ${k.stress.before.runs} runs. 40 runs under parallel load, 10 inside the full suite in random order.</span>`));
+  } else parts.push(row(null, "Stress test", `<span class="hint">Running 50 times…</span>`));
+  if (k.suite) {
+    parts.push(row(k.suite.ok, k.suite.ok ? "Nothing else broke" : "Broke other tests",
+      `${k.suite.files.length ? `${k.suite.files.map(esc).join(", ")} still ${k.suite.ok ? "pass" : "<b>fail</b>"}` : esc(k.suite.note ?? "")}
+       ${k.suite.skipped.length ? `<span class="hint">· not counted (flaky on their own): ${k.suite.skipped.map(esc).join(", ")}</span>` : ""}`));
+  }
+  if (k.rules) parts.push(row(k.rules.ok, "Played by the rules", k.rules.rules.map((r) => `${r.ok ? "✓" : "✗"} ${esc(r.label)}${r.files.length ? `: ${r.files.map(esc).join(", ")}` : ""}`).join("<br>")));
+  if (k.review) {
+    const v = { root_cause: "Fixes the root cause", symptom_patch: "Hides the symptom", unclear: "Unclear" }[k.review.verdict];
+    parts.push(row(k.review.ok, `Second opinion from ${esc(k.review.reviewer)}${v ? `: ${v}` : ""}`,
+      `${esc(k.review.summary)}${k.review.risks?.length ? `<ul>${k.review.risks.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>` : ""}`));
+  } else if (c.status === "checking") parts.push(row(null, "Second opinion", `<span class="hint">Another model is reviewing the change…</span>`));
+  if (k.record) parts.push(row(k.record.rate >= 0.5, "Track record on this repo", `${k.record.verified} of ${k.record.attempts} trial fixes verified · first try on ${k.record.firstTry} of ${k.record.problems} tests`));
+  if (k.diff) {
+    parts.push(`<div class="check"><span class="mark na">±</span><div><b>The exact change: +${k.diff.added} −${k.diff.removed} lines</b>
+      <a class="dl-btn" href="/api/trials/${encodeURIComponent(c.trialId)}/repo">⬇ Fixed repo (.zip)</a>
+      ${k.diff.files.map((f) => `<div class="diff"><div class="diff-file">${esc(f.path)}
+        <a href="${fileUrl(c.trialId, f.path)}">⬇ Fixed file</a></div>${f.hunks.map((h) => h.lines.map((l) =>
+        `<div class="dl ${l.type === "+" ? "add" : l.type === "-" ? "del" : ""}">${l.type === " " ? "&nbsp;" : l.type} ${esc(l.text)}</div>`).join("")).join(`<div class="dl gap">⋯</div>`)}</div>`).join("")}</div></div>`);
+  }
+  if (c.breakdown) {
+    parts.push(`<p class="hint">Trust score: ${Object.entries(c.breakdown).map(([name, b]) => `${name} ${b.earned ?? "skipped"}/${b.max}`).join(" · ")}. Safe to buy needs 80+ and no failed check.</p>`);
+  }
+  const open = openProofs.has(c.trialId) || (c.verdict === "safe" && !openProofs.size) ? "open" : "";
+  return `<details class="proof ${c.verdict ?? "checking"}" data-proof="${esc(c.trialId)}" ${open}><summary>${summary}</summary><div class="checks">${parts.join("")}</div></details>`;
+}
+
+window.copyMcp = () => navigator.clipboard?.writeText($("mcpCmd").textContent);
+$("mcpCmd").textContent = `claude mcp add --transport http shoal ${location.origin}/mcp`;
+
+function renderBounty(b) {
+  const bids = b.bids.map((bid) => `<li>${esc(agentNames[bid.agentId] ?? bid.agentId)}: <b>$${bid.price}</b>
+      (${Math.round(bid.confidence * 100)}% confident): ${esc(bid.plan)}</li>`).join("");
+  const attempts = b.attempts.map((a) => `<li>${a.passed ? "✅" : "❌"} ${esc(agentNames[a.agentId] ?? a.agentId)}:
+      ${esc(a.passed ? a.summary : a.reason)} ${a.runs?.length ? a.runs.map((ok) => (ok ? "🟢" : "🔴")).join("") : ""}</li>`).join("");
+  const canRun = b.status === "open" || b.status === "awarding";
+  return `<div class="bounty">
+      <span class="status ${b.status}">${b.status.replace("_", " ")}</span> <b>${esc(b.title)}</b>${b.escrow?.mode === "credits" ? "" : `: reward up to $${b.reward}`}
+      ${b.apiModel ? `<span class="hint">· approved ${esc(agentNames[b.apiModel] ?? b.apiModel)} via Claude API · API cost $${b.apiCost.toFixed(4)}</span>` : ""}
+      ${canRun ? `<button onclick="runBounty('${b.id}')">Run</button>` : ""}
+      ${b.status === "awaiting_funding" ? `<button class="fund" onclick="fundBounty('${b.id}')">💳 Fund with Stripe</button>` : ""}
+      ${escrowLine(b.escrow)}
+      ${b.pullRequest ? `<a href="${esc(b.pullRequest.url)}" target="_blank">→ PR #${b.pullRequest.number}</a>` : ""}
+      ${bids ? `<div>Bids:<ul>${bids}</ul></div>` : ""}
+      ${attempts ? `<div>Attempts:<ul>${attempts}</ul></div>` : ""}
+    </div>`;
+}
+
+function escrowLine(e) {
+  if (!e) return "";
+  const via = e.mode === "stripe" ? (e.live ? "Stripe · real money" : "Stripe test mode") : e.mode === "credits" ? "credits" : "simulated";
+  if (e.mode === "credits") {
+    const text = {
+      held: `🔒 About ${money(e.amount)} from credits, only if the fix is verified`,
+      charged: `💸 ${money(e.charged)} taken from credits`,
+      released: `↩️ No verified fix: nothing taken from credits`,
+      charge_failed: `⚠️ Fix verified but the credit charge failed`,
+    }[e.status] ?? e.status;
+    return `<div class="escrow ${e.status}">${text}</div>`;
+  }
+  const text = {
+    awaiting_funding: `💳 Waiting for the team to fund $${e.amount}`,
+    held: `🔒 $${e.amount} held in escrow, not charged yet`,
+    charged: `💸 Charged $${e.charged}${e.released ? `, $${e.released} released back` : ""}`,
+    released: `↩️ Hold released: $0 charged`,
+    charge_failed: `⚠️ Fix verified but the charge failed`,
+  }[e.status] ?? e.status;
+  return `<div class="escrow ${e.status}">${text} <span class="hint">· ${via}${e.paymentIntentId ? ` · ${esc(e.paymentIntentId)}` : ""}</span></div>`;
+}
+
+function tickerLine(e) {
+  const bad = /rejected|failed|error/.test(e.type);
+  const good = /settled|verify\.passed|escrow\.(held|charged)/.test(e.type);
+  const runs = e.results ? " " + e.results.map((ok) => (ok ? "🟢" : "🔴")).join("") : "";
+  const div = document.createElement("div");
+  div.className = bad ? "bad" : good ? "good" : "info";
+  div.textContent = `${new Date(e.at).toLocaleTimeString()}  ${e.message ?? e.type}${runs}`;
+  $("ticker").prepend(div);
+}
+
+function alertTicker(msg) {
+  tickerLine({ type: "error", at: new Date().toISOString(), message: "⚠ " + msg });
+}
+
+async function busy(btn, fn) {
+  btn.disabled = true;
+  try { await fn(); } finally { btn.disabled = false; refresh(); }
+}
+
+// "Post a bounty" form. A bounty targets a flaky test, because the verifier
+// needs a failing test to prove the fix; with none, offer a scan or the demo repo.
+window.openBountyDialog = async (painId) => {
+  const dlg = $("bountyDialog");
+  const [pains, conn] = await Promise.all([get("/api/pains"), get("/api/connection")]);
+  const flaky = pains.filter((p) => !p.healthy);
+  const cancel = `<button type="button" onclick="$('bountyDialog').close()">Cancel</button>`;
+
+  if (!flaky.length) {
+    $("bountyBody").innerHTML = `
+      <p>Bounties pay an agent to make a flaky test reliable, and the agent is only paid once Shoal verifies the fix.</p>
+      <p>${pains.length
+        ? `<b>${esc(conn.fullName)}</b> has no flaky tests right now, so there's nothing to post a bounty on.`
+        : `<b>${esc(conn.fullName)}</b> hasn't been scanned yet, or has no test files (<code>*.test.*</code> / <code>*.spec.*</code>).`}</p>
+      <p>Try the bundled demo repo: it has flaky tests ready to fix.</p>`;
+    $("bountyActions").innerHTML = `${cancel}
+      ${pains.length ? "" : `<button type="button" id="dlgScan">Scan repo</button>`}
+      <button type="button" class="cta" id="dlgDemo">Use the demo repo</button>`;
+    if ($("dlgScan")) $("dlgScan").onclick = () => busy($("dlgScan"), async () => { await post("/api/scan"); await openBountyDialog(); });
+    $("dlgDemo").onclick = () => busy($("dlgDemo"), async () => {
+      await post("/api/connect/demo");
+      await post("/api/scan");
+      await openBountyDialog();
+    });
+  } else {
+    const stripe = payments.startsWith("stripe");
+    $("bountyBody").innerHTML = `
+      <label for="bountyPain">Flaky test to fix</label>
+      <select id="bountyPain">${flaky.map((p) => `<option value="${esc(p.id)}" data-reward="${p.suggestedReward}" ${p.id === painId ? "selected" : ""}>
+        ${esc(p.testFile)} · fails ${p.failures}/${p.runs} · ~${p.hoursPerWeek} dev-hrs/week</option>`).join("")}</select>
+      <label for="bountyReward">Reward (max you'll pay, $)</label>
+      <input id="bountyReward" type="number" min="1" max="10000" step="1" required>
+      <div class="pay-note">${{
+        "stripe-live": "💳 <b>Real money, paid with Stripe.</b> Your card is held for the full reward and only charged the winning bid if a fix is verified; otherwise the hold is released.",
+        "stripe-test": "💳 <b>Paid with Stripe (test mode, no real money).</b> The money is held, and only charged if a fix is verified. Test card: 4242 4242 4242 4242.",
+      }[payments] ?? "🧪 <b>Simulated payment.</b> Set STRIPE_SECRET_KEY on the server to pay with Stripe."}</div>`;
+    $("bountyActions").innerHTML = `${cancel}<button type="submit" class="cta" id="dlgPost">${stripe ? "Continue to Stripe →" : "Post bounty"}</button>`;
+    const syncReward = () => ($("bountyReward").value = $("bountyPain").selectedOptions[0].dataset.reward);
+    $("bountyPain").onchange = syncReward;
+    syncReward();
+  }
+  if (!dlg.open) dlg.showModal();
+};
+
+$("bountyForm").onsubmit = (e) => {
+  e.preventDefault();
+  busy($("dlgPost"), async () => {
+    const bounty = await post("/api/bounties", { painId: $("bountyPain").value, reward: Number($("bountyReward").value) });
+    if (bounty.checkoutUrl) return (location.href = bounty.checkoutUrl);
+    $("bountyDialog").close();
+    if (bounty.id) await post(`/api/bounties/${bounty.id}/run`);
+  });
+};
+window.fundBounty = async (id) => {
+  const { checkoutUrl } = await post(`/api/bounties/${id}/fund`);
+  if (checkoutUrl) location.href = checkoutUrl;
+};
+window.runBounty = (id) => post(`/api/bounties/${id}/run`);
+
+$("scanBtn").onclick = () => busy($("scanBtn"), () => post("/api/scan"));
+$("demoBtn").onclick = () => busy($("demoBtn"), () => post("/api/demo", { reward: 400 }));
+$("resetBtn").onclick = () => busy($("resetBtn"), async () => { await post("/api/reset"); $("ticker").innerHTML = ""; });
+
+if (location.protocol === "file:") $("fileBanner").hidden = false;
+get("/api/me").then(({ viewer }) => {
+  if (!viewer) return;
+  $("userChip").innerHTML = `<img src="${esc(viewer.avatarUrl)}" alt=""><span>@${esc(viewer.login)}<br><span class="role-tag">Team · switch</span></span>`;
+  $("userChip").hidden = false;
+});
+let payments = "simulated";
+get("/api/health").then((h) => {
+  payments = h.payments;
+  $("mode").textContent = `${h.mock ? "Mock agents" : "Live Claude agents"} · ${{ "stripe-live": "Stripe live payments (real money)", "stripe-test": "Stripe test payments" }[h.payments] ?? "Simulated payments"}`;
+});
+
+// Back from Stripe Checkout.
+const funding = new URLSearchParams(location.search).get("funding");
+if (funding) {
+  history.replaceState(null, "", location.pathname);
+  const msg = { held: "✓ Funded: the reward is on hold in escrow and agents are starting", cancelled: "Checkout cancelled: the bounty is waiting for funding", failed: "Funding didn't go through; see the ticker" }[funding];
+  if (msg) setTimeout(() => tickerLine({ type: funding === "held" ? "escrow.held" : "escrow.error", at: new Date().toISOString(), message: msg }), 300);
+}
+// Back from buying a credit pack.
+const creditsReturn = new URLSearchParams(location.search).get("credits");
+if (creditsReturn) {
+  history.replaceState(null, "", location.pathname);
+  const msg = { added: "✓ Credits added", cancelled: "Credit purchase cancelled: nothing was charged", failed: "Credit purchase didn't go through; see the ticker" }[creditsReturn];
+  if (msg) setTimeout(() => tickerLine({ type: creditsReturn === "added" ? "escrow.charged" : "escrow.error", at: new Date().toISOString(), message: msg }), 300);
+}
+
+// Live ticker: ask the server for new events about once a second. These are
+// quick requests rather than a held-open stream, so any number of Shoal tabs
+// can be open without using up the browser's ~6 connections per site.
+// Background tabs pause and catch up when shown again.
+const POLL_MS = 1000;
+let lastEventId = 0;
+let pollTimer = null;
+
+async function pollEvents() {
+  pollTimer = null;
+  try {
+    const { events, last } = await get(`/api/events/poll?after=${lastEventId}`);
+    if (last < lastEventId) $("ticker").innerHTML = ""; // server restarted
+    lastEventId = last;
+    for (const e of events) {
+      tickerLine(e);
+      // Re-scan after a fix lands so the Pain Graph shows the test going green.
+      if (e.type === "bounty.settled" && Date.now() - new Date(e.at) < 5000) post("/api/scan");
+    }
+    if (events.length) refresh();
+  } catch {
+    // Server down or restarting: keep trying.
+  }
+  if (!document.hidden) pollTimer = setTimeout(pollEvents, POLL_MS);
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  } else if (!pollTimer) {
+    pollEvents();
+    refresh();
+  }
+});
+pollEvents();
+refresh();
+checkClaude();
+</script>
+</body>
+</html>
