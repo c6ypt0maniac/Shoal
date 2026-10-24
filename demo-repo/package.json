@@ -1,0 +1,10 @@
+{
+  "name": "aggie-shop",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Demo storefront with deliberately flaky tests. Shoal agents compete to fix them.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}
