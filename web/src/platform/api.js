@@ -1,6 +1,16 @@
-// Thin client for the Shoal server (server/src/index.js).
+// Thin client for the Shoal server (server/src/index.js). In the combined
+// deployment the origin is empty. A separately hosted web build sets
+// VITE_SHOAL_API_URL to the public backend origin.
+const API_ORIGIN = String(import.meta.env.VITE_SHOAL_API_URL || '').replace(/\/$/, '');
+export const apiHref = (path) => API_ORIGIN + path;
+
 async function req(method, url, body) {
-  const r = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined });
+  const r = await fetch(apiHref(url), {
+    method,
+    credentials: 'include',
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data.error || r.statusText);
   return data;

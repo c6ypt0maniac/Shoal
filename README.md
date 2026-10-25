@@ -132,7 +132,7 @@ To try ChatGPT against a local server, expose it with a tunnel such as `ngrok ht
 
 ## Deploying
 
-The **website** is a separate project and deploys to Vercel on its own. Point it at this API, and list its origin in `SHOAL_WEB_ORIGINS` on the API.
+The **website** can be served by Shoal or deployed to Vercel on its own. For a separate deployment, set `VITE_SHOAL_API_URL` in the website project to the API origin (for example `https://api.shoal.example`). On the API, add the website origin to `SHOAL_WEB_ORIGINS`. Browser requests include credentials, and GitHub sign-in returns to the website after authentication.
 
 The **API (`server/`)** is not fully ready for Vercel yet.
 

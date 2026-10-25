@@ -2,7 +2,7 @@
 // free through Shoal's MCP server, Shoal proves the best fixes, and the team
 // buys the cheapest proven one with credits (server/src/trial-runner.js, proof.js).
 import { useEffect, useState } from 'react';
-import { api } from './api.js';
+import { api, apiHref } from './api.js';
 import { Empty, Tag, card, field, ghost, primary, STATUS, tone } from './ui.jsx';
 
 const usd = (n) => (n == null ? '–' : '$' + Number(n).toFixed(n < 1 ? 4 : 2));
@@ -103,7 +103,7 @@ export default function Trials({ s, act, go }) {
             <div key={x.id} className="flex flex-col gap-1 border-t border-ink/10 py-3 text-[15px] first:border-t-0">
               <span><span className={x.status === 'passed' ? 'text-accent' : x.status === 'failed' ? 'text-bad' : 'text-muted'}>{x.status === 'passed' ? 'Passed' : x.status === 'failed' ? 'Failed' : 'Verifying'}</span> · {t.models[x.model]?.name || x.model} on <span className="font-mono text-sm">{x.testFile}</span>{x.linesChanged != null ? ' · ' + x.linesChanged + ' lines' : ''}</span>
               <span className="text-sm text-muted">{x.status === 'failed' ? x.reason : x.summary}</span>
-              <span className="flex flex-wrap gap-3 text-sm">{x.files.map((f) => <a key={f} className="text-accent underline" href={'/api/trials/' + x.id + '/file?path=' + encodeURIComponent(f)}>{f}</a>)}<a className="text-accent underline" href={'/api/trials/' + x.id + '/repo'}>Whole repo with this fix (.zip)</a></span>
+              <span className="flex flex-wrap gap-3 text-sm">{x.files.map((f) => <a key={f} className="text-accent underline" href={apiHref('/api/trials/' + x.id + '/file?path=' + encodeURIComponent(f))}>{f}</a>)}<a className="text-accent underline" href={apiHref('/api/trials/' + x.id + '/repo')}>Whole repo with this fix (.zip)</a></span>
             </div>
           ))}
         </div>
