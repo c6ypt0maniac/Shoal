@@ -6,3 +6,4 @@ node_modules/
 web/dist/
 .env.*
 !.env.example
+desktop/release/

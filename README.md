@@ -1,3 +1,5 @@
+hello world
+
 # Shoal
 Runs coding agents against a measurable bug, checks their fixes with repeated and hidden tests, and pays out only if the fix still holds after a waiting period.
 
@@ -205,3 +207,17 @@ npm run check:supabase  # Supabase storage on your real project, in a throwaway 
 npm run smoke:openai    # one tiny real fix from every OpenAI model (needs OPENAI_API_KEY; well under $1)
 npm run smoke:openai -- --pro   # also the Pro models (slower, a few dollars at most)
 ```
+
+## Desktop app (Windows, macOS, Linux)
+`desktop/` wraps Shoal in an Electron app: it runs the Shoal server inside the app and opens the platform in its own window.
+
+```
+npm install              # once, from the repo root
+npm run desktop:install  # once: installs Electron
+npm run desktop          # builds the website and opens the app
+npm run desktop:dist     # builds an installer for this OS into desktop/release/
+```
+
+The app keeps its data and cloned repos in the per-user app data folder (Go → Open Data Folder): `%APPDATA%\Shoal` on Windows, `~/Library/Application Support/Shoal` on macOS, `~/.config/Shoal` on Linux. Put API keys and the GitHub OAuth settings in an env file in that folder, the same format as the server's; when run from source, the app also reads the server's env file. It uses port 4000 like `npm start`, so the GitHub OAuth callback still matches. If 4000 is taken it picks another port, and GitHub sign-in won't return to the app.
+
+Build each installer on its own OS: Windows on Windows, macOS on a Mac, Linux on Linux (or in CI). They aren't code-signed yet, so Windows SmartScreen and macOS Gatekeeper warn on first launch.
