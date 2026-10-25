@@ -43,6 +43,12 @@ export const state = {
   billing: {},
   // GitHub repos connected before, most recent first (repos.js).
   recentRepos: [],
+  // What Shoal spent and earned per bug in sealed API trials (spend.js).
+  trialSpend: {},
+  // Run trials, judges and challenge tests on the team's own Claude Code /
+  // Codex / MCP app instead of Shoal's API keys. Off by default (Shoal pays
+  // every token); SHOAL_TEAM_PLAN=1 starts with it on.
+  useTeamPlan: process.env.SHOAL_TEAM_PLAN === "1",
 };
 
 // Unique across restarts, since bounties and the ledger are kept on disk.

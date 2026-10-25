@@ -623,10 +623,11 @@ function proofCard(c, proof) {
     parts.push(row(k.challenge.ok, t.length ? `Challenge tests: passed ${t.filter((x) => x.passed).length} of ${t.length}` : "Challenge tests",
       `${t.map((x) => `${x.passed ? "✓" : "✗"} ${esc(x.name)}${x.failsOnOriginal ? ` <span class="hint">(the original code fails this)</span>` : ""}`).join("<br>")}
        ${k.challenge.error ? `<b>${esc(k.challenge.error)}</b>` : ""}
-       ${k.challenge.author ? `<br><span class="hint">Written by ${esc(k.challenge.author)} after reading all the shared code and every model's fix. Each test ran 3 times.</span>` : ""}
+       ${k.challenge.author ? `<br><span class="hint">Written by ${esc(k.challenge.author)} after reading the failing test, the code it imports and every fix, unlabelled. Each test ran 3 times.</span>` : ""}
        ${k.challenge.source ? `<details><summary class="hint">Show the challenge tests</summary><div class="diff"><div class="diff-file">${esc(k.challenge.file)}</div>${k.challenge.source.split("\n").map((l) => `<div class="dl">${esc(l)}</div>`).join("")}</div></details>` : ""}`));
   } else if (c.status === "checking") parts.push(row(null, "Challenge tests", `<span class="hint">Writing and running challenge tests…</span>`));
-  if (k.review) {
+  if (k.review?.skipped) parts.push(row(false, "Second opinion: not asked", `<span class="hint">${esc(k.review.reason)}</span>`));
+  else if (k.review) {
     // Two judges, Claude and OpenAI; both must pass.
     for (const j of k.review.judges ?? []) {
       parts.push(j.status === "waiting"

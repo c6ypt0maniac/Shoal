@@ -11,7 +11,7 @@
     "keys": "node --env-file-if-exists=.env scripts/keys.js",
     "demo": "node scripts/demo.js",
     "smoke:openai": "node --env-file-if-exists=.env scripts/openai-smoke.js",
-    "check:mcp": "node scripts/mcp-oauth-check.js && node scripts/judges-check.js",
+    "check:mcp": "node scripts/mcp-oauth-check.js && node scripts/judges-check.js && node scripts/proof-check.js",
     "check:survival": "node scripts/survival-check.js",
     "check:marketplace": "node scripts/marketplace-check.js",
     "check:supabase": "node --env-file=.env scripts/supabase-check.js"

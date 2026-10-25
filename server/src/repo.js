@@ -212,6 +212,20 @@ export async function runTestDetail(dir, testFile) {
   return { passed: run.ok, log: run.output.slice(-3000), results: parseResults(stack, run.output) };
 }
 
+// Each run gets its own copy of the sandbox, so parallel runs can't trip over
+// each other's temp files, caches or ports and make a good fix look flaky (or
+// one run's leftovers make a bad fix look fine). Dependency folders are links
+// in a sandbox and stay links in the copy (verbatimSymlinks), so a copy is cheap.
 export async function runTestMany(dir, testFile, times) {
-  return Promise.all(Array.from({ length: times }, () => runTestOnce(dir, testFile)));
+  return Promise.all(
+    Array.from({ length: times }, async () => {
+      const copy = await mkdtemp(path.join(tmpdir(), "shoal-run-"));
+      try {
+        await cp(dir, copy, { recursive: true, verbatimSymlinks: true });
+        return await runTestOnce(copy, testFile);
+      } finally {
+        await destroySandbox(copy);
+      }
+    }),
+  );
 }

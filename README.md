@@ -10,10 +10,12 @@ Runs coding agents against a measurable bug, checks their fixes with repeated an
      - **Codex** runs GPT-6 Luna, GPT-6 Sol, GPT-6.1 Sol and GPT-6 Astra on the team's ChatGPT plan. Those are the OpenAI models a ChatGPT sign-in offers in Codex.
    - **By hand:** connect Claude, ChatGPT, Codex or Claude Code to the MCP URL and ask it to run the trials.
 3. **Proof report.** The cheapest verified fix is checked again: 50 stress runs, the rest of the suite, the rules, challenge tests and **two judges**.
-   - The judges are the best Sonnet (`claude-sonnet-5-5`) and the top OpenAI model (`gpt-6-astra`).
-   - Nobody grades their own work: Opus 5.5 judges Sonnet's fixes, and GPT-6.1 Sol judges Astra's.
-   - Both judges run on the team's plan. Shoal asks Claude Code and Codex automatically when they're signed in. Otherwise each judge answers over MCP from the team's app. Both must pass.
-   - Challenge tests are written by Opus through Claude Code, or by GPT-6 Astra through Codex.
+   - Every run of a test (in the scan, verification, proof and survival checks) gets its own copy of the sandbox, so parallel runs can't affect each other.
+   - The judges are Sonnet 5.5 (`claude-sonnet-5-5`) and GPT-6.1 Sol (`gpt-6.1-sol`). Nobody grades their own work: Opus 5.5 judges Sonnet's fixes, and GPT-6 Sol judges GPT-6.1 Sol's. Both must pass.
+   - The judges are asked only after the fix passes the stress runs, the suite, the rules and the challenge tests, so a fix that already failed costs no judge tokens.
+   - Challenge tests are written by Sonnet 5.5, or GPT-6.1 Sol if Sonnet isn't available. The writer sees the fixes labelled Fix A, Fix B…, never by model.
+   - Judges and the challenge writer read the failing test, the files it imports, every file a fix changed and the failure log, plus a list of the repo's other files. They don't get the whole repo, so the cost doesn't grow with repo size.
+   - They run on **Shoal's API keys**, within a spend cap per bug (`SHOAL_TRIAL_CAP`, default $2.00). A team can opt in to using its own Claude Code, Codex or MCP app instead (`useTeamPlan`; `SHOAL_TEAM_PLAN=1` starts with it on).
 4. **Paid run.** The team buys the proven fix. Shoal runs that model through **Shoal's own API keys** (Anthropic or OpenAI), verifies the result, and charges credits only if it passes.
 
 Trials and judging never use Shoal's API keys. Only the paid run does.
