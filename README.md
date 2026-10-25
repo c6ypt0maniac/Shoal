@@ -22,8 +22,7 @@ Start them with `POST /api/trials/sealed {painId?}` (every flaky test without a 
    - A model is never asked twice on the same bug, for a diagnosis or a fix.
    - Shoal tags each fix with the model that wrote it and records what the call really cost.
    - Every call is checked against a **spend cap per bug** (`SHOAL_TRIAL_CAP`, default $2.00) before it's made. A call that would go over the cap isn't made, and the ladder stops.
-   - **Sealed:** until the team unlocks, no fix code leaves Shoal: not in `/api/trials`, the MCP tools or the dashboard. The team sees diff stats, which checks passed and the judges' summaries, with quoted code cut.
-   - **Opt-in:** a team can still run trials and judges on its own Claude Code, Codex or MCP app (`useTeamPlan`; `SHOAL_TEAM_PLAN=1` starts with it on). Those fixes aren't sealed, and are bought the old way: Shoal re-runs that model on its keys and charges credits if it passes (`POST /api/trials/approve`).
+   - **Sealed:** until the team unlocks, no fix code leaves Shoal: not in `/api/trials` or the dashboard. The team sees diff stats, which checks passed and the judges' summaries, with quoted code cut.
 3. **Proof report.** The cheapest verified fix is checked again: 50 stress runs, the rest of the suite, the rules, challenge tests and **two judges**.
    - Verification runs scale with how often the test failed in the scan: enough runs to catch a fix that didn't work with 95% confidence, between 10 and 150, in batches of 10, stopping at the first failure.
    - Every run of a test (in the scan, verification, proof and survival checks) gets its own copy of the sandbox, so parallel runs can't affect each other.
@@ -108,7 +107,7 @@ The default sort is `best`, which uses Shoal's verified record only. Stars and e
   - Builders reply once with `POST /api/marketplace/reviews/:id/reply`.
   - Votes: `POST` or `DELETE /api/marketplace/reviews/:id/helpful`.
 
-**Judges.** A verified fix only wins if both judges pass it: the best Sonnet and the top OpenAI model. Neither ever judges its own fix. Verified fixes are judged in scorecard order, and the first that both pass wins. Each judge runs on Shoal's API key, or on the team's own Claude Code or Codex if the team opted in (`useTeamPlan`). If neither is available, nothing wins and the hold is released. Mock mode (no keys) uses stand-in judges.
+**Judges.** A verified fix only wins if both judges pass it: the best Sonnet and the top OpenAI model. Neither ever judges its own fix. Verified fixes are judged in scorecard order, and the first that both pass wins. Each judge runs on Shoal's API key; if OpenAI can't answer, another Claude model stands in. If no judge can run, nothing wins and the hold is released. Mock mode (no keys) uses stand-in judges.
 
 ## Storage (Supabase)
 
@@ -139,34 +138,9 @@ Every key is optional locally. `npm run keys` covers Anthropic, OpenAI, OpenRout
 
 The landing page lives in `web/` (React + Vite + Tailwind). From the repo root, `npm install` then `npm start` builds it and serves it at `/`. The sign-in page moves to `/start`. If `web/` hasn't been built, `/` falls back to the sign-in page. To work on the landing page, run `npm run dev:web` (http://localhost:5173, `/api` proxied to port 4000) alongside `npm run dev`.
 
-With no keys at all, agents are mocked so the demo runs end to end. Then:
+With no keys at all the server is in practice mode: agents and judges are mocked so the demo runs end to end on the bundled demo repo. Bounties and trials on any other repo need `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`.
 
-- **One-click trials:** install either app on the machine running Shoal, then sign in from the dashboard's **Model trials** section.
-  - [Claude Code](https://claude.com/claude-code)
-  - Codex: `npm install -g @openai/codex`. Sign in with ChatGPT; the dashboard shows the device code.
-- **Your own Claude Code session:** run `claude mcp add --transport http shoal http://localhost:4000/mcp`. Requests from localhost skip sign-in.
-- **ChatGPT, Codex or Claude on the web:** these need a public HTTPS URL and GitHub sign-in. See [Connect AI apps](#connect-ai-apps-to-the-mcp).
-
-## Connect AI apps to the MCP
-
-Set `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `SHOAL_AUTH_SECRET` and `SHOAL_PUBLIC_URL` (see [Environment](#environment)). The MCP URL is then `<SHOAL_PUBLIC_URL>/mcp`.
-
-- Each app registers itself automatically and the person signs in with GitHub.
-- Only GitHub accounts that can read the connected repo get in.
-- `GET /api/mcp` returns these steps as JSON, for the website to show.
-
-| App | How to connect |
-|---|---|
-| Claude Code | `claude mcp add --transport http shoal <URL>`, then `/mcp` to sign in |
-| Claude | Settings → Connectors → Add custom connector → paste the URL |
-| Codex | `codex mcp add shoal --url <URL>` (or `codex mcp login shoal`) |
-| ChatGPT | Settings → Apps & Connectors → Advanced → Developer mode on → Create connector with the URL, auth OAuth. Needs a plan with developer mode. |
-
-Once connected, ask the app to "run Shoal's trials" (prompt `run_trials`) or to "review Shoal's fixes" (prompt `review_fixes`).
-
-In ChatGPT or Codex one chat runs one model, so to compare models, switch models and run again. For a review, switch to the model the review asks for: `list_reviews` shows it.
-
-To try ChatGPT against a local server, expose it with a tunnel such as `ngrok http 4000`, and set `SHOAL_PUBLIC_URL` to the tunnel's https URL.
+Shoal doesn't use MCP or the Claude Code / Codex apps: every diagnosis, fix, challenge test and judge is a call on Shoal's own API keys.
 
 ## Deploying
 
@@ -176,7 +150,6 @@ The **API (`server/`)** is not fully ready for Vercel yet.
 
 These parts already work on Vercel:
 - `src/index.js` exports the Express app and only listens when it's not on Vercel.
-- MCP sign-in is stateless: encrypted tokens, no database needed.
 - CORS, proxy trust and the public URL are all configured by environment variables.
 
 These parts still assume one long-running Node process with a writable disk:
@@ -187,16 +160,14 @@ These parts still assume one long-running Node process with a writable disk:
 | Repo clones and the workspace are written under `server/` | Only `/tmp` is writable on Vercel | Hosted sandboxes |
 | Tests run as child processes (`repo.js`, `verifier.js`, `proof.js`) | Functions can't reliably install toolchains or run long test loops | Vercel Sandbox, E2B or Modal |
 | Scans, proofs and paid runs keep working after the HTTP response | Functions freeze after responding | A queue or workflow engine (e.g. Temporal, Vercel Queues) |
-| One-click trials, challenge-test writing and the automatic judges start Claude Code or Codex (`claude-runner.js`, `codex-runner.js`) | Neither CLI can run on Vercel | Only used when a team opts in (`useTeamPlan`). By default trials, challenge tests and judges are API calls on Shoal's keys. |
 | `/api/events` live stream | Limited by the function's maximum duration | Polling `/api/events/poll` (already exists) or a realtime service |
 
 **Until those are done:** host the API on any always-on Node 22+ server (Render, Fly.io, Railway, a VM), and put the website on Vercel.
 
-1. Create a GitHub OAuth App with the callback URL `https://<api-domain>/api/auth/github/callback`. The MCP sign-in uses `.../callback/mcp` under the same app.
+1. Create a GitHub OAuth App with the callback URL `https://<api-domain>/api/auth/github/callback`.
 2. Set the environment variables below. Set `SHOAL_TRUST_PROXY=1` if the host puts a proxy in front.
 3. Start the API with `npm start` from `server/`, with Node 22 or newer.
-4. Check that `https://<api-domain>/mcp` opens the setup page in a browser.
-5. Connect one of the apps above.
+4. Check that `https://<api-domain>/api/health` answers.
 
 **Deploying the API to Vercel once it's ready:** create a Vercel project with Root Directory `server`. Vercel detects the Express app in `src/index.js`. Add the same environment variables. `SHOAL_PUBLIC_URL` can be left unset to use the production domain.
 
@@ -206,17 +177,14 @@ All of these are in [`server/.env.example`](server/.env.example). `npm run keys`
 
 | Variable | Needed for |
 |---|---|
-| `SHOAL_PUBLIC_URL` | The API's public origin. OAuth redirects and the MCP URL are built from it. |
+| `SHOAL_PUBLIC_URL` | The API's public origin. OAuth redirects are built from it. |
 | `SHOAL_WEB_ORIGINS` | The website's origin(s): CORS with cookies, and where GitHub sign-in may return to |
-| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub sign-in on the dashboard and for MCP apps. Setting them turns on the hosted MCP. |
-| `SHOAL_AUTH_SECRET` | Encrypts MCP sign-ins. Required when hosted. Generate one with `openssl rand -hex 32`. |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub sign-in on the dashboard. |
+| `SHOAL_AUTH_SECRET` | Encrypts stored builder webhook secrets. Generate one with `openssl rand -hex 32`. |
 | `ANTHROPIC_API_KEY` | Sealed trials, challenge tests and judges on Claude models. Also the marketplace agents (model `SHOAL_MODEL`). |
 | `OPENAI_API_KEY` | Sealed trials, challenge tests and judges on OpenAI models. Also the marketplace agents when there's no Anthropic key (model `SHOAL_OPENAI_MODEL`, default `gpt-6.1-sol`). |
-| `SHOAL_CODEX_MODELS` | Which OpenAI models one-click Codex trials run. Default: `gpt-6-luna,gpt-6-sol,gpt-6.1-sol,gpt-6-astra`. |
 | `SHOAL_TRIAL_CAP` | Most Shoal spends on one bug's trials and proof, in dollars. Default `2`. |
 | `SHOAL_OWNERS` | GitHub logins that can see `/api/owner/margins`. Unset: only requests from the server's own machine. |
-| `SHOAL_TEAM_PLAN=1` | Start with trials and judges on the team's own Claude Code, Codex or MCP app. |
-| `CLAUDE_BIN`, `CODEX_BIN` | Paths to the CLIs, if they aren't on `PATH` |
 | `STRIPE_SECRET_KEY` (+ `STRIPE_ALLOW_LIVE=1` for live) | Real escrow and credit purchases. Simulated without it. |
 | `SHOAL_TRUST_PROXY=1` | Behind a proxy other than Vercel |
 | `OPENROUTER_API_KEY` | OpenRouter models imported into the marketplace competing on bounties |
@@ -225,11 +193,11 @@ All of these are in [`server/.env.example`](server/.env.example). `npm run keys`
 
 ## Models
 
-`server/src/trials.js` lists every model a trial can be tagged with and a paid run can use:
+`server/src/trials.js` lists every model Shoal can run through the API, with its prices:
 - 4 Claude models
 - every current OpenAI API text model, from GPT-6 Astra down to GPT-4o mini and the o-series
 
-Any of them can win a trial and be bought as a paid run. One-click Codex trials cover the four OpenAI models a ChatGPT sign-in offers. Other models can still be tried by hand from ChatGPT or Codex.
+Sealed trials and bounty races use the step ladder and competitors described above; any of these models can be picked as a bounty competitor.
 
 OpenAI prices come from OpenAI's official pricing page and were checked on 2026-10-24. Update them there when prices change.
 
@@ -239,7 +207,7 @@ The trial optimizer picks the cheapest model whose quality is within 5 points of
 
 ```sh
 cd server
-npm run check:mcp       # MCP OAuth sign-in, the two-judge review flow, judges skipped for a fix that failed its tests, and sealed trials: the step ladder, sealing, unlock, no retries, the spend cap (no keys, no spend)
+npm run check:trials    # proof report (judges skipped for a fix that failed its tests), sealed trials (diagnose, recommend, authorize, charge once), the diagnosis race for bounties, deleting bounties (no keys, no spend)
 npm run check:survival  # bounty competition, survival window, clawback + refund, payout, scorecards, saved state
 npm run check:marketplace  # builder webhook agent, competitor picks, judges, reviews/replies/votes, filters, OpenRouter import
 npm run check:supabase  # Supabase storage on your real project, in a throwaway shoal_test schema (needs SUPABASE_DB_URL)

@@ -29,7 +29,6 @@ export const api = {
   setupBilling: (from) => post('/api/billing/setup', { from }),
   billingLater: () => post('/api/billing/later'),
   removeBilling: () => del('/api/billing'),
-  mcp: () => get('/api/mcp'),
 
   // Repo connection
   connection: () => get('/api/connection'),
@@ -68,14 +67,6 @@ export const api = {
 
   // Model trials and the approved API fix
   trials: () => get('/api/trials'),
-  claude: (fresh) => get('/api/claude' + (fresh ? '?fresh=1' : '')),
-  claudeLogin: () => post('/api/claude/login'),
-  claudeCode: (code) => post('/api/claude/login/code', { code }),
-  codex: (fresh) => get('/api/codex' + (fresh ? '?fresh=1' : '')),
-  codexLogin: () => post('/api/codex/login'),
-  runTrials: (use) => post('/api/trials/run', use ? { use } : {}),
-  stopTrials: () => post('/api/trials/stop'),
-  approve: (painId) => post('/api/trials/approve', { painId }),
   sealedTrials: (painId) => post('/api/trials/sealed', painId ? { painId } : {}),
   unlock: (trialId) => post('/api/trials/' + id(trialId) + '/unlock', {}),
   authorize: (painId) => post('/api/trials/authorize', { painId }),

@@ -14,10 +14,9 @@ export const state = {
   pains: [],
   bounties: [],
   ledger: [],
-  // Trial fixes submitted over MCP, verified but never applied (see trials.js).
+  // Sealed trial fixes Shoal ran on its API keys, verified but never applied
+  // until the team authorizes one (trials.js, api-trials.js).
   trials: [],
-  // The latest one-click trial run (Claude Code and Codex, see trial-runner.js).
-  trialRun: null,
   // Proof reports keyed by trial id (see proof.js).
   proofs: {},
   // Test files the scan found but can't run here (toolchain missing).
@@ -47,10 +46,6 @@ export const state = {
   trialSpend: {},
   // The sealed trial ladder per bug (api-trials.js).
   apiTrials: {},
-  // Run trials, judges and challenge tests on the team's own Claude Code /
-  // Codex / MCP app instead of Shoal's API keys. Off by default (Shoal pays
-  // every token); SHOAL_TEAM_PLAN=1 starts with it on.
-  useTeamPlan: process.env.SHOAL_TEAM_PLAN === "1",
 };
 
 // Unique across restarts, since bounties and the ledger are kept on disk.
@@ -78,7 +73,6 @@ export function cardFor(id) {
 export function resetRepoState() {
   state.pains = [];
   state.trials = [];
-  state.trialRun = null;
   state.proofs = {};
   state.apiTrials = {};
   state.cantRun = [];
@@ -90,7 +84,6 @@ export function resetState() {
   state.bounties = [];
   state.ledger = [];
   state.trials = [];
-  state.trialRun = null;
   state.proofs = {};
   state.apiTrials = {};
   state.cantRun = [];

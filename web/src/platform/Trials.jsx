@@ -1,39 +1,17 @@
-// Model trials: Claude Code and Codex on this machine try every flaky test for
-// free through Shoal's MCP server, Shoal proves the best fixes, and the team
-// buys the cheapest proven one with credits (server/src/trial-runner.js, proof.js).
+// Model trials, sealed and on Shoal's API keys (server/src/api-trials.js):
+// models diagnose each flaky test, the best-value model is recommended, and
+// once the team authorizes it, it writes the fix, which is proven (proof.js)
+// and charged only if proven.
 import { useEffect, useState } from 'react';
 import { api } from './api.js';
 import { Empty, Tag, card, field, ghost, primary, STATUS, tone } from './ui.jsx';
 
 const usd = (n) => (n == null ? '–' : '$' + Number(n).toFixed(n < 1 ? 4 : 2));
 const H = ({ children }) => <h2 className="m-0 border-b border-ink/12 pb-3 text-[24px] font-semibold tracking-[-0.025em]">{children}</h2>;
-const RUN = { running: 'Running', done: 'Finished', failed: 'Failed', stopped: 'Stopped', timed_out: 'Timed out' };
-
-// One AI app (Claude Code or Codex): installed, signed in, and its sign-in flow.
-function Runner({ id, title, info, act, reload }) {
-  const [login, setLogin] = useState(null), [code, setCode] = useState('');
-  const start = act(async () => setLogin(await (id === 'claude' ? api.claudeLogin() : api.codexLogin())));
-  return (
-    <div className={card}>
-      <div className="flex items-center justify-between gap-3"><span className="whitespace-nowrap text-[19px] font-semibold">{title}</span>
-        <span className="shrink-0 whitespace-nowrap"><Tag tone={info?.loggedIn ? 'ok' : info && !info.installed ? 'bad' : undefined}>{!info ? 'Checking…' : !info.installed ? 'Not installed' : info.loggedIn ? 'Signed in' : 'Not signed in'}</Tag></span></div>
-      {info?.installed && <span className="break-all text-[15px] text-muted">Version {info.version}{info.email ? ' · ' + info.email : ''}{info.plan ? ' · ' + info.plan : ''}</span>}
-      {info && !info.installed && <span className="text-[15px] text-muted">Install {title} on the machine running the Shoal server, then check again.</span>}
-      {info?.installed && !info.loggedIn && !login && <button className={ghost + ' self-start'} onClick={start}>Sign in to {title}</button>}
-      {login && !info?.loggedIn && <div className="flex flex-col gap-2 text-[15px]">
-        {login.url && <span>Open <a className="break-all text-accent underline" href={login.url} target="_blank" rel="noreferrer">the sign-in page</a>{login.code ? <> and enter <code className="rounded bg-white/70 px-1.5">{login.code}</code></> : ''}.</span>}
-        {id === 'claude' && <div className="flex gap-2"><input className={field} value={code} onChange={(e) => setCode(e.target.value)} placeholder="Paste the code Claude shows you" /><button className={ghost} disabled={!code.trim()} onClick={act(async () => { await api.claudeCode(code.trim()); setCode(''); setLogin(null); reload(); })}>Finish</button></div>}
-      </div>}
-      <button className="self-start cursor-pointer text-sm text-accent" onClick={reload}>Check again</button>
-    </div>
-  );
-}
 
 export default function Trials({ s, act, go }) {
-  const [t, setT] = useState(null), [loadErr, setLoadErr] = useState(null), [claude, setClaude] = useState(null), [codex, setCodex] = useState(null), [mcp, setMcp] = useState(null), [n, setN] = useState(0);
-  const reloadApps = (fresh = true) => { api.claude(fresh).then(setClaude).catch(() => setClaude({ installed: false })); api.codex(fresh).then(setCodex).catch(() => setCodex({ installed: false })); };
-  useEffect(() => { reloadApps(false); api.mcp().then(setMcp).catch(() => {}); }, []);
-  // Trials, proofs and runs report progress as events; refetch when they arrive.
+  const [t, setT] = useState(null), [loadErr, setLoadErr] = useState(null), [n, setN] = useState(0);
+  // Trials and proofs report progress as events; refetch when they arrive.
   useEffect(() => { const h = setTimeout(() => api.trials().then((x) => { setT(x); setLoadErr(null); }, (e) => setLoadErr(e.message)), 150); return () => clearTimeout(h); }, [s.events.length, n]);
   // Couldn't load: try again every few seconds, so it recovers once the server is back.
   useEffect(() => { if (!loadErr) return; const h = setTimeout(() => setN((x) => x + 1), 4000); return () => clearTimeout(h); }, [loadErr, n]);
@@ -41,30 +19,14 @@ export default function Trials({ s, act, go }) {
   if (!t) return loadErr
     ? <Empty>{loadErr} <button className="cursor-pointer text-accent underline" onClick={() => setN((x) => x + 1)}>Retry</button></Empty>
     : <div className="text-muted">Loading…</div>;
-  const run = t.run, running = run?.status === 'running';
-  const ready = [claude?.loggedIn && 'claude', codex?.loggedIn && 'codex'].filter(Boolean);
   const balance = Number(s.credits?.balance ?? 0);
   const trialAct = (fn) => act(async (...a) => { await fn(...a); setN((x) => x + 1); });
   return (
     <section className="flex flex-col gap-5">
-      <H>AI apps on this machine</H>
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <Runner id="claude" title="Claude Code" info={claude} act={act} reload={() => reloadApps()} />
-        <Runner id="codex" title="Codex" info={codex} act={act} reload={() => reloadApps()} />
+      <div className={card}>
+        <span className="text-[19px] font-semibold">Sealed trials</span>
+        <span className="text-[15px] text-muted">Shoal's own models diagnose each flaky test, cheapest first, and recommend the best value. Nothing is written until you authorize it; you're charged only if the fix is proven. Trials need credits.</span>
       </div>
-      <div className={card + ' md:flex-row md:items-center'}>
-        <div className="flex flex-1 flex-col gap-1">
-          <span className="text-[19px] font-semibold">{running ? 'Trials are running' : 'Run a trial round'}</span>
-          <span className="text-[15px] text-muted">{running ? 'Started ' + new Date(run.startedAt).toLocaleTimeString() + ' with ' + run.runners.join(' and ') + ' on ' + run.problems.length + ' tests.' : 'Every signed-in app tries every flaky test on your own plan. Nothing is charged.'}</span>
-        </div>
-        {running ? <button className={ghost} onClick={trialAct(api.stopTrials)}>Stop</button> : <button className={primary} disabled={!ready.length} onClick={trialAct(() => api.runTrials(ready))}>Run trials{ready.length ? ' with ' + ready.map((x) => (x === 'claude' ? 'Claude Code' : 'Codex')).join(' + ') : ''}</button>}
-      </div>
-      {run && <div className="glass rounded-[20px] px-6 py-4 text-[15px]">
-        <div className="flex flex-wrap items-center gap-2"><Tag tone={run.status === 'done' ? 'ok' : ['failed', 'timed_out'].includes(run.status) ? 'bad' : undefined}>{RUN[run.status] || run.status}</Tag>{run.claudeCost != null && <span className="text-muted">Plan usage worth {usd(run.claudeCost)} at API prices</span>}</div>
-        {run.progress?.slice(-6).map((p, i) => <div key={i} className="mt-1 text-muted">{p.message}</div>)}
-        {run.error && <div className="mt-1 text-bad">{run.error}</div>}
-      </div>}
-
       {t.scoreboard.length > 0 && <>
         <H>Scoreboard</H>
         <div className="glass rounded-[20px] px-6 py-2">
@@ -85,8 +47,7 @@ export default function Trials({ s, act, go }) {
               <div className="flex flex-wrap gap-2">
                 {pr.checking && <Tag>Building proof report…</Tag>}
                 {pr.proven && <Tag tone="ok">Proven safe: {pr.proven.name}{pr.proven.score != null ? ' · trust ' + pr.proven.score : ''}</Tag>}
-                {pr.awaitingReview && <Tag>Waiting for a review from {pr.awaitingReview.name}</Tag>}
-                {!pr.checking && !pr.proven && pr.candidates?.length > 0 && !pr.awaitingReview && <Tag tone="bad">No fix proven</Tag>}
+                {!pr.checking && !pr.proven && pr.candidates?.length > 0 && <Tag tone="bad">No fix proven</Tag>}
                 {p.bounty && <Tag tone={tone(p.bounty.status)}>API fix: {STATUS[p.bounty.status] || p.bounty.status}</Tag>}
                 {p.ladder?.status === 'running' && <Tag>Diagnosing: step {p.ladder.step}</Tag>}
                 {p.ladder?.status === 'awaiting_authorization' && <Tag tone="ok">Best model: {p.ladder.pickName}</Tag>}
@@ -104,11 +65,9 @@ export default function Trials({ s, act, go }) {
                 </div>;
               })()}
               {pr.candidates?.filter((c) => c.checks?.review?.skipped).map((c) => <span key={c.trialId} className="text-sm text-muted">{c.name}: {c.checks.review.reason}</span>)}
-              {pr.awaitingReview && <span className="text-sm text-muted">Ask Claude, ChatGPT or Codex (connected to Shoal over MCP) to review the fixes.</span>}
               <div className="mt-auto flex flex-wrap gap-2 pt-2">
-                {pr.proven && !p.bounty && (p.sealed
-                  ? <button className={primary} disabled={price > balance} onClick={trialAct(() => api.unlock(pr.proven.trialId))}>Unlock fix · {usd(price)}</button>
-                  : <button className={primary} disabled={price > balance} onClick={trialAct(() => api.approve(p.painId))}>Buy fix · about {usd(price)}</button>)}
+                {/* Only if the charge after authorizing failed: retry it. */}
+                {pr.proven && !p.bounty && p.sealed && <button className={primary} disabled={price > balance} onClick={trialAct(() => api.unlock(pr.proven.trialId))}>Unlock fix · {usd(price)}</button>}
                 {p.ladder?.status === 'awaiting_authorization' && <button className={primary} disabled={p.ladder.quote > balance} onClick={trialAct(() => api.authorize(p.painId))}>Authorize {p.ladder.pickName} to fix · up to {usd(p.ladder.quote)}</button>}
                 {p.ladder?.status === 'awaiting_authorization' && p.ladder.quote > balance && <button className={ghost} onClick={() => go('billing')}>Add credits</button>}
                 {!pr.proven && !['running', 'awaiting_authorization', 'fixing'].includes(p.ladder?.status) && <button className={ghost} disabled={t.canRunTrials !== true} title={t.canRunTrials === true ? '' : t.canRunTrials} onClick={trialAct(() => api.sealedTrials(p.painId))}>Run sealed trials</button>}
@@ -133,13 +92,6 @@ export default function Trials({ s, act, go }) {
         </div>
       </>}
 
-      {mcp?.clients?.length > 0 && <>
-        <H>Run trials from your own AI app</H>
-        <div className="flex flex-col gap-3">{mcp.clients.map((c) => (
-          <div key={c.app} className={card}><span className="font-semibold">{c.app}</span><span className="text-[15px] text-muted">{c.steps}</span>
-            <div className="flex gap-2"><code className="min-w-0 flex-1 break-all rounded-lg bg-white/70 px-3 py-2 text-sm">{c.command}</code><button className={ghost} onClick={() => navigator.clipboard?.writeText(c.command)}>Copy</button></div></div>
-        ))}</div>
-      </>}
     </section>
   );
 }

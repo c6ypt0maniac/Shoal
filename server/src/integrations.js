@@ -85,7 +85,7 @@ export const INTEGRATIONS = [
   {
     id: "github",
     name: "GitHub OAuth App",
-    turnsOn: "Sign in with GitHub, private repos, and the hosted MCP",
+    turnsOn: "Sign in with GitHub and private repos",
     where: "github.com/settings/developers -> OAuth Apps; callback <SHOAL_PUBLIC_URL>/api/auth/github/callback",
     vars: [
       { name: "GITHUB_CLIENT_ID" },
@@ -107,7 +107,7 @@ export const INTEGRATIONS = [
   {
     id: "auth-secret",
     name: "Shoal auth secret",
-    turnsOn: "MCP sign-ins that survive restarts",
+    turnsOn: "Storing builder webhook secrets",
     where: "generated here (openssl rand -hex 32)",
     vars: [{ name: "SHOAL_AUTH_SECRET", secret: true, generate: true }],
     async check({ SHOAL_AUTH_SECRET: s }) {

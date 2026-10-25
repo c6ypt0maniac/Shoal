@@ -84,7 +84,6 @@ const VALUES = {
   billing: { get: () => state.billing, set: (v) => (state.billing = v ?? {}) },
   recentRepos: { get: () => state.recentRepos, set: (v) => (state.recentRepos = v ?? []) },
   trialSpend: { get: () => state.trialSpend, set: (v) => (state.trialSpend = v ?? {}) },
-  useTeamPlan: { get: () => state.useTeamPlan, set: (v) => { if (typeof v === "boolean") state.useTeamPlan = v; } },
 };
 
 // Real columns and constraints per table, on top of id + data.
@@ -252,7 +251,6 @@ export async function loadState() {
   VALUES.billing.set(saved.billing);
   VALUES.recentRepos.set(saved.recentRepos);
   VALUES.trialSpend.set(saved.trialSpend);
-  VALUES.useTeamPlan.set(saved.useTeamPlan);
 
   // A fresh or imported store gets everything written now; otherwise only
   // what changes from here on.

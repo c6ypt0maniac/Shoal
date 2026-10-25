@@ -25,7 +25,7 @@ const dirOf = (p) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : ".");
 
 // Something is using the current code, so swapping it now would mix versions.
 function busy() {
-  if (state.trialRun?.status === "running") return "a model trial is running";
+  if (Object.values(state.apiTrials ?? {}).some((l) => ["running", "fixing"].includes(l.status))) return "a model trial is running";
   if (isProving()) return "a proof report is being built";
   if (isCheckingSurvival()) return "a survival check is running";
   if (state.bounties.some((b) => ["competing", "verifying", "judging"].includes(b.status))) return "a fix is being made";

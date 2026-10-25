@@ -16,14 +16,9 @@ process.env.PORT = "4105";
 process.env.SHOAL_MOCK = "1";
 process.env.SHOAL_DATA_DIR = mkdtempSync(path.join(tmpdir(), "shoal-proof-"));
 process.env.SHOAL_WORKSPACE = ".workspace-proofcheck";
-process.env.CLAUDE_BIN = "/nonexistent/claude";
-process.env.CODEX_BIN = "/nonexistent/codex";
 delete process.env.SUPABASE_DB_URL;
 delete process.env.GITHUB_CLIENT_ID;
-delete process.env.SHOAL_TEAM_PLAN;
 
-const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
-const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
 await import("../src/index.js");
 const { DEMO_REPO } = await import("../src/repo.js");
 
@@ -34,9 +29,15 @@ const check = (label, pass, detail = "") => {
   ok &&= pass;
 };
 const api = async (p, body) => (await fetch(BASE + p, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {})).json();
-const client = new Client({ name: "proof-check", version: "1" });
-await client.connect(new StreamableHTTPClientTransport(new URL(`${BASE}/mcp`)));
-const call = async (name, args = {}) => JSON.parse((await client.callTool({ name, arguments: args })).content[0].text);
+const { state } = await import("../src/store.js");
+const { submitTrial } = await import("../src/trials.js");
+// A trial fix, straight into Shoal's trial verifier (sealed trials do the
+// same with a model's API answer, api-trials.js).
+const trial = async ({ model, summary, files }) => {
+  const t = await submitTrial({ painId: cart.id, model, summary, files, client: { app: "proof-check" } });
+  return { result: t.status, reason: t.reason, trialId: t.id };
+};
+let cart;
 
 // The proof for a problem, once it's finished checking.
 async function proofOf(painId) {
@@ -50,8 +51,7 @@ async function proofOf(painId) {
 
 try {
   await api("/api/scan", {});
-  const { problems } = await call("list_problems");
-  const cart = problems.find((p) => p.testFile === "test/cart.test.js");
+  cart = state.pains.find((p) => p.testFile === "test/cart.test.js" && !p.healthy);
   check("scan found the flaky cart test", Boolean(cart));
 
   const cartFixed = (await readFile(path.join(DEMO_REPO, "src/cart.js"), "utf8")).replace("    lookupDiscount(code).then(", "    return lookupDiscount(code).then(");
@@ -59,18 +59,17 @@ try {
   const ordersBroken = (await readFile(path.join(DEMO_REPO, "src/orders.js"), "utf8")).replace("`ORD-${Math.floor(Math.random() * 200)}`", '"ORD-1"');
 
   console.log("1. A fix that passes the verifier but makes the orders test worse");
-  const bad = await call("submit_trial", { problem_id: cart.id, model: "claude-haiku-5-5", summary: "Return the lookup promise; simplify order ids.", files: [{ path: "src/cart.js", content: cartFixed }, { path: "src/orders.js", content: ordersBroken }] });
+  const bad = await trial({ model: "claude-haiku-5-5", summary: "Return the lookup promise; simplify order ids.", files: [{ path: "src/cart.js", content: cartFixed }, { path: "src/orders.js", content: ordersBroken }] });
   check("verifier passes it (it only re-runs tests that were stable)", bad.result === "passed", bad.reason);
   await api("/api/proofs", { painId: cart.id });
   let proof = await proofOf(cart.id);
   let mine = proof.candidates.find((c) => c.trialId === bad.trialId);
   check("proof's suite check catches it", mine?.checks.suite.ok === false, JSON.stringify(mine?.checks.suite.flaky));
   check("judges were not asked (review skipped)", mine?.checks.review.skipped === true && mine.checks.review.judges.length === 0, mine?.checks.review.reason);
-  check("no review is waiting over MCP", (await call("list_reviews")).reviews?.length === 0);
   check("not proven", mine?.verdict === "not_proven", mine?.failures.join("; "));
 
   console.log("2. A clean fix: the judges are asked");
-  const good = await call("submit_trial", { problem_id: cart.id, model: "claude-sonnet-5-5", summary: "Return the lookup promise so callers can await it.", files: [{ path: "src/cart.js", content: cartFixed }] });
+  const good = await trial({ model: "claude-sonnet-5-5", summary: "Return the lookup promise so callers can await it.", files: [{ path: "src/cart.js", content: cartFixed }] });
   check("verifier passes it", good.result === "passed", good.reason);
   await api("/api/proofs", { painId: cart.id, fresh: true });
   proof = await proofOf(cart.id);

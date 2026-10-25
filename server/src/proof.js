@@ -20,8 +20,7 @@
 //                   check above has passed: a fix that already failed isn't
 //                   worth a judge's tokens.
 // Who pays: Shoal's API keys (the team spends nothing), with a spend cap per
-// bug (spend.js). Running these on the team's own Claude Code / Codex / MCP
-// app is an opt-in setting (state.useTeamPlan).
+// bug (spend.js).
 //   track record    how this model's trials have gone on this repo (shown,
 //                   not counted: it describes the model, not this fix).
 //   code diff       exactly which lines would land.
@@ -35,8 +34,6 @@ import { isProtected } from "./verifier.js";
 import { emit } from "./events.js";
 import { state } from "./store.js";
 import { MODELS, rankedOptions } from "./trials.js";
-import { askClaude } from "./claude-runner.js";
-import { askCodex } from "./codex-runner.js";
 import { MOCK, judgeViaApi } from "./agents.js";
 
 const STRESS_PARALLEL = 40;
@@ -48,10 +45,8 @@ const CHALLENGE_RUNS = 3;
 const CHECKS = ["stress", "suite", "rules", "challenge", "review"];
 
 const running = new Set();
-// Challenge tests per problem, reused when proving resumes after a review
-// (same fixes, same tests), and the full prompt each waiting review needs.
+// Challenge tests per problem, reused while the same fixes are checked.
 const challenges = new Map(); // painId -> { key, challenge }
-const reviewPrompts = new Map(); // trialId -> prompt
 
 export const isProving = () => running.size > 0;
 
@@ -63,7 +58,6 @@ export function proofFor(painId) {
     checking: running.has(painId),
     candidates: proofs,
     proven: proofs.find((p) => p.verdict === "safe") ?? null,
-    awaitingReview: proofs.find((p) => p.status === "awaiting_review") ?? null,
   };
 }
 
@@ -72,14 +66,12 @@ export function resetProofs(painId) {
   for (const [id, p] of Object.entries(state.proofs)) {
     if (p.painId !== painId) continue;
     delete state.proofs[id];
-    reviewPrompts.delete(id);
   }
   challenges.delete(painId);
 }
 
 // Writes the challenge tests, runs them against every fix, then checks
-// candidates best-value first until one passes everything. Stops while a
-// candidate waits for a judge; submitReview picks it up again.
+// candidates best-value first until one passes everything.
 export async function proveProblem(painId) {
   if (running.has(painId)) return;
   const pain = state.pains.find((p) => p.id === painId);
@@ -93,13 +85,12 @@ export async function proveProblem(painId) {
     const { challenge } = challenges.get(painId);
     for (const [rank, option] of options.entries()) {
       const existing = state.proofs[option.trial.id];
-      if (existing?.status === "awaiting_review") return;
       if (existing?.status === "done") {
         if (existing.verdict === "safe") return;
         continue;
       }
       const proof = await prove(pain, option, rank, { code, challenge, options });
-      if (proof.status === "awaiting_review" || proof.verdict === "safe") return;
+      if (proof.verdict === "safe") return;
       if (options[rank + 1]) {
         emit("proof.next", { message: `${option.name}'s fix isn't proven for ${pain.testFile}; checking ${options[rank + 1].name} next` });
       }
@@ -150,14 +141,6 @@ async function prove(pain, option, rank, { code, challenge, options }) {
     return finishProof(proof, pain);
   }
   proof.checks.review = await startReview(pain, trial, proof.checks.diff, { code, options });
-  const waiting = proof.checks.review.judges.filter((j) => j.status === "waiting");
-  if (waiting.length) {
-    proof.status = "awaiting_review";
-    emit("proof.awaiting_review", {
-      message: `Proof: ${proof.name}'s fix for ${pain.testFile} needs a review from ${waiting.map((j) => j.name).join(" and ")}. In ${waiting.map((j) => (j.provider === "openai" ? "ChatGPT or Codex" : "Claude")).join(" / ")}, connected to Shoal, ask it to review the fixes.`,
-    });
-    return proof;
-  }
   return finishProof(proof, pain);
 }
 
@@ -317,9 +300,7 @@ async function challengeFor(pain, options, code) {
   ].join("\n\n");
 
   // Sonnet 5.5, then GPT-6.1 Sol, on Shoal's API keys: a mid-tier model is
-  // enough, since a test only counts if some fix passes it. The team's own
-  // Claude Code / Codex first only when the team opted in (useTeamPlan).
-  const timeout = 8 * 60_000;
+  // enough, since a test only counts if some fix passes it.
   const viaApi = (model) => async () => {
     const cost = estimate(model, prompt, 8_000);
     if (!fitsCap(pain.id, cost)) return { capped: true };
@@ -328,11 +309,6 @@ async function challengeFor(pain, options, code) {
     return r;
   };
   const writers = [
-    // Never for sealed fixes: the team's own app would see their code.
-    ...(state.useTeamPlan && !options.some((o) => o.trial.sealed) ? [
-      { author: MODELS["claude-sonnet-5-5"].name, ask: () => askClaude(prompt, { model: "sonnet", timeout }) },
-      { author: MODELS["gpt-6.1-sol"].name, ask: () => askCodex(prompt, { model: "gpt-6.1-sol", timeout }) },
-    ] : []),
     { author: MODELS["claude-sonnet-5-5"].name, ask: viaApi("claude-sonnet-5-5") },
     { author: MODELS["gpt-6.1-sol"].name, ask: viaApi("gpt-6.1-sol") },
   ];
@@ -413,13 +389,10 @@ function challengeCheck(challenge, trialId) {
 // Two judges from different labs, never the model that wrote the fix:
 // Sonnet 5.5 (Opus 5.5 for Sonnet's fixes) and GPT-6.1 Sol (GPT-6 Sol for
 // Sol's fixes). Sol replaced GPT-6 Astra: same verdicts in practice at a
-// fraction of the price. They run on Shoal's API keys. When the team opted in
-// to its own plan (useTeamPlan), its Claude Code / Codex is tried first, and a
-// judge that can't run answers over MCP (list_reviews / get_review /
-// submit_review in mcp.js). Both must pass. Bounties use the same judges on
+// fraction of the price. They run on Shoal's API keys. Both must pass. Bounties use the same judges on
 // their best verified fixes (judgeAttempt).
 const JUDGES = {
-  anthropic: [{ id: "claude-sonnet-5-5", alias: "sonnet" }, { id: "claude-opus-5-5", alias: "opus" }],
+  anthropic: [{ id: "claude-sonnet-5-5" }, { id: "claude-opus-5-5" }],
   openai: [{ id: "gpt-6.1-sol" }, { id: "gpt-6-sol" }],
 };
 
@@ -430,36 +403,29 @@ const judgesFor = (model) => Object.entries(JUDGES).map(([provider, [best, backu
 // model and never the Claude judge already on it.
 const CLAUDE_STAND_INS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"];
 
-// -> the judge's answer, the stand-in's, or null.
-// real: never a practice-mode pass (bounties). standInOnPlan: on the team's
-// plan, stand in through its Claude Code instead of waiting for MCP.
-async function askOrStandIn(judge, prompt, painId, { author, judges, teamPlan = false, real = false, standInOnPlan = false }) {
-  const got = await askJudge(judge, prompt, painId, { teamPlan, real });
-  // On the team's plan a judge that can't run waits for MCP instead (trials).
-  if (got || judge.provider !== "openai" || (teamPlan && !standInOnPlan)) return got;
+// -> the judge's answer, the stand-in's, or null. real: never a
+// practice-mode pass (bounties).
+async function askOrStandIn(judge, prompt, painId, { author, judges, real = false }) {
+  const got = await askJudge(judge, prompt, painId, { real });
+  if (got || judge.provider !== "openai") return got;
   const taken = judges.filter((x) => x !== judge).map((x) => x.model);
   const id = CLAUDE_STAND_INS.find((m) => m !== author && !taken.includes(m));
   const reason = judge.error ?? "it couldn't run";
-  const standIn = { provider: "anthropic", model: id, alias: id, name: MODELS[id]?.name };
-  const answer = id && (await askJudge(standIn, prompt, painId, { teamPlan: teamPlan && standInOnPlan, real }));
+  const standIn = { provider: "anthropic", model: id, name: MODELS[id]?.name };
+  const answer = id && (await askJudge(standIn, prompt, painId, { real }));
   if (!answer) return null;
   emit("proof.stand_in", { message: `${judge.name} couldn't judge (${reason}); ${standIn.name} judged instead` });
-  Object.assign(judge, { ...standIn, alias: null, standInFor: judge.name, standInReason: reason });
+  Object.assign(judge, { ...standIn, standInFor: judge.name, standInReason: reason });
   return { ...answer, via: `${answer.via}, standing in for ${judge.standInFor}` };
 }
 
 async function startReview(pain, trial, diff, { code, options }) {
   const prompt = reviewPrompt(pain, trial, diff, { code, options });
-  reviewPrompts.set(trial.id, prompt);
-  const judges = judgesFor(trial.model).map((j) => ({ provider: j.provider, model: j.id, alias: j.alias ?? null, name: MODELS[j.id].name, status: "waiting" }));
+  const judges = judgesFor(trial.model).map((j) => ({ provider: j.provider, model: j.id, name: MODELS[j.id].name, status: "waiting" }));
   await Promise.all(
     judges.map(async (j) => {
-      const teamPlan = state.useTeamPlan && !trial.sealed;
-      const got = await askOrStandIn(j, prompt, pain.id, { author: trial.model, judges, teamPlan });
-      if (got) recordVerdict(j, parseVerdict(got.text), got.via);
-      // Not on the team's plan (or a sealed fix), there's no MCP fallback:
-      // fail with the reason.
-      else if (!state.useTeamPlan || trial.sealed) recordVerdict(j, noJudge(j), null);
+      const got = await askOrStandIn(j, prompt, pain.id, { author: trial.model, judges });
+      recordVerdict(j, got ? parseVerdict(got.text) : noJudge(j), got?.via ?? null);
     }),
   );
   return { ok: null, filesSeen: code.length, judges };
@@ -467,23 +433,12 @@ async function startReview(pain, trial, diff, { code, options }) {
 
 const noJudge = (j) => ({ verdict: "fail", summary: `${j.name} couldn't run: ${j.error ?? `set ${j.provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"} on the server, or this bug's spend cap was reached`}.`, remaining: [], risks: [] });
 
-// One judge's answer. In practice mode, a stand-in that passes. Otherwise
-// Shoal's API key, within the bug's spend cap; the team's Claude Code /
-// Codex first only when it opted in, and never for a sealed fix.
+// One judge's answer, on Shoal's API key within the bug's spend cap. In
+// practice mode, a stand-in that passes (never for bounties: real).
 // -> { text, via, cost } or null.
-async function askJudge(j, prompt, painId = null, { teamPlan = state.useTeamPlan, real = false } = {}) {
-  const timeout = 8 * 60_000;
-  if (teamPlan) {
-    const plan = j.provider === "anthropic" ? await askClaude(prompt, { model: j.alias ?? j.model, timeout }) : await askCodex(prompt, { model: j.model, timeout });
-    if (plan) return { text: plan.text, via: j.provider === "anthropic" ? "Claude Code" : "Codex", cost: 0 };
-    // On the team's plan with no API keys, the judge answers over MCP instead.
-    if (MOCK) {
-      j.error ??= `${j.provider === "anthropic" ? "Claude Code" : "Codex"} isn't installed and signed in on the machine running Shoal`;
-      return null;
-    }
-  }
+async function askJudge(j, prompt, painId = null, { real = false } = {}) {
   if (MOCK && real) {
-    j.error ??= "the server has no API keys and the team's own plan isn't turned on (SHOAL_TEAM_PLAN=1 uses its Claude Code / Codex)";
+    j.error ??= "the server has no API keys";
     return null;
   }
   if (MOCK) return { text: JSON.stringify({ verdict: "pass", summary: "Practice-mode judge (no API keys): not a real review." }), via: "practice mode", cost: 0 };
@@ -503,11 +458,10 @@ async function askJudge(j, prompt, painId = null, { teamPlan = state.useTeamPlan
 // author: who wrote it (never judges itself). others: the other verified
 // attempts' files, so the judges can spot a bug this one only avoids.
 // -> { ok, judges, cost }. ok only if both judges ran and both passed.
-// Judges are always real models, for every agent's fix (mock agents'
-// included): Shoal's API keys, or the team's Claude Code / Codex when it
-// opted in (SHOAL_TEAM_PLAN=1). There's no practice-mode pass here: with no
-// real judge the fix can't win. When OpenAI can't run, a Claude model stands
-// in (askOrStandIn), on the team's plan too. SHOAL_MOCK_JUDGES=1 (the check
+// Judges are always real models on Shoal's API keys, for every agent's fix
+// (mock agents' included). There's no practice-mode pass here: with no real
+// judge the fix can't win. When OpenAI can't run, a Claude model stands in
+// (askOrStandIn). SHOAL_MOCK_JUDGES=1 (the check
 // scripts) uses stand-ins that pass, so checks never spend anyone's plan or
 // API credit.
 export async function judgeAttempt({ pain, files, author, others = [] }) {
@@ -522,11 +476,10 @@ export async function judgeAttempt({ pain, files, author, others = [] }) {
   const options = others.map((files, i) => ({ trial: { id: `other:${i}`, files } }));
   const prompt = reviewPrompt(pain, fix, diff, { code, options });
   let cost = 0;
-  const all = judgesFor(author).map((j) => ({ provider: j.provider, model: j.id, alias: j.alias ?? null, name: MODELS[j.id].name, status: "waiting" }));
+  const all = judgesFor(author).map((j) => ({ provider: j.provider, model: j.id, name: MODELS[j.id].name, status: "waiting" }));
   const judges = await Promise.all(
     all.map(async (judge) => {
-      // Bounties have no MCP fallback, so a Claude stand-in steps in on the team's plan as well.
-      const got = await askOrStandIn(judge, prompt, null, { author, judges: all, teamPlan: state.useTeamPlan, real: true, standInOnPlan: true });
+      const got = await askOrStandIn(judge, prompt, null, { author, judges: all, real: true });
       if (got) {
         cost += got.cost;
         recordVerdict(judge, parseVerdict(got.text), got.via);
@@ -538,8 +491,7 @@ export async function judgeAttempt({ pain, files, author, others = [] }) {
       return judge;
     }),
   );
-  const strip = ({ alias, ...j }) => j;
-  return { ok: judges.every((j) => j.ok), judges: judges.map(strip), cost };
+  return { ok: judges.every((j) => j.ok), judges, cost };
 }
 
 function reviewPrompt(pain, trial, diff, { code, options }) {
@@ -594,47 +546,6 @@ function finishReview(review) {
   review.summary = judges.map((j) => `${j.name}: ${j.summary}`).join(" ");
   review.remaining = judges.flatMap((j) => j.remaining.map((r) => `${r} (${j.name})`));
   review.risks = judges.flatMap((j) => j.risks);
-}
-
-// Reviews waiting on a judge, for the MCP's list_reviews.
-export function pendingReviews() {
-  // A sealed fix's code never goes out over MCP.
-  return Object.values(state.proofs)
-    .filter((p) => p.status === "awaiting_review" && !state.trials.find((t) => t.id === p.trialId)?.sealed)
-    .map((p) => ({
-      trialId: p.trialId,
-      testFile: p.testFile,
-      fixBy: p.name,
-      needs: p.checks.review.judges.filter((j) => j.status === "waiting").map((j) => ({ model: j.model, name: j.name })),
-    }));
-}
-
-// Everything a judge needs to review one fix (MCP get_review).
-export function reviewRequest(trialId) {
-  const proof = state.proofs[trialId];
-  const sealed = state.trials.find((t) => t.id === trialId)?.sealed;
-  if (proof?.status !== "awaiting_review" || !reviewPrompts.has(trialId) || sealed) throw httpError(404, `No review is waiting for ${trialId}. Call list_reviews.`);
-  return { ...pendingReviews().find((r) => r.trialId === trialId), instructions: reviewPrompts.get(trialId) };
-}
-
-// A judge's verdict over MCP. When the last judge answers the proof finishes,
-// and if the fix isn't proven the next-best model's fix is checked.
-export function submitReview({ trialId, model, verdict, summary, remaining = [], risks = [], via }) {
-  const proof = state.proofs[trialId];
-  if (proof?.status !== "awaiting_review") throw httpError(404, `No review is waiting for ${trialId}. Call list_reviews.`);
-  const waiting = proof.checks.review.judges.filter((j) => j.status === "waiting");
-  const judge = waiting.find((j) => j.model === model);
-  if (!judge) {
-    throw httpError(400, `This review needs ${waiting.map((j) => `${j.name} (model "${j.model}")`).join(" or ")}. Switch to that model and submit again, tagged with its id.`);
-  }
-  recordVerdict(judge, { verdict, summary, remaining, risks }, via);
-  emit("proof.review", { message: `Proof: ${judge.name} ${judge.ok ? "passed" : "failed"} ${proof.name}'s fix for ${proof.testFile}${via ? ` (via ${via})` : ""}` });
-  const left = proof.checks.review.judges.filter((j) => j.status === "waiting");
-  if (!left.length) {
-    finishProof(proof, state.pains.find((p) => p.id === proof.painId));
-    if (proof.verdict !== "safe") proveProblem(proof.painId).catch((err) => emit("error", { message: `Proof report failed: ${err.message}` }));
-  }
-  return { trialId, judge: judge.name, recorded: judge.verdict, proofStatus: proof.status, verdict: proof.verdict, stillWaitingFor: left.map((j) => j.name) };
 }
 
 // --- Verdict ------------------------------------------------------------------

@@ -10,8 +10,6 @@
 // first that both pass wins, and only its fix reaches the team (as a PR). The team is charged then, but the agent is paid only after
 // the fix survives its window (survival.js); a regression claws it back.
 //
-// A model approved from the MCP trials (apiModel) runs the same lifecycle,
-// as the only competitor, paid from credits at API cost plus Shoal's fee.
 // Unlocking a sealed trial (unlock) skips the model call: the exact fix that
 // was proven lands, charged once at the price shown (api-trials.js).
 import { AGENTS, diagnosisPrompt, practiceOnly, requestDiagnosis, requestModelFix } from "./agents.js";
@@ -19,8 +17,7 @@ import { attemptFix } from "./competitors.js";
 import { checkCompetitors, defaultCompetitors, nameFor } from "./marketplace.js";
 import { getStacks } from "./repo.js";
 import { stackFor } from "./stack.js";
-import { MODELS, costPerFix, linesChanged, providerLabel } from "./trials.js";
-import { balanceCents, fixPriceCents } from "./credits.js";
+import { MODELS, linesChanged, providerLabel } from "./trials.js";
 import { verify } from "./verifier.js";
 import { emit } from "./events.js";
 import { state, newId, cardFor } from "./store.js";
@@ -54,8 +51,8 @@ export function recoverInterrupted() {
 }
 
 // funding: "stripe" (team pays through Checkout), "simulated" (fake money)
-// or "credits". apiModel + trialId: the team approved a model from the MCP
-// trials, so that model runs through the API instead of the marketplace.
+// or "credits". apiModel + trialId + unlock: the proven fix from a sealed
+// trial lands (api-trials.js authorizeFix), with that model as the winner.
 // survivalDays: 7, 10 or 14 before the agent is paid. competitors: the
 // marketplace listings the team picked to compete (default: Shoal's
 // the Claude models, see defaultCompetitors); only those get the team's code. postedBy: GitHub login.
@@ -153,7 +150,7 @@ export async function runBounty(bountyId) {
   const practice = practiceOnly(bounty.repo?.type);
   if (practice) throw httpError(409, practice);
   // On the bounty's own repo, whichever one is active now.
-  return inRepo(bounty, () => (bounty.unlock ? runUnlock(bounty, pain) : bounty.apiModel ? runApprovedModel(bounty, pain) : compete(bounty, pain)));
+  return inRepo(bounty, () => (bounty.unlock ? runUnlock(bounty, pain) : compete(bounty, pain)));
 }
 
 // Every competitor the team picked attempts the bounty at once, privately.
@@ -248,8 +245,6 @@ async function compete(bounty, pain) {
   });
   return win(bounty, pain, { id: winner.agentId, name, builder: providerOf(winner.agentId) }, winner);
 }
-
-const API_ATTEMPTS = 3;
 
 // The race is a diagnosis: each model says what's broken and where, no code
 // (agents.js requestDiagnosis). A blind grader marks them correct (api-trials.js
@@ -365,80 +360,6 @@ async function runUnlock(bounty, pain) {
   return won;
 }
 
-// The paid round for a model approved from the trials: it fixes the problem
-// through the API with Shoal driving, retrying with the verifier's failure
-// output. Same rules as any bounty, survival window included.
-async function runApprovedModel(bounty, pain) {
-  const name = MODELS[bounty.apiModel].name;
-  const payee = { id: bounty.apiModel, name, builder: providerLabel(bounty.apiModel) };
-  const trial = state.trials.find((t) => t.id === bounty.trialId);
-  const card = cardFor(bounty.apiModel);
-  card.attempts += 1;
-  const started = Date.now();
-  let lastFailure = null;
-
-  for (let attempt = 1; attempt <= API_ATTEMPTS; attempt++) {
-    // Don't start an attempt the team's credits couldn't pay for if it passes.
-    if (bounty.escrow.mode === "credits" && fixPriceCents(bounty.apiCost + costPerFix(bounty.apiModel)) > balanceCents()) {
-      return fail(bounty, `Not enough credits for ${attempt > 1 ? "another" : "an"} attempt. Nothing charged; buy credits to continue.`);
-    }
-    bounty.status = "competing";
-    emit("bounty.competing", {
-      bountyId: bounty.id,
-      agentId: bounty.apiModel,
-      message: `${name} is fixing ${pain.testFile} through the API (attempt ${attempt}/${API_ATTEMPTS})`,
-    });
-    let fix;
-    try {
-      const out = await requestModelFix(bounty.apiModel, bounty, pain, { trial, lastFailure });
-      fix = out.fix;
-      bounty.apiCost += out.cost;
-    } catch (err) {
-      bounty.apiCost += err.cost ?? 0;
-      bounty.attempts.push({ agentId: bounty.apiModel, passed: false, reason: err.message });
-      emit("work.error", { bountyId: bounty.id, agentId: bounty.apiModel, message: `${name} failed to deliver: ${err.message}` });
-      lastFailure = err.message;
-      continue;
-    }
-    emit("work.submitted", {
-      bountyId: bounty.id,
-      agentId: bounty.apiModel,
-      files: fix.files.map((f) => f.path),
-      message: `${name} submitted a patch: ${brief(fix.summary)} (API cost so far $${bounty.apiCost.toFixed(4)})`,
-    });
-
-    bounty.status = "verifying";
-    const stableTestFiles = bounty.stableTestFiles ?? state.pains.filter((p) => p.healthy).map((p) => p.testFile);
-    const result = await verify({ bountyId: bounty.id, agentId: name, testFile: pain.testFile, files: fix.files, stableTestFiles, flakeRate: pain.flakeRate });
-    const entry = {
-      agentId: bounty.apiModel,
-      summary: fix.summary,
-      files: fix.files,
-      linesChanged: await linesChanged(fix.files),
-      passed: result.passed,
-      reason: result.reason ?? null,
-      runs: result.runs.map((r) => r.passed),
-    };
-    bounty.attempts.push(entry);
-    if (result.passed) {
-      card.delivered += 1;
-      card.verified += 1;
-      card.verifiedMs += Date.now() - started;
-      // The trial's patch was judged in its proof report; this new one is too.
-      bounty.status = "judging";
-      const review = await judgeAttempt({ pain, files: fix.files, author: bounty.apiModel });
-      entry.judges = review.judges;
-      bounty.apiCost += review.cost;
-      if (review.ok) return win(bounty, pain, payee, entry);
-      entry.passed = false;
-      entry.reason = `Verified, but the judges failed it: ${review.judges.filter((j) => !j.ok).map((j) => `${j.name}: ${j.summary}`).join(" ")}`;
-      lastFailure = entry.reason;
-      continue;
-    }
-    lastFailure = [result.reason, result.failureLog].filter(Boolean).join("\n");
-  }
-  return fail(bounty, `${name} didn't deliver a verified fix in ${API_ATTEMPTS} tries. $0 charged.`);
-}
 
 // The winning fix: apply it, charge the team, open the PR, and start the
 // survival window. The agent's payout is recorded as pending.

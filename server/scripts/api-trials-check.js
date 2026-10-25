@@ -21,17 +21,12 @@ process.env.SHOAL_MOCK = "1";
 process.env.SHOAL_MOCK_JUDGES = "1"; // stand-in judges: never spend anyone's Claude/ChatGPT plan or API credit
 process.env.SHOAL_DATA_DIR = mkdtempSync(path.join(tmpdir(), "shoal-apitrials-"));
 process.env.SHOAL_WORKSPACE = ".workspace-apitrialscheck";
-process.env.CLAUDE_BIN = "/nonexistent/claude";
-process.env.CODEX_BIN = "/nonexistent/codex";
 process.env.SHOAL_MOCK_FAIL_MODELS = STEP_1.join(",");
 delete process.env.SUPABASE_DB_URL;
 delete process.env.GITHUB_CLIENT_ID;
-delete process.env.SHOAL_TEAM_PLAN;
 delete process.env.SHOAL_TRIAL_CAP;
 delete process.env.STRIPE_SECRET_KEY;
 
-const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
-const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
 await import("../src/index.js");
 const { DEMO_REPO, WORKSPACE } = await import("../src/repo.js");
 const { addCredits, balanceCents } = await import("../src/credits.js");
@@ -48,9 +43,6 @@ const req = async (p, body) => {
   return { status: r.status, text: await r.text() };
 };
 const api = async (p, body) => JSON.parse((await req(p, body)).text);
-const client = new Client({ name: "api-trials-check", version: "1" });
-await client.connect(new StreamableHTTPClientTransport(new URL(`${BASE}/mcp`)));
-const call = async (name, args = {}) => (await client.callTool({ name, arguments: args })).content[0].text;
 
 const until = async (what, fn, seconds = 240) => {
   for (let i = 0; i < seconds; i++) {
@@ -91,7 +83,6 @@ try {
   const quote = p.ladder.quote;
   check("a quote is shown before authorizing, $2.99-$19.99, ending in .99", quote >= 2.99 && quote <= 19.99 && Math.round(quote * 100) % 100 === 99, String(quote));
   check("running the trial again leaves the recommendation alone", (await req("/api/trials/sealed", { painId: cart.id })).status === 202 && (await until("refusal", async () => (state.apiTrials[cart.id].status === "awaiting_authorization" ? true : null))));
-  check("MCP list_reviews shows nothing", JSON.parse(await call("list_reviews")).reviews.length === 0);
 
   console.log("3. Authorizing: the recommended model writes the fix; charged once, only when proven");
   const before = balanceCents();
