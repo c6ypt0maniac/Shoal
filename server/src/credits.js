@@ -11,6 +11,8 @@ import { emit } from "./events.js";
 import { newId } from "./store.js";
 
 export const PACKS = [10, 25, 50];
+// A pack, or any whole-dollar amount from $5 to $1,000.
+export const isCreditAmount = (d) => PACKS.includes(d) || (Number.isInteger(d) && d >= 5 && d <= 1000);
 export const SHOAL_FEE = 0.15;
 const MIN_CHARGE_CENTS = 1;
 
@@ -50,7 +52,7 @@ export function creditsSummary() {
 // Adds a paid pack. Idempotent per Stripe session, so a refreshed return page
 // can't add the same payment twice.
 export async function addCredits({ dollars, mode, stripeSessionId = null }) {
-  if (!PACKS.includes(dollars)) throw httpError(400, `Pick a pack: ${PACKS.map((p) => `$${p}`).join(", ")}`);
+  if (!isCreditAmount(dollars)) throw httpError(400, "Choose a pack or a whole amount from $5 to $1,000");
   if (stripeSessionId && book.purchases.some((p) => p.stripeSessionId === stripeSessionId)) return creditsSummary();
   const cents = toCents(dollars);
   book.balanceCents += cents;

@@ -33,6 +33,8 @@ export default function Water({ strength = 1 }) {
     const onMove = (e) => { px = e.clientX; py = e.clientY; if (cx < 0) { cx = px; cy = py; } };
     const onScroll = () => { boost = Math.min(4, boost + Math.abs(scrollY - sy) * 0.02); sy = scrollY; };
     setup();
+    // Lets other layers (the beach) read the ripple height at a screen point.
+    window.__shoalWater = { sample: (x, y) => { const i = ((y / S) | 0) + P, j = ((x / S) | 0) + P; return i > 0 && i < SH && j > 0 && j < SW ? a[i * SW + j] : 0; } };
     addEventListener('resize', setup); addEventListener('pointermove', onMove); addEventListener('scroll', onScroll, { passive: true });
     const still = prefersReducedMotion();
     const row = [], col = [];

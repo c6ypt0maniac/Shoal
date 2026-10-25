@@ -15,9 +15,9 @@ import { describeFile } from "./describe.js";
 import { confirmCreditPurchase, confirmFunding, paymentsMode, startCheckout, startCreditCheckout, stripeConfigured, stripeKeyProblem } from "./escrow.js";
 import { isProtected } from "./verifier.js";
 import { PROBLEMS, cleanProblems, cleanSharedPaths, isSecret } from "./scope.js";
-import { MOCK, modelUnavailable } from "./agents.js";
+import { AGENTS, MOCK, modelUnavailable } from "./agents.js";
 import { MODELS, costPerFix, overallPick, scoreboard, trialSummary } from "./trials.js";
-import { PACKS, addCredits, balanceCents, creditsSummary, fixPriceCents } from "./credits.js";
+import { PACKS, addCredits, balanceCents, creditsSummary, fixPriceCents, isCreditAmount } from "./credits.js";
 import { mountMcp } from "./mcp.js";
 import { proofFor, proveProblem, resetProofs } from "./proof.js";
 import { markConnected, setAutoSync, syncNow, syncStatus } from "./sync.js";
@@ -62,6 +62,8 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(signIn ? PUBLIC_DIR : WEB_DIR, "index.html"));
 });
 app.get("/start", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "index.html")));
+// The platform (marketplace, races, settlement), built from web/app.html.
+app.get("/app", (_req, res) => res.sendFile(hasLanding ? path.join(WEB_DIR, "app.html") : path.join(PUBLIC_DIR, "team.html")));
 app.use(express.static(PUBLIC_DIR, { index: false }));
 if (hasLanding) app.use(express.static(WEB_DIR, { index: false }));
 
@@ -376,7 +378,7 @@ app.get("/api/credits", (_req, res) => res.json({ ...creditsSummary(), payments:
 // Buy a pack: Stripe Checkout when Stripe is set up, otherwise simulated.
 app.post("/api/credits/buy", async (req, res) => {
   const dollars = Number(req.body?.dollars);
-  if (!PACKS.includes(dollars)) return res.status(400).json({ error: `Pick a pack: ${PACKS.map((p) => `$${p}`).join(", ")}` });
+  if (!isCreditAmount(dollars)) return res.status(400).json({ error: "Choose a pack or a whole amount from $5 to $1,000" });
   if (!stripeConfigured()) return res.json(await addCredits({ dollars, mode: "simulated" }));
   const base = `${req.protocol}://${req.get("host")}`;
   const checkoutUrl = await startCreditCheckout(dollars, {
@@ -462,6 +464,35 @@ app.post("/api/demo", async (req, res) => {
 });
 
 app.get("/api/agents", (_req, res) => res.json(leaderboard()));
+// Publish a custom agent to the marketplace. It bids on new bounties like the seeded ones.
+app.post("/api/agents", async (req, res) => {
+  const { name, tagline = "", strategy, model = "", params = null, specialty = "", minBid = null, maxBid = null } = req.body ?? {};
+  if (!name?.trim() || !strategy?.trim() || strategy.trim().length < 20) return res.status(400).json({ error: "An agent needs a name and a strategy (20+ characters)" });
+  const id = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32) || "agent";
+  if (AGENTS.some((a) => a.id === id)) return res.status(409).json({ error: `An agent called ${name} already exists` });
+  const viewer = await getViewer().catch(() => null);
+  const lo = Number(minBid) || null, hi = Number(maxBid) || lo;
+  const agent = {
+    id, name: name.trim().slice(0, 40), builder: viewer ? `@${viewer.login}` : "@you",
+    tagline: String(tagline).slice(0, 80),
+    pricing: lo ? `Bid $${lo}-$${hi} depending on difficulty.` : "Bid what the fix is worth.",
+    strategy: strategy.slice(0, 1200), model: String(model).slice(0, 40),
+    params: params == null || params === "" ? null : Number(params), specialty: String(specialty).slice(0, 40),
+    minBid: lo, maxBid: hi, rating: null, reviews: 0, enabled: true, custom: true,
+  };
+  AGENTS.push(agent);
+  state.agents[id] = { jobs: 0, wins: 0, rollbacks: 0, earnings: 0 };
+  emit("agent.published", { agentId: id, message: `${agent.name} by ${agent.builder} joined the marketplace` });
+  res.status(201).json(agent);
+});
+// Turn an agent on or off for new bounties.
+app.post("/api/agents/:id/enabled", (req, res) => {
+  const agent = AGENTS.find((a) => a.id === req.params.id);
+  if (!agent) return res.status(404).json({ error: "Unknown agent" });
+  agent.enabled = Boolean(req.body?.enabled);
+  emit("agent.toggled", { agentId: agent.id, message: `${agent.name} ${agent.enabled ? "will bid on" : "won't bid on"} new bounties` });
+  res.json(agent);
+});
 app.get("/api/ledger", (_req, res) => res.json(state.ledger));
 app.get("/api/settlement", (_req, res) => res.json(morningSettlement()));
 
