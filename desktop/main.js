@@ -1,5 +1,6 @@
 // Shoal's desktop app: starts the Shoal server inside Electron's main process
-// and opens the platform (/app) in a window. Works on Windows, macOS and Linux.
+// (or uses the one already running on port 4000) and opens it in a window.
+// Works on Windows, macOS and Linux.
 import { app, BrowserWindow, Menu, shell, dialog } from "electron";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync } from "node:fs";
@@ -51,6 +52,14 @@ async function startServer() {
   process.env.SHOAL_DATA_DIR ??= path.join(dataDir, "data");
   process.env.SHOAL_WORKSPACE ??= path.join(dataDir, "workspace");
 
+  // A Shoal server already on the preferred port (e.g. `npm start`): use it.
+  // GitHub sign-in always returns to that port, so a second server on
+  // another port would never see the sign-in finish.
+  if (!(await portFree(PREFERRED_PORT)) && (await isShoal(`http://localhost:${PREFERRED_PORT}`))) {
+    baseUrl = `http://localhost:${PREFERRED_PORT}`;
+    console.log(`Shoal desktop: using the Shoal server already running on ${baseUrl}`);
+    return;
+  }
   const port = (await portFree(PREFERRED_PORT)) ? PREFERRED_PORT : await anyFreePort();
   if (port !== PREFERRED_PORT) console.warn(`Port ${PREFERRED_PORT} is in use; Shoal is on ${port}, so GitHub sign-in may not return here.`);
   process.env.PORT = String(port);
@@ -60,6 +69,16 @@ async function startServer() {
   await import(pathToFileURL(SERVER_ENTRY).href);
   await waitForHealth();
   console.log(`Shoal desktop: ${baseUrl}/app`);
+}
+
+// Whether a Shoal server answers at this address.
+async function isShoal(url) {
+  try {
+    const health = await (await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(2000) })).json();
+    return health?.ok === true && "integrations" in health;
+  } catch {
+    return false;
+  }
 }
 
 // The server starts listening after its import finishes; wait until it answers.
@@ -75,6 +94,34 @@ async function waitForHealth(timeoutMs = 30_000) {
 }
 
 const isAppUrl = (url) => baseUrl && url.startsWith(baseUrl);
+
+// GitHub sign-in runs in the system browser: Google (and the other single
+// sign-on providers GitHub hands off to) refuse to sign in inside an app
+// window, which leaves a blank "Redirecting to Google" page. The browser
+// signs in against the same Shoal server, which keeps the sign-in, and ends
+// on its "you're signed in" page (/signed-in), not the website. Meanwhile
+// the window checks /api/me until someone is signed in, then opens the platform.
+const isSignIn = (url) => /\/api\/auth\/github(\?|$)/.test(url) || /^https:\/\/github\.com\/login/.test(url);
+let waitingForSignIn = null;
+
+function signInInBrowser() {
+  shell.openExternal(`${baseUrl}/api/auth/github?return=${encodeURIComponent("/signed-in")}`);
+  clearInterval(waitingForSignIn);
+  const started = Date.now();
+  waitingForSignIn = setInterval(async () => {
+    if (Date.now() - started > 10 * 60_000) return clearInterval(waitingForSignIn);
+    try {
+      const me = await (await fetch(`${baseUrl}/api/me`)).json();
+      if (!me.viewer) return;
+      clearInterval(waitingForSignIn);
+      if (!mainWindow) createWindow();
+      mainWindow.loadURL(`${baseUrl}/app`);
+      mainWindow.show();
+      mainWindow.focus();
+      app.focus({ steal: true });
+    } catch {}
+  }, 2000);
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -92,7 +139,8 @@ function createWindow() {
 
   // Links meant for a new tab (PRs, CLI sign-in pages) open in the browser.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:/.test(url)) shell.openExternal(url);
+    if (isSignIn(url)) signInInBrowser();
+    else if (/^https?:/.test(url)) shell.openExternal(url);
     return { action: "deny" };
   });
   mainWindow.on("closed", () => (mainWindow = null));
@@ -133,7 +181,8 @@ app.whenReady().then(async () => {
   createWindow();
   try {
     await startServer();
-    mainWindow?.loadURL(`${baseUrl}/app`);
+    // Opens on the home page; Go -> Platform (Cmd/Ctrl+1) goes to the platform.
+    mainWindow?.loadURL(`${baseUrl}/`);
   } catch (err) {
     dialog.showErrorBox("Shoal couldn't start", err.message);
     app.quit();
@@ -142,7 +191,7 @@ app.whenReady().then(async () => {
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length) return;
     createWindow();
-    if (baseUrl) mainWindow.loadURL(`${baseUrl}/app`);
+    if (baseUrl) mainWindow.loadURL(`${baseUrl}/`);
   });
 });
 
@@ -153,6 +202,10 @@ app.on("window-all-closed", () => {
 // Anything that isn't the app itself, GitHub sign-in or Stripe checkout opens in the browser.
 app.on("web-contents-created", (_e, contents) => {
   contents.on("will-navigate", (event, url) => {
+    if (isSignIn(url)) {
+      event.preventDefault();
+      return signInInBrowser();
+    }
     if (isAppUrl(url) || url.startsWith("file:") || /^https:\/\/(github\.com|checkout\.stripe\.com)\//.test(url)) return;
     event.preventDefault();
     shell.openExternal(url);

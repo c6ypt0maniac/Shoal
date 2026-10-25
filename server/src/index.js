@@ -162,6 +162,19 @@ const safeReturn = (p) => {
   }
 };
 
+// Where GitHub sign-in started from the desktop app ends, in the browser:
+// the app's window notices the sign-in itself (desktop/main.js), so this page
+// just says so instead of opening the website in the browser too.
+app.get("/signed-in", (req, res) => {
+  const error = typeof req.query.github_error === "string" ? req.query.github_error : null;
+  const esc = (t) => t.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  res.type("html").send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Shoal sign-in</title>
+<style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;font:16px/1.5 -apple-system,system-ui,sans-serif;background:#f4ead8;color:#1d2b33}
+@media (prefers-color-scheme:dark){body{background:#14202a;color:#e9e2d4}}main{max-width:420px;padding:24px;text-align:center}h1{font-size:22px;margin:0 0 8px}</style></head>
+<body><main>${error ? `<h1>Sign-in didn't work</h1><p>${esc(error)}</p><p>Go back to the Shoal app and try again.</p>` : "<h1>You're signed in to Shoal</h1><p>Go back to the Shoal app. You can close this tab.</p>"}</main>
+${error ? "" : "<script>setTimeout(() => window.close(), 1500)</script>"}</body></html>`);
+});
+
 app.get("/api/auth/github", (req, res) => {
   if (!oauthConfigured()) return res.status(400).send("GitHub sign-in isn't set up: start the server with GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET.");
   res.redirect(authorizeUrl(callbackUrl(req), safeReturn(req.query.return)));
