@@ -50,6 +50,7 @@ export async function submitTrial({ painId, model, summary, files }) {
   trial.status = result.passed ? "passed" : "failed";
   trial.reason = result.reason ?? null;
   trial.runs = result.runs.map((r) => r.passed);
+  trial.hiddenChecks = result.hidden?.found ?? 0;
   emit(result.passed ? "trial.passed" : "trial.failed", {
     trialId: trial.id,
     model,

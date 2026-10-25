@@ -10,6 +10,7 @@ import { isSecret } from "./scope.js";
 import { emit } from "./events.js";
 import { state } from "./store.js";
 import { MODELS } from "./trials.js";
+import { runHiddenTests } from "./hidden-tests.js";
 
 let building = false;
 
@@ -58,6 +59,21 @@ export async function buildCompleteFix() {
 
     const files = [...combined].map(([filePath, content]) => ({ path: filePath, content }));
     await writeFiles(sandbox, files);
+    for (const item of selected) {
+      const hidden = await runHiddenTests(sandbox, item.testFile);
+      if (!hidden.ok) {
+        state.completeFix = {
+          status: "failed",
+          selected,
+          files,
+          suite: { passed: false, log: "Private verification failed." },
+          finishedAt: new Date().toISOString(),
+          pullRequest: null,
+        };
+        emit("complete.failed", { message: "Selected fixes did not pass private verification, so the complete repo cannot be approved" });
+        return completeFixStatus();
+      }
+    }
     const suite = await runTestOnce(sandbox);
     const diff = await diffFiles(files);
     state.completeFix = {

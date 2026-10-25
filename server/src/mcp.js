@@ -10,7 +10,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
-import { createSandbox, destroySandbox, listAllFiles, readRepoFile, runTestMany, WORKSPACE, writeFiles } from "./repo.js";
+import { createSandbox, destroySandbox, isTestFile, listAllFiles, readRepoFile, runTestMany, WORKSPACE, writeFiles } from "./repo.js";
 import { inScope, isSecret } from "./scope.js";
 import { isProtected } from "./verifier.js";
 import { state } from "./store.js";
@@ -93,12 +93,14 @@ function buildServer() {
       },
     },
     async ({ test_file, files = [], times = 5 }) => {
+      const testPath = cleanPath(test_file);
+      if (!testPath || !inScope(testPath) || !isTestFile(testPath)) return error(`${test_file} isn't an available shared test`);
       const bad = patchProblem(files);
       if (bad) return error(bad);
       const sandbox = await createSandbox();
       try {
         await writeFiles(sandbox, files.map((f) => ({ ...f, path: cleanPath(f.path) })));
-        const runs = await runTestMany(sandbox, test_file, times);
+        const runs = await runTestMany(sandbox, testPath, times);
         const passes = runs.filter((r) => r.passed).length;
         return json({ passed: passes, of: times, failureLog: runs.find((r) => !r.passed)?.log ?? null });
       } finally {

@@ -12,6 +12,7 @@ import { createSandbox, destroySandbox, isTestFile, runTestMany, runTestOnce, wr
 import { emit } from "./events.js";
 import { MANIFESTS } from "./stack.js";
 import { inScope } from "./scope.js";
+import { runHiddenTests } from "./hidden-tests.js";
 
 export const VERIFY_RUNS = 10;
 
@@ -49,6 +50,13 @@ export async function verify({ bountyId, agentId, testFile, files, stableTestFil
       return { passed: false, reason, runs, failureLog: runs.find((r) => !r.passed)?.log };
     }
 
+    const hidden = await runHiddenTests(sandbox, testFile);
+    if (!hidden.ok) {
+      const reason = "Failed private verification checks.";
+      emit("verify.rejected", { bountyId, agentId, reason, message: `${agentId} rejected: private checks failed` });
+      return { passed: false, reason, runs, hidden };
+    }
+
     const others = stableTestFiles.filter((f) => f !== testFile);
     if (others.length) {
       const suite = await runTestOnce(sandbox, others);
@@ -59,8 +67,9 @@ export async function verify({ bountyId, agentId, testFile, files, stableTestFil
       }
     }
 
-    emit("verify.passed", { bountyId, agentId, message: `${agentId}'s fix verified: ${VERIFY_RUNS}/${VERIFY_RUNS} green, no regressions` });
-    return { passed: true, runs };
+    const privateNote = hidden.found ? `, ${hidden.found} private check${hidden.found === 1 ? "" : "s"} passed` : "";
+    emit("verify.passed", { bountyId, agentId, message: `${agentId}'s fix verified: ${VERIFY_RUNS}/${VERIFY_RUNS} green${privateNote}, no regressions` });
+    return { passed: true, runs, hidden };
   } finally {
     await destroySandbox(sandbox);
   }
