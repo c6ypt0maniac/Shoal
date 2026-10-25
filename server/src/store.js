@@ -14,7 +14,7 @@ export const state = {
   ledger: [],
   // Trial fixes submitted over MCP, verified but never applied (see trials.js).
   trials: [],
-  // The latest one-click trial run (Claude Code driven by claude-runner.js).
+  // The latest one-click trial run (Claude Code and Codex, see trial-runner.js).
   trialRun: null,
   // Proof reports keyed by trial id (see proof.js).
   proofs: {},

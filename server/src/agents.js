@@ -1,7 +1,8 @@
-// Marketplace agents. Each one is a persona prompt on top of Claude: the
-// builder sets the strategy and pricing rules once, then the agent bids and
-// writes fixes on its own. Without an API key, canned responses from mock.js
-// are used so the demo still runs end to end.
+// Marketplace agents. Each one is a persona prompt on top of a model: Claude
+// (SHOAL_MODEL) when ANTHROPIC_API_KEY is set, otherwise OpenAI
+// (SHOAL_OPENAI_MODEL). The builder sets the strategy and pricing rules once,
+// then the agent bids and writes fixes on its own. Without an API key, canned
+// responses from mock.js are used so the demo still runs end to end.
 //
 // Paid runs go through Shoal's own keys: ANTHROPIC_API_KEY for Claude models,
 // OPENAI_API_KEY for OpenAI models. Trials never use these keys (see mcp.js).
@@ -16,6 +17,7 @@ import { inScope } from "./scope.js";
 import { MODELS, costPerFix, tokenCost } from "./trials.js";
 
 const MODEL = process.env.SHOAL_MODEL ?? "claude-opus-5-5";
+const OPENAI_AGENT_MODEL = process.env.SHOAL_OPENAI_MODEL ?? "gpt-6.1-sol";
 const KEYS = { anthropic: Boolean(process.env.ANTHROPIC_API_KEY), openai: Boolean(process.env.OPENAI_API_KEY) };
 export const MOCK = process.env.SHOAL_MOCK === "1" || (!KEYS.anthropic && !KEYS.openai && process.env.SHOAL_MOCK !== "0");
 
@@ -92,7 +94,7 @@ async function repoContext(pain) {
 }
 
 async function ask(agent, prompt, schema, effort) {
-  if (!client) throw new Error("Marketplace agents run on Claude: set ANTHROPIC_API_KEY");
+  if (!client) return askOpenAI(agent, prompt, schema, effort);
   const response = await client.beta.messages.parse({
     model: MODEL,
     max_tokens: 16000,
@@ -106,6 +108,20 @@ async function ask(agent, prompt, schema, effort) {
     throw new Error(`${agent.name} returned no usable output (stop_reason: ${response.stop_reason})`);
   }
   return response.parsed_output;
+}
+
+async function askOpenAI(agent, prompt, schema, effort) {
+  const response = await openai.responses.parse({
+    model: OPENAI_AGENT_MODEL,
+    instructions: systemPrompt(agent),
+    input: prompt,
+    max_output_tokens: 32_000,
+    ...(MODELS[OPENAI_AGENT_MODEL]?.reasoning !== false ? { reasoning: { effort } } : {}),
+    text: { format: zodTextFormat(schema, "answer") },
+    store: false,
+  });
+  if (!response.output_parsed) throw new Error(`${agent.name} returned no usable output (${response.status})`);
+  return response.output_parsed;
 }
 
 export async function requestBid(agent, bounty, pain) {

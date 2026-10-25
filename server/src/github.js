@@ -171,7 +171,10 @@ export async function getViewer() {
 export async function listRepos() {
   if (!hasToken()) return [];
   return cached("repos", 60_000, async () => {
-    const repos = await gh("/user/repos?per_page=100&sort=pushed&affiliation=owner");
+    // Owned, collaborator and organization repos, private ones included (the
+    // repo scope covers them). Org repos also need the org to allow this OAuth
+    // App, or GitHub hides them.
+    const repos = await gh("/user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member");
     return (repos ?? []).map((r) => ({
       fullName: r.full_name,
       private: r.private,
@@ -185,7 +188,7 @@ export async function listRepos() {
 export async function getRepo(fullName) {
   return cached(`repo:${fullName}`, 60_000, async () => {
     const repo = await gh(`/repos/${fullName}`);
-    if (!repo) throw Object.assign(new Error(`Repo ${fullName} not found (private repos need GITHUB_TOKEN)`), { status: 404 });
+    if (!repo) throw Object.assign(new Error(`Repo ${fullName} not found${hasToken() ? ": check you can see it on GitHub, and for an organization repo that the org allows Shoal's OAuth App" : ". For a private repo, sign in with GitHub first"}`), { status: 404 });
     return {
       fullName: repo.full_name,
       defaultBranch: repo.default_branch,
