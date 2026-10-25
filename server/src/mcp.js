@@ -264,6 +264,7 @@ const TRIAL_INSTRUCTIONS = `Run a Shoal model trial on the connected repo.
    - check the patch with run_tests before submitting
    - call submit_trial with model set to the exact id of the model you are running as (list_problems lists the ids), and retry once using the failure log if the trial fails
    If you can start subagents on different models (Claude Code can: ${Object.entries(MODELS).slice(0, 3).map(([id, m]) => `${m.name} = ${id}`).join(", ")}), run one per model in parallel instead, each tagging its own model id.
+   OpenAI model ids: ${Object.entries(MODELS).filter(([, m]) => m.provider === "openai").slice(0, 4).map(([id, m]) => `${m.name} = ${id}`).join(", ")} (list_problems lists every id).
    In ChatGPT or Codex one chat is one model: to compare models, run this again after switching models.
 3. Call get_scoreboard and report which model did best on each problem.
 4. Call list_reviews. If a review needs the model you are running as, do it (see review_fixes).
@@ -309,6 +310,11 @@ function isLocal(req) {
   return LOOPBACK.has(req.socket.remoteAddress) && ["localhost", "127.0.0.1", "[::1]"].includes(host) && !origin;
 }
 
+// Shoal's own runners say which app they are (X-Shoal-Client); anything
+// else local is just "an AI app on this machine". Only used as a label.
+const LOCAL_APPS = new Set(["Claude Code", "Codex"]);
+const localApp = (req) => `${LOCAL_APPS.has(req.headers["x-shoal-client"]) ? req.headers["x-shoal-client"] : "AI app"} (this machine)`;
+
 // A signed-in MCP user gets in if their GitHub account can read the repo
 // Shoal is connected to. The bundled demo repo is open to any signed-in user.
 async function repoAllowed(githubToken) {
@@ -348,7 +354,7 @@ export function mountMcp(app, { baseUrl }) {
   const bearer = requireBearerAuth({ verifier: provider, resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(mcpUrl), expectedResource: mcpUrl });
 
   app.post("/mcp", (req, res, next) => {
-    if (!req.headers.authorization && isLocal(req)) return handle(req, res, { app: "Claude Code (this machine)", login: null }).catch(next);
+    if (!req.headers.authorization && isLocal(req)) return handle(req, res, { app: localApp(req), login: null }).catch(next);
     if (!remote) {
       return res.status(403).json({ error: "This Shoal server only accepts MCP connections from this machine. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET to allow sign-in from ChatGPT, Codex and Claude." });
     }

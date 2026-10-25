@@ -20,7 +20,9 @@ import { PACKS, addCredits, balanceCents, creditsSummary, fixPriceCents } from "
 import { mountMcp } from "./mcp.js";
 import { proofFor, proveProblem, resetProofs } from "./proof.js";
 import { markConnected, setAutoSync, syncNow, syncStatus } from "./sync.js";
-import { detectClaude, finishLogin, startLogin, startTrialRun, stopTrialRun, trialRun } from "./claude-runner.js";
+import { detectClaude, finishLogin, startLogin } from "./claude-runner.js";
+import { detectCodex, startCodexLogin } from "./codex-runner.js";
+import { startTrialRun, stopTrialRun, trialRun } from "./trial-runner.js";
 import {
   authorizeUrl, ciStats, cloneRepo, completeOAuth, getRepo, getViewer, hasToken, listRepos, oauthConfigured, parseRepo, repoFiles, signOut,
 } from "./github.js";
@@ -56,7 +58,14 @@ const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".
 app.use(express.static(PUBLIC_DIR));
 
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, mock: MOCK, githubToken: hasToken(), payments: paymentsMode() }),
+  res.json({
+    ok: true,
+    mock: MOCK,
+    // Which paid-run APIs Shoal has keys for.
+    providers: { anthropic: Boolean(process.env.ANTHROPIC_API_KEY), openai: Boolean(process.env.OPENAI_API_KEY) },
+    githubToken: hasToken(),
+    payments: paymentsMode(),
+  }),
 );
 
 // --- Repo connection -------------------------------------------------------
@@ -93,8 +102,10 @@ app.get("/api/repo-files", async (req, res) => {
 app.get("/api/problems", (_req, res) => res.json(Object.entries(PROBLEMS).map(([id, p]) => ({ id, ...p }))));
 
 // Sign in with GitHub: redirect to GitHub's login/consent page, then GitHub
-// redirects back to the callback with a one-time code.
-const callbackUrl = (req) => `${process.env.SHOAL_PUBLIC_URL ? BASE_URL : `${req.protocol}://${req.get("host")}`}/api/auth/github/callback`;
+// redirects back to the callback with a one-time code. Always built from
+// BASE_URL, never the host the page was opened on: GitHub only accepts the
+// callback registered on the OAuth App, so 127.0.0.1 vs localhost must not matter.
+const callbackUrl = () => `${BASE_URL}/api/auth/github/callback`;
 
 // Only same-site paths or the website's own origins, so the redirect can't
 // be pointed at another site.
@@ -287,12 +298,16 @@ app.get("/api/trials/:id/repo", async (req, res) => {
 });
 
 // One-click trial: Shoal finds Claude Code here, runs it against its own MCP
-// server, and stops when it's done (see claude-runner.js).
+// server, and stops when it's done (see trial-runner.js). Codex does the same
+// for the OpenAI models, on the team's ChatGPT plan.
 app.get("/api/claude", async (req, res) => res.json(await detectClaude({ fresh: req.query.fresh === "1" })));
 app.post("/api/claude/login", async (_req, res) => res.json(await startLogin()));
 app.post("/api/claude/login/code", async (req, res) => res.json(await finishLogin(req.body?.code)));
+app.get("/api/codex", async (req, res) => res.json(await detectCodex({ fresh: req.query.fresh === "1" })));
+app.post("/api/codex/login", async (_req, res) => res.json(await startCodexLogin()));
+// Body: { use?: ["claude", "codex"] }; default every app that's signed in.
 app.post("/api/trials/run", async (req, res) => {
-  await startTrialRun(`http://localhost:${PORT}`);
+  await startTrialRun(`http://localhost:${PORT}`, { use: Array.isArray(req.body?.use) ? req.body.use : undefined });
   res.status(202).json(trialRun());
 });
 app.post("/api/trials/stop", (_req, res) => {

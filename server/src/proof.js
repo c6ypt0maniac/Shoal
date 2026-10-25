@@ -7,7 +7,8 @@
 //   full suite      every other test still passes; tests that were already
 //                   flaky must fail no more often than before.
 //   rules           no test/CI/manifest edits, only shared files, no secrets.
-//   challenge tests new tests Claude writes after reading ALL the shared code
+//   challenge tests new tests Opus (or GPT-6 Astra, without Claude Code) writes
+//                   after reading ALL the shared code
 //                   and every model's fix, aimed at root causes a fix might
 //                   dodge (e.g. a lock that never releases). A fix must pass
 //                   every challenge test that at least one fix passes.
@@ -27,6 +28,7 @@ import { emit } from "./events.js";
 import { state } from "./store.js";
 import { MODELS, rankedOptions } from "./trials.js";
 import { askClaude } from "./claude-runner.js";
+import { askCodex } from "./codex-runner.js";
 
 const STRESS_PARALLEL = 40;
 const STRESS_MIXED = 10;
@@ -244,7 +246,7 @@ const diffText = (diff) => diff.files.map((f) => `--- ${f.path}\n${f.hunks.map((
 
 // --- Challenge tests ----------------------------------------------------------
 
-// Claude (Opus) reads all the shared code and every model's fix, then writes
+// Opus reads all the shared code and every model's fix, then writes
 // new tests aimed at the root causes, especially ones a fix could dodge
 // instead of fixing. They run against every fix. A test only counts if at
 // least one fix passes it (so it's a fair test); a fix must pass all of those.
@@ -253,7 +255,7 @@ async function challengeFor(pain, options, code) {
   const stack = stackFor(getStacks(), pain.testFile);
   if (!stack?.toolOk) return { ok: false, file: null, error: stack ? stack.toolMessage : `No supported test setup for ${pain.testFile}` };
   const file = challengePath(stack, pain.testFile);
-  emit("proof.challenge", { message: `Proof: Opus is reading all ${code.length} shared files and writing challenge tests for ${pain.testFile}` });
+  emit("proof.challenge", { message: `Proof: a judge model is reading all ${code.length} shared files and writing challenge tests for ${pain.testFile}` });
 
   const fixes = await Promise.all(options.map(async (o) => `### ${o.name} changed ${o.trial.files.map((f) => f.path).join(", ")}\n${diffText(await diffFiles(o.trial.files))}`));
   const prompt = [
@@ -267,10 +269,24 @@ async function challengeFor(pain, options, code) {
     "Reply with only the file, in one fenced code block.",
   ].join("\n\n");
 
-  const answer = await askClaude(prompt, { model: "opus", timeout: 8 * 60_000 });
+  // Opus through Claude Code, or GPT-6 Astra through Codex when Claude Code
+  // isn't here: either way on the team's own plan.
+  const writers = [
+    { author: "Opus 5.5", ask: () => askClaude(prompt, { model: "opus", timeout: 8 * 60_000 }) },
+    { author: MODELS["gpt-6-astra"].name, ask: () => askCodex(prompt, { model: "gpt-6-astra", timeout: 8 * 60_000 }) },
+  ];
+  let answer = null;
+  let author = null;
+  for (const w of writers) {
+    answer = await w.ask();
+    if (answer) {
+      author = w.author;
+      break;
+    }
+  }
   const source = answer?.text.match(/```[\w#+.-]*\s*\n([\s\S]*?)```/)?.[1];
   if (!source) {
-    return { ok: false, file, error: answer ? "Claude didn't return a test file" : "Claude Code isn't available or signed in, so no challenge tests could be written" };
+    return { ok: false, file, error: answer ? `${author} didn't return a test file` : "Neither Claude Code nor Codex is available and signed in, so no challenge tests could be written" };
   }
 
   const original = await runChallenge([], { path: file, content: source });
@@ -281,7 +297,7 @@ async function challengeFor(pain, options, code) {
   emit("proof.challenge", {
     message: `Proof: ${fair.length} challenge test${fair.length === 1 ? "" : "s"} for ${pain.testFile}${names.length > fair.length ? ` (${names.length - fair.length} no fix passes, not counted)` : ""}`,
   });
-  return { ok: true, file, source, author: "Opus 5.5", original, results, fair, unfair: names.filter((n) => !fair.includes(n)) };
+  return { ok: true, file, source, author, original, results, fair, unfair: names.filter((n) => !fair.includes(n)) };
 }
 
 // Runs the challenge file CHALLENGE_RUNS times with a fix applied, using the
@@ -324,9 +340,9 @@ function challengeCheck(challenge, trialId) {
 
 // Two judges from different labs, both on the team's own plan, never the
 // model that wrote the fix: the best Sonnet (Opus for Sonnet's fixes) and the
-// top OpenAI model (GPT-6.1 Sol for GPT-6 Astra's). Claude Code is asked
-// directly when it's installed here; otherwise each judge answers over MCP
-// (list_reviews / get_review / submit_review in mcp.js). Both must pass.
+// top OpenAI model (GPT-6.1 Sol for GPT-6 Astra's). Claude Code and Codex are
+// asked directly when they're signed in here; otherwise each judge answers
+// over MCP (list_reviews / get_review / submit_review in mcp.js). Both must pass.
 const JUDGES = {
   anthropic: [{ id: "claude-sonnet-5-5", alias: "sonnet" }, { id: "claude-opus-5-5", alias: "opus" }],
   openai: [{ id: "gpt-6-astra" }, { id: "gpt-6.1-sol" }],
@@ -338,9 +354,16 @@ async function startReview(pain, trial, diff, { code, options }) {
   const prompt = reviewPrompt(pain, trial, diff, { code, options });
   reviewPrompts.set(trial.id, prompt);
   const judges = judgesFor(trial.model).map((j) => ({ provider: j.provider, model: j.id, alias: j.alias ?? null, name: MODELS[j.id].name, status: "waiting" }));
-  const claude = judges.find((j) => j.provider === "anthropic");
-  const answer = await askClaude(prompt, { model: claude.alias, timeout: 8 * 60_000 });
-  if (answer) recordVerdict(claude, parseVerdict(answer.text), "Claude Code");
+  const ask = {
+    anthropic: (j) => askClaude(prompt, { model: j.alias, timeout: 8 * 60_000 }).then((a) => a && [a, "Claude Code"]),
+    openai: (j) => askCodex(prompt, { model: j.model, timeout: 8 * 60_000 }).then((a) => a && [a, "Codex"]),
+  };
+  await Promise.all(
+    judges.map(async (j) => {
+      const got = await ask[j.provider](j);
+      if (got) recordVerdict(j, parseVerdict(got[0].text), got[1]);
+    }),
+  );
   return { ok: null, filesSeen: code.length, judges };
 }
 

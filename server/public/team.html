@@ -69,6 +69,9 @@
   .login-code { flex-basis: 100%; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 13px; }
   .login-code span { flex-basis: 100%; }
   .login-code input { flex: 1; min-width: 180px; padding: 6px 8px; font-family: ui-monospace, monospace; font-size: 13px; border: 1px solid #bbb; border-radius: 4px; }
+  .trial-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 4px 0 12px; font-size: 13px; }
+  .trial-controls:empty { display: none; }
+  .device-code { font-family: ui-monospace, monospace; font-size: 16px; font-weight: 700; letter-spacing: 1px; }
   .run-live { font-size: 13px; margin: 0 0 12px; }
   .run-live ul { margin: 6px 0; padding-left: 18px; color: #444; }
   .report { border: 2px solid #2da44e; border-radius: 8px; padding: 12px 14px; margin: 0 0 14px; }
@@ -137,8 +140,10 @@
       </table>
     </section>
     <section>
-      <h2>Model trials <span class="hint">· Haiku, Sonnet and Opus compete on your flaky tests, free on your Claude plan</span></h2>
+      <h2>Model trials <span class="hint">· Claude (Haiku, Sonnet, Opus) and OpenAI (Luna, Sol, Astra) models compete on your flaky tests, free on your own Claude and ChatGPT plans</span></h2>
       <div id="claudeBox" class="claude-box">Looking for Claude Code on this computer…</div>
+      <div id="codexBox" class="claude-box">Looking for Codex on this computer…</div>
+      <div id="trialControls" class="trial-controls"></div>
       <div id="runBox"></div>
       <table>
         <thead><tr><th>Model</th><th>Tests fixed</th><th>Quality</th><th>Cost per fix</th><th>Avg lines changed</th></tr></thead>
@@ -325,47 +330,92 @@ window.shareHidden = () => busy($("shareBtn"), async () => {
   await post("/api/connection/share", { add: hiddenFiles(pains) });
 });
 
-// --- One-click trial: find Claude Code, run, report -------------------------
+// --- One-click trial: find Claude Code and Codex, run, report ----------------
 
 let claudeInfo = null;
+let codexInfo = null;
 let trialRunState = null;
+const trialRunning = () => trialRunState?.status === "running";
 
 async function checkClaude(fresh) {
   signingIn = false;
   $("claudeBox").className = "claude-box";
   $("claudeBox").textContent = "Looking for Claude Code on this computer…";
   claudeInfo = await get(`/api/claude${fresh ? "?fresh=1" : ""}`).catch(() => ({ installed: false, error: true }));
-  renderClaude();
+  renderRunners();
+}
+
+async function checkCodex(fresh) {
+  codexSignIn = null;
+  $("codexBox").className = "claude-box";
+  $("codexBox").textContent = "Looking for Codex on this computer…";
+  codexInfo = await get(`/api/codex${fresh ? "?fresh=1" : ""}`).catch(() => ({ installed: false, error: true }));
+  renderRunners();
 }
 
 // True while the paste-the-code form is showing, so refreshes don't wipe it.
 let signingIn = false;
+// Codex's device code while its sign-in is open: { url, code }.
+let codexSignIn = null;
+
+function renderRunners() {
+  renderClaude();
+  renderCodex();
+  const ready = [claudeInfo, codexInfo].filter((i) => i?.installed && i.loggedIn).length;
+  const models = [claudeInfo?.installed && claudeInfo.loggedIn && "Haiku, Sonnet, Opus", codexInfo?.installed && codexInfo.loggedIn && (codexInfo.models ?? []).map((m) => m.name).join(", ")].filter(Boolean);
+  $("trialControls").innerHTML = trialRunning()
+    ? `<button type="button" onclick="stopTrials()">■ Stop trial</button>`
+    : ready
+      ? `<button type="button" class="cta" id="runTrialBtn" onclick="runTrials()">▶ Run model trial</button><span class="hint">${esc(models.join(" · "))}</span>`
+      : claudeInfo && codexInfo ? `<span class="hint">Sign in to Claude Code or Codex above to run a trial.</span>` : "";
+}
 
 function renderClaude() {
   const c = claudeInfo;
   if (!c || (signingIn && !c.loggedIn)) return;
-  const running = trialRunState?.status === "running";
   const box = $("claudeBox");
   if (!c.installed) {
     box.className = "claude-box warn";
-    box.innerHTML = `<span class="grow">${c.error ? "Couldn't check for Claude Code (restart the Shoal server)." : "Claude Code isn't installed on this computer. It runs the trials on your Claude plan."}</span>
+    box.innerHTML = `<span class="grow"><b>Claude Code</b> · ${c.error ? "couldn't check (restart the Shoal server)." : "not installed. It runs Haiku, Sonnet and Opus on your Claude plan."}</span>
       <a href="https://claude.com/claude-code" target="_blank">Install Claude Code</a>
       <button type="button" onclick="checkClaude(true)">Check again</button>`;
   } else if (!c.loggedIn) {
     box.className = "claude-box warn";
-    box.innerHTML = `<span class="grow">Found Claude Code ${esc(c.version)}, but it isn't signed in.</span>
+    box.innerHTML = `<span class="grow"><b>Claude Code</b> ${esc(c.version)} · not signed in.</span>
       <button type="button" class="cta" id="loginBtn" onclick="signInClaude()">Sign in to Claude</button>
       <button type="button" onclick="checkClaude(true)">Check again</button>`;
   } else {
     box.className = "claude-box ok";
-    box.innerHTML = `<span class="grow">✓ Claude Code ready${c.email ? ` · signed in as ${esc(c.email)}` : ""}</span>
-      ${running
-        ? `<button type="button" onclick="stopTrials()">■ Stop</button>`
-        : `<button type="button" class="cta" id="runTrialBtn" onclick="runTrials()">▶ Run model trial</button>`}`;
+    box.innerHTML = `<span class="grow">✓ <b>Claude Code</b> ready${c.email ? ` · signed in as ${esc(c.email)}` : ""} · runs Haiku, Sonnet and Opus</span>`;
+  }
+}
+
+function renderCodex() {
+  const c = codexInfo;
+  if (!c) return;
+  const box = $("codexBox");
+  const models = (c.models ?? []).map((m) => m.name).join(", ");
+  if (!c.installed) {
+    box.className = "claude-box warn";
+    box.innerHTML = `<span class="grow"><b>Codex</b> · ${c.error ? "couldn't check (restart the Shoal server)." : `not installed. It runs ${esc(models || "the OpenAI models")} on your ChatGPT plan. Install: <code>npm install -g @openai/codex</code>`}</span>
+      <a href="https://developers.openai.com/codex/cli" target="_blank">About Codex</a>
+      <button type="button" onclick="checkCodex(true)">Check again</button>`;
+  } else if (!c.loggedIn) {
+    box.className = "claude-box warn";
+    box.innerHTML = `<span class="grow"><b>Codex</b> ${esc(c.version)} · not signed in.</span>
+      ${codexSignIn
+        ? `<span class="login-code"><span>Open <a href="${esc(codexSignIn.url)}" target="_blank">${esc(codexSignIn.url)}</a>, sign in to ChatGPT and enter this code: <span class="device-code">${esc(codexSignIn.code)}</span></span></span>
+           <button type="button" onclick="checkCodex(true)">I've signed in</button>`
+        : `<button type="button" class="cta" id="codexLoginBtn" onclick="signInCodex()">Sign in with ChatGPT</button>
+           <button type="button" onclick="checkCodex(true)">Check again</button>`}`;
+  } else {
+    box.className = `claude-box ${c.usesApiKey ? "warn" : "ok"}`;
+    box.innerHTML = `<span class="grow">✓ <b>Codex</b> ready${c.plan ? ` · signed in with ${esc(c.plan)}` : ""} · runs ${esc(models)}${c.usesApiKey ? " · <b>signed in with an API key, so trials bill that key; sign in with ChatGPT to run them on your plan</b>" : ""}</span>`;
   }
 }
 
 window.checkClaude = checkClaude;
+window.checkCodex = checkCodex;
 window.signInClaude = () => busy($("loginBtn"), async () => {
   const { url } = await post("/api/claude/login");
   if (url) window.open(url, "_blank");
@@ -383,13 +433,32 @@ window.finishSignIn = () => busy($("loginCodeBtn"), async () => {
   if (info.installed) {
     claudeInfo = info;
     signingIn = false;
-    renderClaude();
+    renderRunners();
   }
+});
+// Codex signs in with a device code: show the link and code, and check back
+// until Codex reports it's signed in.
+window.signInCodex = () => busy($("codexLoginBtn"), async () => {
+  const signIn = await post("/api/codex/login");
+  if (!signIn.url || !signIn.code) return alertTicker(signIn.error ?? "Codex didn't start its sign-in. Try again, or run codex login in a terminal.");
+  codexSignIn = signIn;
+  window.open(signIn.url, "_blank");
+  renderRunners();
+  const started = Date.now();
+  const poll = setInterval(async () => {
+    const info = await get("/api/codex?fresh=1").catch(() => null);
+    if (info?.loggedIn || Date.now() - started > 15 * 60_000) {
+      clearInterval(poll);
+      codexSignIn = null;
+      if (info) codexInfo = info;
+      renderRunners();
+    }
+  }, 4000);
 });
 window.runTrials = () => busy($("runTrialBtn"), async () => {
   const run = await post("/api/trials/run");
   if (run.status) trialRunState = run;
-  renderClaude();
+  renderRunners();
 });
 window.stopTrials = async () => {
   await post("/api/trials/stop");
@@ -398,11 +467,11 @@ window.stopTrials = async () => {
 
 function renderRun(run, scoreboard) {
   trialRunState = run;
-  renderClaude();
+  renderRunners();
   if (!run) return ($("runBox").innerHTML = "");
   const mins = (end) => Math.max(1, Math.round((new Date(end ?? Date.now()) - new Date(run.startedAt)) / 60000));
   if (run.status === "running") {
-    $("runBox").innerHTML = `<div class="run-live">⏳ <b>Trial running</b> for ${mins()} min. Claude Code stops by itself when every model is done.
+    $("runBox").innerHTML = `<div class="run-live">⏳ <b>Trial running</b> for ${mins()} min on ${esc((run.runners ?? []).map((r) => ({ claude: "Claude Code", codex: "Codex" })[r] ?? r).join(" and "))}. Each stops by itself when its models are done.
       <ul>${run.progress.slice(-6).map((p) => `<li>${esc(p.message)}</li>`).join("")}</ul></div>`;
     return;
   }
@@ -412,11 +481,11 @@ function renderRun(run, scoreboard) {
   const ended = { done: "finished", stopped: "was stopped", timed_out: "timed out", failed: "failed" }[run.status];
   $("runBox").innerHTML = `<div class="report ${winner ? "" : "none"}">
       <h3>${winner ? `🏆 Best value: ${esc(winner.name)}` : "No model got a fix verified"}</h3>
-      <p class="hint">Trial ${ended} after ${mins(run.finishedAt)} min · ${run.problems.length} test${run.problems.length > 1 ? "s" : ""} · ran free on your Claude plan</p>
+      <p class="hint">Trial ${ended} after ${mins(run.finishedAt)} min · ${run.problems.length} test${run.problems.length > 1 ? "s" : ""} · ran free on your own ${esc((run.runners ?? ["claude"]).map((r) => ({ claude: "Claude", codex: "ChatGPT" })[r] ?? r).join(" and "))} plan${(run.runners ?? []).length > 1 ? "s" : ""}</p>
       ${winner ? `<p><b>${esc(winner.reason)}.</b> ${esc(winner.name)} fixed ${winner.fixed} of ${winner.tried ?? run.problems.length} tests,
         quality ${winner.quality}/100, about ${money(winner.costPerFix)} of API cost per fix.
         ${others.map((r) => `${esc(r.name)}: quality ${r.quality}, ${money(r.costPerFix)} per fix.`).join(" ")}</p>` : ""}
-      ${run.summary ? `<p><b>Claude's summary:</b> ${esc(run.summary)}</p>` : ""}
+      ${run.summary ? `<p><b>What the agents said:</b> ${esc(run.summary)}</p>` : ""}
       ${run.error ? `<p class="hint">⚠ ${esc(run.error)}</p>` : ""}
       ${winner ? `<p>Fix each test below with its best-value model, paid from your credits only if the fix is verified.</p>` : ""}
     </div>`;
@@ -721,7 +790,7 @@ get("/api/me").then(({ viewer }) => {
 let payments = "simulated";
 get("/api/health").then((h) => {
   payments = h.payments;
-  $("mode").textContent = `${h.mock ? "Mock agents" : "Live Claude agents"} · ${{ "stripe-live": "Stripe live payments (real money)", "stripe-test": "Stripe test payments" }[h.payments] ?? "Simulated payments"}`;
+  $("mode").textContent = `${h.mock ? "Mock agents" : `Live agents (${[h.providers?.anthropic && "Claude", h.providers?.openai && "OpenAI"].filter(Boolean).join(" + ") || "API"})`} · ${{ "stripe-live": "Stripe live payments (real money)", "stripe-test": "Stripe test payments" }[h.payments] ?? "Simulated payments"}`;
 });
 
 // Back from Stripe Checkout.
@@ -777,6 +846,7 @@ document.addEventListener("visibilitychange", () => {
 pollEvents();
 refresh();
 checkClaude();
+checkCodex();
 </script>
 </body>
 </html>
