@@ -2,7 +2,8 @@
 // a GitHub repo cloned into .repos/. The workspace is a working copy of the
 // source that settled fixes get merged into; sandboxes are throwaway copies
 // of the workspace where agent patches are tested.
-import { cp, mkdtemp, readFile, readdir, rm, writeFile, mkdir } from "node:fs/promises";
+import { cp, mkdtemp, readFile, readdir, rm, symlink, writeFile, mkdir } from "node:fs/promises";
+import { lstatSync } from "node:fs";
 import { SKIP_DIRS, commandFor, detectStacks, isTestPath, parseResults, sourcesFor, stackFor } from "./stack.js";
 import { exec } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -72,9 +73,23 @@ export async function sourcesForTest(testFile, dir = WORKSPACE) {
   return sourcesFor(stackFor(source.stacks, testFile), testFile, dir, await listAllFiles(dir));
 }
 
+// Installed dependencies are linked into sandboxes, not copied: copying a
+// real node_modules takes seconds to minutes, and every scan, verification,
+// proof and survival check makes a sandbox. Agents can't write into them
+// (verifier.js protects these folders). SHOAL_COPY_DEPS=1 copies them again.
+export const DEPENDENCY_DIRS = new Set(["node_modules", ".venv", "venv", ".shoal-venv"]);
+
 export async function createSandbox() {
   const dir = await mkdtemp(path.join(tmpdir(), "shoal-sandbox-"));
-  await cp(WORKSPACE, dir, { recursive: true });
+  const linked = [];
+  const filter = (src) => {
+    if (process.env.SHOAL_COPY_DEPS === "1" || !DEPENDENCY_DIRS.has(path.basename(src)) || !lstatSync(src).isDirectory()) return true;
+    linked.push(path.relative(WORKSPACE, src));
+    return false;
+  };
+  await cp(WORKSPACE, dir, { recursive: true, filter });
+  // "junction" needs no admin rights on Windows; elsewhere it's a plain symlink.
+  for (const rel of linked) await symlink(path.join(WORKSPACE, rel), path.join(dir, rel), "junction");
   return dir;
 }
 
@@ -84,6 +99,8 @@ export function destroySandbox(dir) {
 
 export async function writeFiles(dir, files) {
   for (const f of files) {
+    // Dependency folders are shared links in sandboxes: a write would leak into every later run.
+    if (f.path.split(/[\\/]/).some((part) => DEPENDENCY_DIRS.has(part))) throw new Error(`Can't write into installed dependencies: ${f.path}`);
     const target = path.join(dir, f.path);
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, f.content);

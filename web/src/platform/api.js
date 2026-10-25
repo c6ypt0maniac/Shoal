@@ -14,6 +14,7 @@ export const api = {
   me: () => get('/api/me'),
   setRole: (role) => post('/api/me/role', { role }),
   signOut: () => post('/api/auth/github/logout'),
+  deleteAccount: () => del('/api/me'),
   mcp: () => get('/api/mcp'),
 
   // Repo connection
@@ -69,5 +70,6 @@ export const api = {
   ledger: () => get('/api/ledger'),
   settlement: () => get('/api/settlement'),
 
-  events: (after) => get('/api/events/poll?after=' + after),
+  // wait: seconds the server may hold the request until something happens (long-poll).
+  events: (after, wait = 0) => get('/api/events/poll?after=' + after + (wait ? '&wait=' + wait : '')),
 };

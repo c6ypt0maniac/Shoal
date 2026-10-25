@@ -5,6 +5,7 @@ import { NO_TESTS, stackFor } from "./stack.js";
 import { emit } from "./events.js";
 import { state, newId } from "./store.js";
 import { inScope, isSecret } from "./scope.js";
+import { envLimit, mapLimit } from "./limit.js";
 
 const RUNS_PER_FILE = 10;
 // Rough cost model, shown in the UI so judges can see the math.
@@ -34,22 +35,37 @@ export async function scan() {
     }
     const testFiles = allTestFiles.filter((f) => !cantRun.some((c) => c.testFile === f));
 
-    // One file at a time (its runs in parallel) so big repos don't spawn
-    // hundreds of test processes at once.
-    const results = [];
-    for (const testFile of testFiles) {
-      const runs = await runTestMany(sandbox, testFile, RUNS_PER_FILE);
-      const failures = runs.filter((r) => !r.passed).length;
-      const sampleFailure = runs.find((r) => !r.passed)?.log ?? null;
-      // The runner found no tests in the file: a setup mismatch, not a bug.
-      if (failures === runs.length && NO_TESTS.test(sampleFailure ?? "")) {
-        const reason = "the test runner found no tests in this file (it may be written for a different framework)";
-        state.cantRun.push({ testFile, reason });
-        emit("scan.error", { message: `Can't run ${testFile}: ${reason}` });
-        continue;
-      }
-      results.push({ testFile, failures, runs: runs.length, sampleFailure });
-      emit("scan.file", { testFile, failures, message: `${testFile}: ${failures}/${runs.length} failed` });
+    // A few files at a time (each file's runs in parallel), so big repos scan
+    // faster without spawning hundreds of test processes at once. Each file
+    // being scanned gets its own sandbox, so two test files can't trip over
+    // each other's temp files or ports and look flaky. SHOAL_SCAN_CONCURRENCY
+    // sets how many.
+    const limit = Math.min(envLimit("SHOAL_SCAN_CONCURRENCY", 2), Math.max(1, testFiles.length));
+    const extra = await Promise.all(Array.from({ length: limit - 1 }, () => createSandbox()));
+    const free = [sandbox, ...extra];
+    let results;
+    try {
+      results = (await mapLimit(testFiles, limit, async (testFile) => {
+        const box = free.pop();
+        try {
+          const runs = await runTestMany(box, testFile, RUNS_PER_FILE);
+          const failures = runs.filter((r) => !r.passed).length;
+          const sampleFailure = runs.find((r) => !r.passed)?.log ?? null;
+          // The runner found no tests in the file: a setup mismatch, not a bug.
+          if (failures === runs.length && NO_TESTS.test(sampleFailure ?? "")) {
+            const reason = "the test runner found no tests in this file (it may be written for a different framework)";
+            state.cantRun.push({ testFile, reason });
+            emit("scan.error", { message: `Can't run ${testFile}: ${reason}` });
+            return null;
+          }
+          emit("scan.file", { testFile, failures, message: `${testFile}: ${failures}/${runs.length} failed` });
+          return { testFile, failures, runs: runs.length, sampleFailure };
+        } finally {
+          free.push(box);
+        }
+      })).filter(Boolean);
+    } finally {
+      await Promise.all(extra.map(destroySandbox));
     }
 
     const pains = [];

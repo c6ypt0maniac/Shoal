@@ -7,7 +7,7 @@ import Shore from './Shore.jsx';
 import { Agents, CompetitorPicker, ListingDetail, PublishAgent, nameOf } from './Market.jsx';
 import { Repo, Setup } from './Repo.jsx';
 import Trials from './Trials.jsx';
-import { Browse, Empty, Group, Icon, ItemCard, Label, LIVE, Modal, STATUS, Tag, card, field, ghost, money, primary, signInHref, tone } from './ui.jsx';
+import { Browse, Empty, Group, Icon, ItemCard, Label, LIVE, Modal, STATUS, Tag, btn, card, field, ghost, money, primary, signInHref, tone } from './ui.jsx';
 
 // Messages for ?funding= / ?credits= when Stripe Checkout sends the team back.
 const RETURNS = { 'funding=held': ['Reward held in escrow. The race is starting.'], 'funding=cancelled': ['Funding cancelled. The bounty is waiting for funding.', true], 'funding=failed': ["Funding didn't go through. Try again from the bounty.", true], 'credits=added': ['Credits added.'], 'credits=cancelled': ['Credit purchase cancelled.', true], 'credits=failed': ["The credit purchase didn't go through.", true], 'github=signed-in': ['Signed in with GitHub. Pick a repository to connect.'] };
@@ -109,10 +109,14 @@ export default function Platform() {
     </>
   );
 
+  const shoreWidth = useWide();
+  // Signed out: nothing of the platform renders, only the sign-in popup, until GitHub sign-in completes.
+  if (!viewer) return (<><Water strength={0.5} /><SignInGate s={s} view={view} err={err} /></>);
+
   return (
     <>
       <Water strength={0.5} />
-      <Shore width={useWide()} />
+      <Shore width={shoreWidth} />
       <div className="relative z-[1] grid min-h-screen grid-cols-1 font-sans text-[16px] leading-normal text-ink md:grid-cols-[260px_minmax(0,1fr)] lg:grid-cols-[300px_minmax(0,1fr)]">
         <aside ref={asideRef} className="relative flex flex-col gap-6 bg-[#EFDFBF] px-4 py-6 shadow-[0_6px_0_-2px_rgba(255,255,255,0.85),0_14px_18px_-6px_rgba(255,255,255,0.6)] md:shadow-none md:sticky md:top-0 md:h-screen md:overflow-y-auto md:bg-transparent [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {/* Sliding highlight behind the active item */}
@@ -152,6 +156,30 @@ export default function Platform() {
       {open && <Listing s={s} act={act} open={open} setOpen={setOpen} />}
       {create && <Create s={s} act={act} mode={create} setMode={setCreate} onPosted={(b) => { setCreate(null); go('bounties'); if (b?.id) setOpen({ kind: 'bounty', id: b.id }); }} />}
     </>
+  );
+}
+
+// The only thing a signed-out visitor sees: it can't be closed, and stays until
+// GitHub sign-in completes (which reloads /app with the viewer set).
+function SignInGate({ s, view, err }) {
+  const loading = !s.health && !s.me;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/30 p-4 font-sans text-ink backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="gate-title">
+      <div className="glass flex w-full max-w-[460px] flex-col gap-5 rounded-[24px] bg-[rgb(240_247_252/0.9)] p-8">
+        <a href="/" className="flex items-center gap-2 text-xl font-semibold tracking-[-0.03em] text-ink"><span className="block size-[10px] rounded-full bg-accent" />Shoal</a>
+        <h1 id="gate-title" className="m-0 text-[26px] font-semibold tracking-[-0.03em]">{loading ? 'Connecting…' : 'Sign in to use Shoal'}</h1>
+        {!loading && s.me?.oauth === false ? (
+          <p className="m-0 text-[15px] text-muted">GitHub sign-in isn't set up on this server yet, so nobody can sign in. Set <code>GITHUB_CLIENT_ID</code> and <code>GITHUB_CLIENT_SECRET</code> in <code>server/.env</code> and restart the server.</p>
+        ) : !loading && (
+          <>
+            <p className="m-0 text-[15px] text-muted">Shoal uses your GitHub account to connect repositories, open pull requests, and keep track of your bounties and agents.</p>
+            <a href={signInHref(view)} className={primary + ' text-paper hover:text-paper'}>Sign in with GitHub</a>
+          </>
+        )}
+        {err && <span className="text-sm text-bad">{err}</span>}
+        <a href="/" className="self-start text-sm text-muted underline">Back to the home page</a>
+      </div>
+    </div>
   );
 }
 
@@ -435,6 +463,22 @@ function Account({ s, act }) {
         <Tag tone={s.health?.githubToken ? 'ok' : undefined}>GITHUB_TOKEN · {s.health?.githubToken ? 'set' : 'not set'}</Tag>
         <Tag>{s.health?.mock ? 'Practice agents (no API keys)' : 'Live agents'}</Tag>
       </div>
+      {v && <DeleteAccount login={v.login} act={act} />}
     </section>
+  );
+}
+
+// Typing your GitHub username unlocks the button, so it can't be hit by accident.
+function DeleteAccount({ login, act }) {
+  const [typed, setTyped] = useState('');
+  return (
+    <>
+      <h2 className="m-0 border-b border-ink/12 pb-3 text-[24px] font-semibold tracking-[-0.025em]">Delete account</h2>
+      <div className={card + ' border-bad/30'}>
+        <span className="text-[15px]">This can't be undone. It removes the agents and models you added to the marketplace, your reviews, replies and helpful votes, and reviews of your agents. Bounties you posted and their payment records stay, without your name. Shoal's access to your GitHub account is revoked and you're signed out.</span>
+        <Label t={'Type ' + login + ' to confirm'}><input className={field} value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck="false" /></Label>
+        <button className={btn + ' self-start bg-bad text-paper hover:bg-ink'} disabled={typed.trim() !== login} onClick={act(async () => { await api.deleteAccount(); location.reload(); })}>Delete my account</button>
+      </div>
+    </>
   );
 }
