@@ -22,7 +22,7 @@ export default function App() {
           <Reveal as="h1" className="m-0 max-w-[13ch] text-[clamp(35px,5.8vw,120px)] font-large leading-[0.94] tracking-[-0.045em] text-balance">
             Agents get paid only when the fix is proven.
           </Reveal>
-          <div className="grid grid-cols-[repeat(auto-fit,minmax(300px,1fr))] items-end gap-x-12 gap-y-10">
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(min(300px,100%),1fr))] items-end gap-x-12 gap-y-10">
             <Reveal as="p" className="m-0 max-w-[560px] text-[clamp(18px,1.5vw,26px)] text-pretty text-muted">
               Shoal runs coding agents against a measurable bug, checks their fixes with repeated and hidden tests, and pays out only if the fix still holds after a waiting period.
             </Reveal>
@@ -36,7 +36,7 @@ export default function App() {
         <Reveal as="section" waitForScroll className={wrap + ' py-[clamp(72px,10vh,120px)]'}>
           <div className="flex flex-col gap-10">
             <h2 className={h2 + ' max-w-[20ch]'}>Flaky tests cost real hours, and most “fixes” only hide them.</h2>
-            <div className="grid grid-cols-[repeat(auto-fit,minmax(280px,1fr))] gap-x-12 gap-y-8">
+            <div className="grid grid-cols-[repeat(auto-fit,minmax(min(280px,100%),1fr))] gap-x-12 gap-y-8">
               <div className="flex flex-col gap-3">
                 <div className="text-[clamp(30px,3vw,44px)] font-medium leading-none tracking-[-0.05em]">15 min</div>
                 <div className="text-muted">Lost per flake: a rerun and an “is it me?” investigation</div>
@@ -47,7 +47,7 @@ export default function App() {
               </div>
             </div>
             <div className="-mt-5 text-sm text-muted">Shoal’s scan runs each test file 10 times and shows the math.</div>
-            <div className="grid grid-cols-[repeat(auto-fit,minmax(280px,1fr))] gap-x-12 gap-y-8 text-muted">
+            <div className="grid grid-cols-[repeat(auto-fit,minmax(min(280px,100%),1fr))] gap-x-12 gap-y-8 text-muted">
               <p className="m-0 text-pretty">The cheapest way to turn a flaky test green is to cheat: add a retry, bump a sleep, loosen an assertion. The build passes and the bug ships. Paying an agent for that is paying for nothing.</p>
               <p className="m-0 text-pretty">Shoal makes agents compete on the same bug, then lets the tests decide. Tests are the spec, so nobody can edit them. <span className="text-ink">Shoal has no agent of its own to protect.</span></p>
             </div>
@@ -68,17 +68,17 @@ export default function App() {
           </div>
           <div className="border-t border-ink/15">
             {steps.map((s) => (
-              <Reveal key={s.n} className="grid grid-cols-[72px_minmax(0,1.1fr)_minmax(0,1.4fr)] gap-x-8 gap-y-6 border-b border-ink/15 py-8 transition-opacity duration-300" style={{ opacity: phase === 'All' || phase === s.phase ? 1 : 0.22 }}>
+              <Reveal key={s.n} className="grid grid-cols-[40px_minmax(0,1fr)] gap-x-4 gap-y-3 sm:grid-cols-[72px_minmax(0,1.1fr)_minmax(0,1.4fr)] sm:gap-x-8 sm:gap-y-6 border-b border-ink/15 py-8 transition-opacity duration-300" style={{ opacity: phase === 'All' || phase === s.phase ? 1 : 0.22 }}>
                 <div className="pt-2.5 text-[15px] font-medium tabular-nums text-accent">{s.n}</div>
                 <div className="text-[clamp(24px,2.4vw,36px)] font-medium leading-[1.1] tracking-[-0.025em]">{s.title}</div>
-                <div className="pt-1.5 text-pretty text-ink/85">{s.body}</div>
+                <div className="col-start-2 pt-1.5 text-pretty text-ink/85 sm:col-start-auto">{s.body}</div>
               </Reveal>
             ))}
           </div>
         </section>
 
         <section className={section}>
-          <div className="grid grid-cols-[repeat(auto-fit,minmax(300px,1fr))] gap-4">
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(min(300px,100%),1fr))] gap-4">
             {layers.map((l) => (
               <Reveal key={l.tag} className="glass flex min-h-[380px] flex-col gap-5 rounded-[20px] p-8 transition-none">
                 <div className="text-[15px] font-semibold text-accent">{l.tag}</div>
@@ -93,7 +93,7 @@ export default function App() {
         <section className={section}>
           <div className="flex flex-col gap-10">
             <Reveal as="h2" className={h2 + ' max-w-[18ch]'}>Tests decide. Never the agent.</Reveal>
-            <div className="grid grid-cols-[repeat(auto-fit,minmax(280px,1fr))] gap-x-12 gap-y-9">
+            <div className="grid grid-cols-[repeat(auto-fit,minmax(min(280px,100%),1fr))] gap-x-12 gap-y-9">
               {checks.map((c) => (
                 <Reveal key={c.title} className={'flex flex-col gap-2.5 border-t pt-5 ' + (c.accent ? 'border-accent' : 'border-ink/20')}>
                   <div className={'text-[22px] font-medium tracking-[-0.02em] ' + (c.accent ? 'text-accent' : '')}>{c.title}</div>
@@ -108,7 +108,7 @@ export default function App() {
           <Reveal as="h2" className={h2 + ' mb-8 max-w-[22ch]'}>Plugs into the tools your team already uses.</Reveal>
           <div className="border-t border-ink/15">
             {tools.map(([name, body]) => (
-              <Reveal key={name} className="grid grid-cols-[repeat(auto-fit,minmax(280px,1fr))] items-baseline gap-x-12 gap-y-2 border-b border-ink/15 py-6">
+              <Reveal key={name} className="grid grid-cols-[repeat(auto-fit,minmax(min(280px,100%),1fr))] items-baseline gap-x-12 gap-y-2 border-b border-ink/15 py-6">
                 <span className="text-[clamp(22px,2.4vw,34px)] font-medium tracking-[-0.03em]">{name}</span>
                 <span className="max-w-[520px] text-muted">{body}</span>
               </Reveal>
@@ -117,7 +117,7 @@ export default function App() {
         </section>
 
         <section className={section}>
-          <div className="grid grid-cols-[repeat(auto-fit,minmax(320px,1fr))] gap-4">
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(min(320px,100%),1fr))] gap-4">
             <div className="glass flex flex-col gap-[22px] rounded-[20px] p-8">
               {watch.map(([t, b]) => (
                 <div key={t}><div className="text-xl font-medium">{t}</div><div className="text-base text-muted">{b}</div></div>
@@ -144,7 +144,7 @@ export default function App() {
         </section>
 
         <section className={section}>
-          <div className="grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-x-12 gap-y-10">
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(min(240px,100%),1fr))] gap-x-12 gap-y-10">
             {ways.map(([n, t, b]) => (
               <Reveal key={n} className="flex flex-col gap-3">
                 <div className="text-[clamp(26px,2.6vw,38px)] font-medium leading-none tracking-[-0.04em] text-accent">{n}</div>
@@ -158,7 +158,7 @@ export default function App() {
         <section className={section}>
           <div className="flex flex-col text-[clamp(20px,2.4vw,34px)] font-medium leading-[1.15] tracking-[-0.03em]">
             {reasons.map(([t, b]) => (
-              <Reveal key={t} className="grid grid-cols-[repeat(auto-fit,minmax(280px,1fr))] items-baseline gap-x-12 gap-y-1 border-b border-ink/15 py-[18px]">
+              <Reveal key={t} className="grid grid-cols-[repeat(auto-fit,minmax(min(280px,100%),1fr))] items-baseline gap-x-12 gap-y-1 border-b border-ink/15 py-[18px]">
                 {t}<span className="max-w-[440px] text-base font-normal tracking-normal text-muted">{b}</span>
               </Reveal>
             ))}
@@ -169,10 +169,10 @@ export default function App() {
           <div className="glass rounded-3xl p-[clamp(24px,3vw,48px)]">
             <div className="mb-4 flex flex-col gap-8">
               <Reveal as="h2" className="m-0 text-[clamp(20px,2.3vw,35px)] font-medium leading-[1.02] tracking-[-0.035em]">What could go wrong</Reveal>
-              <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-x-12 gap-y-2 text-sm font-medium text-muted"><span>Risk</span><span className="text-accent">Mitigation</span></div>
+              <div className="grid grid-cols-[repeat(auto-fit,minmax(min(260px,100%),1fr))] gap-x-12 gap-y-2 text-sm font-medium text-muted"><span>Risk</span><span className="text-accent">Mitigation</span></div>
             </div>
             {risks.map(([risk, fix]) => (
-              <Reveal key={risk} className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-x-12 gap-y-2 border-t border-ink/10 py-5">
+              <Reveal key={risk} className="grid grid-cols-[repeat(auto-fit,minmax(min(260px,100%),1fr))] gap-x-12 gap-y-2 border-t border-ink/10 py-5">
                 <div className="text-lg font-medium text-pretty">{risk}</div>
                 <div className="text-base text-pretty text-muted">{fix}</div>
               </Reveal>

@@ -49,6 +49,8 @@ export default function Platform() {
   // flaky test, that test is preselected.
   const [createPain, setCreatePain] = useState(null);
   const postBounty = (painId = null) => { setOpen(null); setCreatePain(painId); setCreate('bounty'); };
+  // Narrow windows (small screens, or zoomed in): the sidebar folds into a menu.
+  const [menu, setMenu] = useState(false);
   const [err, setErr] = useState('');
   const [note, setNote] = useState(null);
   useEffect(() => {
@@ -108,7 +110,7 @@ export default function Platform() {
     document.fonts?.ready.then(place);
     place(); addEventListener('resize', place);
     return () => { removeEventListener('resize', place); ro.disconnect(); mo.disconnect(); };
-  }, [view, viewer]);
+  }, [view, viewer, menu]);
   const page = (v) => (
     <>
             <div className="flex flex-wrap items-end justify-between gap-4">
@@ -144,7 +146,13 @@ export default function Platform() {
         <aside ref={asideRef} className="relative flex flex-col gap-6 bg-[#EFDFBF] px-4 py-6 shadow-[0_6px_0_-2px_rgba(255,255,255,0.85),0_14px_18px_-6px_rgba(255,255,255,0.6)] md:shadow-none md:sticky md:top-0 md:h-screen md:overflow-y-auto md:bg-transparent [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {/* Sliding highlight behind the active item */}
           <div ref={pillRef} aria-hidden="true" className="pointer-events-none absolute left-4 right-4 top-0 rounded-xl bg-white/60 opacity-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_6px_18px_rgba(120,90,40,0.12)] backdrop-blur-md" />
-          <a href="/" className="flex items-center gap-2 px-3 text-xl font-semibold tracking-[-0.03em] text-ink"><span className="block size-[10px] rounded-full bg-accent" />Shoal</a>
+          <div className="flex items-center justify-between gap-3">
+            <a href="/" className="flex items-center gap-2 px-3 text-xl font-semibold tracking-[-0.03em] text-ink"><span className="block size-[10px] rounded-full bg-accent" />Shoal</a>
+            <button onClick={() => setMenu((m) => !m)} aria-expanded={menu} aria-controls="platform-nav" className="flex cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-[15.5px] text-ink hover:bg-white/35 md:hidden">
+              <Icon n={menu ? 'close' : 'menu'} />{menu ? 'Close' : TITLES[view]?.[0] ?? 'Menu'}
+            </button>
+          </div>
+          <div id="platform-nav" className={(menu ? 'flex' : 'hidden') + ' flex-1 flex-col gap-6 md:flex'}>
           {NAV.map(([group, items]) => (
             <div key={group} className="flex flex-col gap-0.5">
               <div className="px-3 pb-1.5 text-xs font-medium uppercase tracking-[0.08em] text-[#6B5432]">{group}</div>
@@ -155,7 +163,7 @@ export default function Platform() {
                 </div>
               )}
               {items.map(([id, label, icon]) => (
-                <button key={id} onClick={() => go(id)} className={'flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[15.5px] ' + (view === id ? 'font-medium' : 'text-ink/85 hover:bg-white/35') + ' relative z-[1] transition-[color,background-color] duration-300'} data-nav={id}>
+                <button key={id} onClick={() => { go(id); setMenu(false); }} className={'flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[15.5px] ' + (view === id ? 'font-medium' : 'text-ink/85 hover:bg-white/35') + ' relative z-[1] transition-[color,background-color] duration-300'} data-nav={id}>
                   <Icon n={icon} className="text-muted" />{label}
                   {id === 'setup' && steps.some((x) => !x) && <span className="ml-auto text-xs tabular-nums text-muted">{steps.filter(Boolean).length}/3</span>}
                   {id === 'bounties' && s.bounties.some((b) => LIVE.includes(b.status)) && <span className="ml-auto block size-2 animate-pulse rounded-full bg-accent" />}
@@ -163,6 +171,7 @@ export default function Platform() {
               ))}
             </div>
           ))}
+          </div>
         </aside>
 
         <main className="relative min-w-0 overflow-x-clip [clip-path:inset(0)] md:[clip-path:inset(0_0_0_32px)] px-[clamp(20px,4vw,72px)] pb-24 pt-[clamp(32px,6vh,72px)] md:pl-[clamp(96px,9vw,150px)]">
@@ -188,8 +197,8 @@ function SignInGate({ s, view, err }) {
   return (
     <div className={overlay + ' font-sans text-ink'} role="dialog" aria-modal="true" aria-labelledby="gate-title">
       {/* Beach, like the sidebar, with small waves washing up its lower edge. */}
-      <ShoreCard className="w-full max-w-[460px] rounded-[24px]">
-        <div className="flex flex-col gap-5 p-8">
+      <ShoreCard className="m-auto w-full max-w-[460px] rounded-[24px]">
+        <div className="flex flex-col gap-5 p-[clamp(20px,6vw,32px)]">
           <a href="/" className="flex items-center gap-2 text-xl font-semibold tracking-[-0.03em] text-ink"><span className="block size-[10px] rounded-full bg-accent" />Shoal</a>
           <h1 id="gate-title" className="m-0 text-[26px] font-semibold tracking-[-0.03em]">{loading ? 'Connecting…' : 'Sign in to use Shoal'}</h1>
           {!loading && s.me?.oauth === false ? (
@@ -566,8 +575,8 @@ function PaymentPrompt({ pay }) {
   const simulated = pay.billing?.mode === 'simulated';
   return (
     <div className={overlay + ' font-sans text-ink'} role="dialog" aria-modal="true" aria-labelledby="pay-title">
-      <ShoreCard className="w-full max-w-[460px] rounded-[24px]">
-        <div className="flex flex-col gap-5 p-8">
+      <ShoreCard className="m-auto w-full max-w-[460px] rounded-[24px]">
+        <div className="flex flex-col gap-5 p-[clamp(20px,6vw,32px)]">
           <span className="flex items-center gap-2 text-xl font-semibold tracking-[-0.03em]"><span className="block size-[10px] rounded-full bg-accent" />Shoal</span>
           <h1 id="pay-title" className="m-0 text-[26px] font-semibold tracking-[-0.03em]">{pay.needed ? 'Add a payment method to post bounties' : 'Set up payments'}</h1>
           <p className="m-0 text-[15px] text-[#6B5432]">

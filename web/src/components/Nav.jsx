@@ -47,7 +47,7 @@ export default function Nav() {
   const clickable = { pointerEvents: 'auto', cursor: 'pointer' };
 
   return (
-    <div className="pointer-events-none fixed inset-x-0 top-4 z-40 flex justify-center px-4">
+    <div className="pointer-events-none fixed inset-x-0 top-4 z-40 flex justify-center px-4 [@media(max-height:560px)]:absolute">
       <a
         ref={link}
         href="/app"

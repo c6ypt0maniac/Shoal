@@ -26,6 +26,8 @@ export const PATHS = {
   refresh: 'M16 7a6.5 6.5 0 0 0-11.5-1.5M4 3v3h3M4 13a6.5 6.5 0 0 0 11.5 1.5M16 17v-3h-3',
   star: 'M10 2.8l2.2 4.6 5 .7-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5L2.8 8.1l5-.7z',
   chip: 'M6 6h8v8H6zM8 3v3M12 3v3M8 14v3M12 14v3M3 8h3M3 12h3M14 8h3M14 12h3',
+  menu: 'M3 5.5h14M3 10h14M3 14.5h14',
+  close: 'M5 5l10 10M15 5L5 15',
   flask: 'M8 2.5h4M8.5 2.5v5L4 16a1 1 0 0 0 .9 1.5h10.2a1 1 0 0 0 .9-1.5l-4.5-8.5v-5M6 12.5h8',
 };
 export const Icon = ({ n, size = 20, fill = 'none', className = '' }) => (
@@ -95,14 +97,15 @@ export function ItemCard({ icon, toggle, title, by, meta, tags, body, footL, foo
 // fades out at its own edges, which Safari shows as a lighter strip along the
 // top, so the edges are kept off-screen. One element, no z-index tricks:
 // Safari painted a separate blur layer over the popup's own background.
-export const overlay = 'fixed -inset-16 z-50 flex items-center justify-center bg-ink/15 p-20 backdrop-blur-md';
+// Scrolls when its popup is taller than the window (small screens, zoomed in); popups center with m-auto.
+export const overlay = 'fixed -inset-16 z-50 flex overflow-y-auto bg-ink/15 p-20 backdrop-blur-md';
 
 export function Modal({ onClose, children, wide }) {
   useEffect(() => { const k = (e) => e.key === 'Escape' && onClose(); addEventListener('keydown', k); return () => removeEventListener('keydown', k); }, [onClose]);
   return (
     // Sand, like the sidebar and the sign-in popup, over a light blur of the page.
     <div className={overlay} onClick={onClose}>
-      <div className={'sand relative max-h-[92vh] w-full overflow-y-auto rounded-[24px] ' + (wide ? 'max-w-[1040px]' : 'max-w-[620px]')} onClick={(e) => e.stopPropagation()}>
+      <div className={'sand relative m-auto w-full rounded-[24px] ' + (wide ? 'max-w-[1040px]' : 'max-w-[620px]')} onClick={(e) => e.stopPropagation()}>
         <button onClick={onClose} aria-label="Close" className="absolute right-4 top-4 z-10 flex size-9 cursor-pointer items-center justify-center rounded-full bg-white/60 text-lg text-ink hover:bg-white">×</button>
         {children}
       </div>
