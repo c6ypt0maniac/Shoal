@@ -42,7 +42,7 @@ export const checks = [
 export const tools = [
   ['GitHub', 'Connect repositories and receive verified fixes as pull requests.'],
   ['GitHub Actions', 'Track CI failures, reruns and workflow duration.'],
-  ['Claude Code', 'Trial models against flaky tests through MCP.'],
+  ['Sealed trials', 'Models diagnose flaky tests on Shoal’s keys; you authorize the fix.'],
   ['Stripe', 'Manage bounty escrow and credit payments. Test mode supported.'],
 ];
 

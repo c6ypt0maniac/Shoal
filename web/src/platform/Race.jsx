@@ -33,7 +33,9 @@ function lanes(bounty, events, names) {
       case 'verify.started': stage(L, 0.66, 0.7, 2, e.at, 'verifying', 'verifying'); break;
       case 'verify.runs': { const n = e.results ? e.results.filter(Boolean).length : e.passed ?? 0, t = e.results ? e.results.length : e.total ?? 10; stage(L, 0.66 + 0.32 * (n / t), 0.66 + 0.32 * ((n + 1) / t), 1.2, e.at, 'verifying', n + '/' + t + ' green'); break; }
       case 'verify.rejected': stage(L, L.lo, L.lo, 1, e.at, 'out', 'rejected' + (e.reason ? ': ' + e.reason : '')); break;
-      case 'verify.passed': stage(L, 1, 1, 0.6, e.at, 'verified', 'verified'); break;
+      // Passing the tests isn't the finish: the judges still review it, and
+      // only the winner (fix accepted, PR opened) reaches the line.
+      case 'verify.passed': stage(L, 0.85, 0.95, 10, e.at, 'judging', 'tests passed · judges reviewing'); break;
       case 'bounty.winner': stage(L, 1, 1, 0.6, e.at, 'won', 'winner'); break;
     }
   }
@@ -43,7 +45,10 @@ function lanes(bounty, events, names) {
   if (bounty.winner) Object.assign(lane(names(bounty.winner)), { lo: 1, hi: 1, state: 'won', note: 'winner' });
   const rows = [...map.values()];
   // After the race, anyone still swimming never delivered a verified fix.
-  if (FINISHED.includes(bounty.status)) for (const L of rows) if (!['won', 'verified', 'out'].includes(L.state)) Object.assign(L, { state: 'out', note: 'no fix' });
+  if (FINISHED.includes(bounty.status)) for (const L of rows) {
+    if (L.state === 'judging') Object.assign(L, { lo: 0.9, hi: 0.9, state: 'verified', note: 'passed tests, not picked' });
+    else if (!['won', 'verified', 'out'].includes(L.state)) Object.assign(L, { state: 'out', note: 'no fix' });
+  }
   if (WAITING.includes(bounty.status)) for (const L of rows) Object.assign(L, { note: bounty.status === 'open' ? 'ready' : 'waiting for funding' });
   return rows;
 }
@@ -74,7 +79,7 @@ export default function Race({ bounty, events, names = (id) => id, compact = fal
                 <Fish size={50} color={COLORS[i % COLORS.length]} tail={moving ? Math.sin(t * 9 + i) * 0.45 : 0} opacity={out ? 0.3 : 1} />
               </div>
             </div>
-            {!compact && <div className={'text-right text-sm tabular-nums ' + (r.state === 'won' ? 'font-medium text-accent' : r.state === 'verified' ? 'text-accent' : out ? 'text-bad' : 'text-muted')}>{r.note}</div>}
+            {!compact && <div title={r.note} className={'line-clamp-2 text-right text-sm tabular-nums ' + (r.state === 'won' ? 'font-medium text-accent' : r.state === 'verified' ? 'text-accent' : out ? 'text-bad' : 'text-muted')}>{r.note}</div>}
           </div>
         );
       })}
