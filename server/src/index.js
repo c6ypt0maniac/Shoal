@@ -31,6 +31,7 @@ import { authorizeFix, canStart, isSealed, ladderStatus, publicLadder, runSealed
 import { marginView } from "./spend.js";
 import { unlockPrice } from "./pricing.js";
 import { integrationStatus } from "./integrations.js";
+import { reviewFor, startPreview, downloadFix, createFixPullRequest } from './fix-review.js';
 import {
   authorizeUrl, getOAuthToken, ciStats, cloneRepo, completeOAuth, getRepo, getViewer, hasToken, listRepos, oauthConfigured, parseRepo, repoFiles, revokeGrant, signedInWithEnvToken, signOut,
 } from "./github.js";
@@ -421,6 +422,19 @@ app.get("/api/pains", (_req, res) => res.json(state.pains));
 
 app.get("/api/bounties", (_req, res) => res.json(state.bounties.map(publicBounty)));
 app.get("/api/bounties/:id", (req, res) => res.json(publicBounty(getBounty(req.params.id))));
+
+// Read-only model review. Sealed trials retain the existing unlock boundary.
+async function requireFixReviewUser(req,res,next) {
+  if((state.connection.type==='github'||state.bounties.some(b=>b.repo?.type==='github'))&&!(await currentUser(req)))return res.status(401).json({error:'Sign in to review this repository’s fixes'});
+  next();
+}
+app.get('/api/problems/:painId/fixes',requireFixReviewUser,async(req,res)=>res.json(await reviewFor(req.params.painId,req.query.bountyId)));
+app.post('/api/fixes/:key/preview',requireFixReviewUser,async(req,res)=>{
+  if(process.env.VERCEL)return res.json({supported:false,message:'Run Shoal locally to preview this project. Code review and downloads remain available after unlock.'});
+  res.json(await startPreview(req.params.key,req.body?.entry));
+});
+app.post('/api/fixes/:key/pull-request',requireFixReviewUser,async(req,res)=>{ const pr=await createFixPullRequest(req.params.key); await saveState(); res.json(pr); });
+app.get('/api/fixes/:key/repo',requireFixReviewUser,async(req,res)=>res.attachment(`shoal-${req.params.key.replace(/[^\w.-]/g,'-')}-fixed.zip`).type('application/zip').send(await downloadFix(req.params.key)));
 // Post a bounty. With Stripe set up, the reward is held via Checkout first:
 // the response carries checkoutUrl and the bounty runs once funding clears.
 // Body: { painId, reward, survivalDays?: 7 | 10 | 14, competitors?: [listing ids] }

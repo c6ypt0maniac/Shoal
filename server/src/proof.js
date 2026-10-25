@@ -572,10 +572,10 @@ function score(proof) {
 
 // --- Diff ---------------------------------------------------------------------
 
-async function diffFiles(files) {
+export async function diffFiles(files, readBase = readRepoFile) {
   const out = [];
   for (const f of files) {
-    const before = (await readRepoFile(clean(f.path)).catch(() => "")).split(/\r?\n/);
+    const before = (await readBase(clean(f.path)).catch(() => "")).split(/\r?\n/);
     const after = String(f.content).split(/\r?\n/);
     const ops = lineDiff(before, after);
     out.push({

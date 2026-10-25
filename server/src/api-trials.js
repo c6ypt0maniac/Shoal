@@ -238,8 +238,8 @@ export async function grade(pain, entries) {
     pain.sampleFailure ? `Sample failure output:\n${pain.sampleFailure}` : "",
     `The test and the code it imports:\n${code}`,
     `Engineers diagnosed it:\n${entries.map((d, i) => `Diagnosis ${label(i)}: ${d.file} (${d.location}). Cause: ${d.cause} Plan: ${d.plan}`).join("\n")}`,
-    "Read the code yourself and decide, for each diagnosis, whether it names the real cause in the right place and its plan would fix it in application code (not by retrying, sleeping longer or loosening the test).",
-    "Also score each one from 1 to 10: 10 names every root cause precisely, in the right functions, with a plan that fixes all of it cleanly; lower for a vaguer location, a missed second cause, or a plan that's only partly right. A wrong diagnosis scores 0.",
+    "Read EVERY test case and the source code yourself. Decide whether each diagnosis identifies ALL independent root causes needed to make the ENTIRE test file pass. Mark correct=false for a partial diagnosis even when the one bug it names is real. A plan that only repairs the last failure or one faulty function while leaving other failing cases cannot qualify. Never accept retrying, sleeping longer or loosening tests.",
+    "For a complete correct diagnosis, score clarity and precision from 1 to 10. An incorrect or incomplete diagnosis scores 0. A high score never compensates for missed root causes.",
     'Reply with only JSON: {"grades": [{"label": "A", "correct": true | false, "score": 0-10}, ...]}',
   ].join("\n\n");
   for (const model of GRADERS) {

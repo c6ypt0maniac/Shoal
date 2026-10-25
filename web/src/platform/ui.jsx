@@ -92,18 +92,13 @@ export function ItemCard({ icon, toggle, title, by, meta, tags, body, footL, foo
   );
 }
 
-// The dimmed, blurred page behind a popup. It overhangs the screen by 64px on
-// every side (with 64px more padding, so the popup stays centered): a blur
-// fades out at its own edges, which Safari shows as a lighter strip along the
-// top, so the edges are kept off-screen. One element, no z-index tricks:
-// Safari painted a separate blur layer over the popup's own background.
-// Scrolls when its popup is taller than the window (small screens, zoomed in); popups center with m-auto.
-export const overlay = 'fixed -inset-16 z-50 flex overflow-y-auto bg-ink/15 p-20 backdrop-blur-md';
+// A single native scroll surface, without a full-screen backdrop filter.
+export const overlay = 'shoal-overlay fixed inset-0 z-50 flex overflow-y-auto overscroll-contain bg-ink/20 p-4 md:p-8';
 
 export function Modal({ onClose, children, wide }) {
   useEffect(() => { const k = (e) => e.key === 'Escape' && onClose(); addEventListener('keydown', k); return () => removeEventListener('keydown', k); }, [onClose]);
   // The page behind stays put while a dialog is open; only the dialog scrolls.
-  useEffect(() => { const html = document.documentElement, was = html.style.overflow; html.style.overflow = 'hidden'; return () => { html.style.overflow = was; }; }, []);
+  useEffect(() => { const html = document.documentElement, was = html.style.overflow; html.style.overflow = 'hidden'; html.classList.add('shoal-modal-open'); return () => { html.style.overflow = was; html.classList.remove('shoal-modal-open'); }; }, []);
   return (
     // Sand, like the sidebar and the sign-in popup, over a light blur of the page.
     <div className={overlay} onClick={onClose}>

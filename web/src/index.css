@@ -41,3 +41,13 @@
   a { color: var(--color-accent); text-decoration: none; }
   ::selection { background: var(--color-accent); color: var(--color-paper); }
 }
+
+/* Native scrolling keeps wheel/touch input on the browser's fast path. */
+html { scroll-behavior: smooth; scrollbar-gutter: stable; }
+.shoal-overlay, .shoal-overlay [class*="overflow-auto"] { scroll-behavior: smooth; }
+.shoal-overlay { -webkit-overflow-scrolling: touch; }
+/* Avoid repeatedly filtering the animated page beneath a modal. */
+.shoal-modal-open .glass { backdrop-filter: none; -webkit-backdrop-filter: none; }
+@media (prefers-reduced-motion: reduce) {
+  html, .shoal-overlay, .shoal-overlay [class*="overflow-auto"] { scroll-behavior: auto; }
+}

@@ -7,6 +7,7 @@ import { lstatSync } from "node:fs";
 import { SKIP_DIRS, commandFor, detectStacks, isTestPath, parseResults, sourcesFor, stackFor } from "./stack.js";
 import { exec } from "node:child_process";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { testEvidence } from './test-evidence.js';
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -203,7 +204,7 @@ export async function runTestOnce(dir, testFiles) {
   const files = testFiles ? [testFiles].flat() : await listTestFiles(dir);
   if (testCommand) {
     const { ok, output } = await sh([testCommand, ...files.map((f) => JSON.stringify(f))].join(" "), dir, 120_000);
-    return { passed: ok, log: output.slice(-1500) };
+    return { passed: ok, log: testEvidence(output) };
   }
   const groups = new Map();
   for (const f of files) {
@@ -229,7 +230,7 @@ export async function runTestOnce(dir, testFiles) {
     passed &&= run.ok;
     log += run.output;
   }
-  return { passed, log: log.slice(-1500) };
+  return { passed, log: testEvidence(log) };
 }
 
 // One test file with per-test results where the framework reports them:
@@ -240,7 +241,7 @@ export async function runTestDetail(dir, testFile) {
   if (testCommand || !stack?.toolOk) return { ...(await runTestOnce(dir, testFile)), results: null };
   const { cmd, cwd } = commandFor(stack, [testFile], { detail: true });
   const run = await sh(cmd, path.join(dir, cwd), 180_000);
-  return { passed: run.ok, log: run.output.slice(-3000), results: parseResults(stack, run.output) };
+  return { passed: run.ok, log: testEvidence(run.output), results: parseResults(stack, run.output) };
 }
 
 // Each run gets its own copy of the sandbox, so parallel runs can't trip over

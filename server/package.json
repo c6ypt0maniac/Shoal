@@ -14,7 +14,9 @@
     "check:trials": "node scripts/proof-check.js && node scripts/api-trials-check.js",
     "check:survival": "node scripts/survival-check.js",
     "check:marketplace": "node scripts/marketplace-check.js",
-    "check:supabase": "node --env-file=.env scripts/supabase-check.js"
+    "check:supabase": "node --env-file=.env scripts/supabase-check.js",
+    "check:fix-review": "node --test scripts/fix-review-check.js",
+    "check:test-evidence": "node --test scripts/test-evidence-check.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.3.0",
