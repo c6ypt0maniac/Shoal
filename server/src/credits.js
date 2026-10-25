@@ -49,9 +49,9 @@ export async function addCredits({ dollars, mode, stripeSessionId = null }) {
   return creditsSummary();
 }
 
-// Deducts a verified fix. Called only after the verifier passes it.
-export async function chargeCredits({ bountyId, model, apiCost }) {
-  const cents = fixPriceCents(apiCost);
+// Deducts a verified fix. Called only after the verifier passes it. cents:
+// a set price instead of API cost + fee (unlocking a sealed fix, pricing.js).
+export async function chargeCredits({ bountyId, model, apiCost, cents = fixPriceCents(apiCost) }) {
   if (cents > book().balanceCents) throw httpError(402, "Not enough credits for this fix");
   book().balanceCents -= cents;
   book().charges.unshift({ id: newId("charge"), bountyId, model, apiCost, cents, at: new Date().toISOString() });

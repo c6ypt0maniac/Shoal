@@ -548,7 +548,9 @@ function renderTrials({ scoreboard, problems, trials, run, pick }) {
                 : !proven
                   ? `<span class="proof-badge bad">✗ Failed</span> <button type="button" onclick="buildProof('${p.painId}', this, true)">Re-check</button>`
                   : creditBalance >= p.fixPrice
-                    ? `<button class="cta" onclick="approveModel('${p.painId}', this)">Buy fix · ~${money(p.fixPrice)}</button>`
+                    ? p.sealed
+                      ? `<button class="cta" onclick="unlockFix('${proven.trialId}', this)">Unlock fix · ${money(p.fixPrice)}</button>`
+                      : `<button class="cta" onclick="approveModel('${p.painId}', this)">Buy fix · ~${money(p.fixPrice)}</button>`
                     : `<button type="button" onclick="document.getElementById('packs').scrollIntoView({block:'center'})">Buy credits to fix</button>`;
         const model = proven
           ? `<span class="proof-badge good">✓ Safe to buy</span> <b>${esc(proven.name)}</b> <span class="hint">passed every check${proven.rank ? ` · cheaper picks failed` : ""}</span>`
@@ -571,10 +573,12 @@ function renderTrials({ scoreboard, problems, trials, run, pick }) {
   $("trialLog").innerHTML = trials.map((t) => `<li>${t.status === "passed" ? "✅" : t.status === "failed" ? "❌" : "⏳"}
       <b>${esc(agentNames[t.model] ?? t.model)}</b> on ${esc(t.testFile)}: ${esc(t.status === "failed" ? t.reason : t.summary)}
       <span class="hint">${t.linesChanged} lines</span>
-      ${t.status === "passed" ? `<a href="/api/trials/${encodeURIComponent(t.id)}/repo">⬇ Fixed repo (.zip)</a> ${t.files.map((p) => `<a href="${fileUrl(t.id, p)}">⬇ ${esc(p)}</a>`).join(" ")}` : ""}</li>`).join("");
+      ${t.locked ? `<span class="hint">🔒 sealed until unlocked</span>` : ""}
+      ${t.status === "passed" && !t.locked ? `<a href="/api/trials/${encodeURIComponent(t.id)}/repo">⬇ Fixed repo (.zip)</a> ${t.files.map((p) => `<a href="${fileUrl(t.id, p)}">⬇ ${esc(p)}</a>`).join(" ")}` : ""}</li>`).join("");
 }
 
 window.approveModel = (painId, btn) => busy(btn, () => post("/api/trials/approve", { painId }));
+window.unlockFix = (trialId, btn) => busy(btn, () => post(`/api/trials/${encodeURIComponent(trialId)}/unlock`, {}));
 window.buildProof = (painId, btn, fresh) => busy(btn, () => post("/api/proofs", { painId, fresh: Boolean(fresh) }));
 
 // --- Proof reports -------------------------------------------------------------
@@ -623,10 +627,11 @@ function proofCard(c, proof) {
     parts.push(row(k.challenge.ok, t.length ? `Challenge tests: passed ${t.filter((x) => x.passed).length} of ${t.length}` : "Challenge tests",
       `${t.map((x) => `${x.passed ? "✓" : "✗"} ${esc(x.name)}${x.failsOnOriginal ? ` <span class="hint">(the original code fails this)</span>` : ""}`).join("<br>")}
        ${k.challenge.error ? `<b>${esc(k.challenge.error)}</b>` : ""}
-       ${k.challenge.author ? `<br><span class="hint">Written by ${esc(k.challenge.author)} after reading all the shared code and every model's fix. Each test ran 3 times.</span>` : ""}
+       ${k.challenge.author ? `<br><span class="hint">Written by ${esc(k.challenge.author)} after reading the failing test, the code it imports and every fix, unlabelled. Each test ran 3 times.</span>` : ""}
        ${k.challenge.source ? `<details><summary class="hint">Show the challenge tests</summary><div class="diff"><div class="diff-file">${esc(k.challenge.file)}</div>${k.challenge.source.split("\n").map((l) => `<div class="dl">${esc(l)}</div>`).join("")}</div></details>` : ""}`));
   } else if (c.status === "checking") parts.push(row(null, "Challenge tests", `<span class="hint">Writing and running challenge tests…</span>`));
-  if (k.review) {
+  if (k.review?.skipped) parts.push(row(false, "Second opinion: not asked", `<span class="hint">${esc(k.review.reason)}</span>`));
+  else if (k.review) {
     // Two judges, Claude and OpenAI; both must pass.
     for (const j of k.review.judges ?? []) {
       parts.push(j.status === "waiting"
@@ -642,9 +647,9 @@ function proofCard(c, proof) {
   if (k.record) parts.push(row(null, "Track record on this repo", `${k.record.verified} of ${k.record.attempts} trial fixes verified · first try on ${k.record.firstTry} of ${k.record.problems} tests <span class="hint">(shown for context, not part of pass/fail)</span>`));
   if (k.diff) {
     parts.push(`<div class="check"><span class="mark na">±</span><div><b>The exact change: +${k.diff.added} −${k.diff.removed} lines</b>
-      <a class="dl-btn" href="/api/trials/${encodeURIComponent(c.trialId)}/repo">⬇ Fixed repo (.zip)</a>
+      ${c.locked ? `<span class="hint">🔒 Code sealed until you unlock</span>` : `<a class="dl-btn" href="/api/trials/${encodeURIComponent(c.trialId)}/repo">⬇ Fixed repo (.zip)</a>`}
       ${k.diff.files.map((f) => `<div class="diff"><div class="diff-file">${esc(f.path)}
-        <a href="${fileUrl(c.trialId, f.path)}">⬇ Fixed file</a></div>${f.hunks.map((h) => h.lines.map((l) =>
+        ${c.locked ? ` +${f.added} −${f.removed}` : `<a href="${fileUrl(c.trialId, f.path)}">⬇ Fixed file</a>`}</div>${(f.hunks ?? []).map((h) => h.lines.map((l) =>
         `<div class="dl ${l.type === "+" ? "add" : l.type === "-" ? "del" : ""}">${l.type === " " ? "&nbsp;" : l.type} ${esc(l.text)}</div>`).join("")).join(`<div class="dl gap">⋯</div>`)}</div>`).join("")}</div></div>`);
   }
   if (c.breakdown) {

@@ -15,6 +15,7 @@
 // The app works on the in-memory copy in store.js; changed rows are written
 // back every few seconds, and right away for money (credits.js awaits
 // saveState). One server instance at a time: two would overwrite each other.
+import { suggestReward } from "./scanner.js";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -74,13 +75,16 @@ const COLLECTIONS = {
 const VALUES = {
   connection: { get: () => state.connection, set: (v) => (state.connection = v) },
   // The last scan: the bounties page lists bounties under their flaky test.
-  pains: { get: () => state.pains, set: (v) => (state.pains = v ?? []) },
+  // Suggested rewards are recomputed, so a saved scan picks up a change to the formula.
+  pains: { get: () => state.pains, set: (v) => (state.pains = (v ?? []).map((p) => ({ ...p, suggestedReward: suggestReward(p.hoursPerWeek ?? 0) }))) },
   source: { get: () => ({ dir: getSource().dir, testCommand: getSource().testCommand }), set: () => {} },
   sync: { get: () => ({ auto: state.sync?.auto ?? true }), set: (v) => (state.sync = { ...state.sync, auto: v.auto }) },
   modelCost: { get: () => state.modelCost, set: (v) => (state.modelCost = v ?? {}) },
   credits: { get: () => state.credits, set: (v) => (state.credits = v) },
   billing: { get: () => state.billing, set: (v) => (state.billing = v ?? {}) },
   recentRepos: { get: () => state.recentRepos, set: (v) => (state.recentRepos = v ?? []) },
+  trialSpend: { get: () => state.trialSpend, set: (v) => (state.trialSpend = v ?? {}) },
+  useTeamPlan: { get: () => state.useTeamPlan, set: (v) => { if (typeof v === "boolean") state.useTeamPlan = v; } },
 };
 
 // Real columns and constraints per table, on top of id + data.
@@ -247,6 +251,8 @@ export async function loadState() {
   if (saved.credits) VALUES.credits.set(saved.credits);
   VALUES.billing.set(saved.billing);
   VALUES.recentRepos.set(saved.recentRepos);
+  VALUES.trialSpend.set(saved.trialSpend);
+  VALUES.useTeamPlan.set(saved.useTeamPlan);
 
   // A fresh or imported store gets everything written now; otherwise only
   // what changes from here on.

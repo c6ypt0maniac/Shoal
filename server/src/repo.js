@@ -47,8 +47,30 @@ export async function buildWorkspace(from, to) {
   return detectStacks(to);
 }
 
+// One server per working copy. A second one on the same folder (a check
+// script, a preview) would copy its own repo in under this one, and this
+// server's scan would then find tests it has no setup for.
+async function claimWorkspace() {
+  const lock = `${WORKSPACE}.lock`;
+  const pid = Number(await readFile(lock, "utf8").catch(() => ""));
+  if (pid && pid !== process.pid && isAlive(pid)) {
+    throw new Error(`Another Shoal server (pid ${pid}) is using ${WORKSPACE}. Stop it, or give this one its own folder with SHOAL_WORKSPACE.`);
+  }
+  await writeFile(lock, String(process.pid));
+}
+
+function isAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
+}
+
 // Fresh working copy of the source, then learn how its tests run.
 export async function resetWorkspace() {
+  await claimWorkspace();
   await rm(WORKSPACE, { recursive: true, force: true });
   await copyTree(source.dir, WORKSPACE);
   source.stacks = await detectStacks(WORKSPACE);
@@ -212,6 +234,20 @@ export async function runTestDetail(dir, testFile) {
   return { passed: run.ok, log: run.output.slice(-3000), results: parseResults(stack, run.output) };
 }
 
+// Each run gets its own copy of the sandbox, so parallel runs can't trip over
+// each other's temp files, caches or ports and make a good fix look flaky (or
+// one run's leftovers make a bad fix look fine). Dependency folders are links
+// in a sandbox and stay links in the copy (verbatimSymlinks), so a copy is cheap.
 export async function runTestMany(dir, testFile, times) {
-  return Promise.all(Array.from({ length: times }, () => runTestOnce(dir, testFile)));
+  return Promise.all(
+    Array.from({ length: times }, async () => {
+      const copy = await mkdtemp(path.join(tmpdir(), "shoal-run-"));
+      try {
+        await cp(dir, copy, { recursive: true, verbatimSymlinks: true });
+        return await runTestOnce(copy, testFile);
+      } finally {
+        await destroySandbox(copy);
+      }
+    }),
+  );
 }

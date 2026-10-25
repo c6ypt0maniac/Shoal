@@ -202,6 +202,7 @@ export async function listRepos() {
       language: r.language,
       pushedAt: r.pushed_at,
       canWrite: Boolean(r.permissions?.push),
+      archived: Boolean(r.archived),
     }));
   });
 }
@@ -216,6 +217,7 @@ export async function getRepo(fullName) {
       private: repo.private,
       url: repo.html_url,
       canWrite: Boolean(repo.permissions?.push),
+      archived: Boolean(repo.archived),
     };
   });
 }

@@ -11,7 +11,10 @@ const RUNS_PER_FILE = 10;
 // Rough cost model, shown in the UI so judges can see the math.
 const CI_RUNS_PER_WEEK = 150;
 const HOURS_LOST_PER_FLAKE = 0.25; // rerun + "is it me?" investigation
-const DOLLARS_PER_DEV_HOUR = 25;
+// The reward Shoal suggests for a bounty: $1 per dev-hour the test wastes a
+// week, in $5 steps, between $10 and $50. A fix costs agents a few dollars of
+// API time at most, so the default stays modest; the team can raise it.
+export const suggestReward = (hoursPerWeek) => Math.min(50, Math.max(10, Math.round(hoursPerWeek / 5) * 5));
 
 export async function scan() {
   emit("scan.started", { message: `Running each test file ${RUNS_PER_FILE}x to detect flakes` });
@@ -52,7 +55,7 @@ export async function scan() {
           const failures = runs.filter((r) => !r.passed).length;
           const sampleFailure = runs.find((r) => !r.passed)?.log ?? null;
           // The runner found no tests in the file: a setup mismatch, not a bug.
-          if (failures === runs.length && NO_TESTS.test(sampleFailure ?? "")) {
+          if (runs.every((r) => NO_TESTS.test(r.log))) {
             const reason = "the test runner found no tests in this file (it may be written for a different framework)";
             state.cantRun.push({ testFile, reason });
             emit("scan.error", { message: `Can't run ${testFile}: ${reason}` });
@@ -83,7 +86,7 @@ export async function scan() {
         failures: r.failures,
         runs: r.runs,
         hoursPerWeek,
-        suggestedReward: Math.max(50, Math.round((hoursPerWeek * DOLLARS_PER_DEV_HOUR) / 10) * 10),
+        suggestedReward: suggestReward(hoursPerWeek),
         sampleFailure: r.sampleFailure,
         healthy: r.failures === 0,
         scannedAt: new Date().toISOString(),
@@ -94,8 +97,13 @@ export async function scan() {
     state.pains = pains;
 
     const total = round1(pains.reduce((s, p) => s + p.hoursPerWeek, 0));
+    // "Found 0 flaky" would read as a clean bill of health when nothing ran.
+    const skipped = state.cantRun.length;
+    const message = !results.length && skipped
+      ? `Couldn't run any of the ${skipped} test file${skipped > 1 ? "s" : ""}, so nothing was checked`
+      : `Found ${pains.filter((p) => !p.healthy).length} flaky test files costing ~${total} dev-hours/week${skipped ? `; ${skipped} test file${skipped > 1 ? "s" : ""} couldn't run` : ""}`;
     emit("scan.completed", {
-      message: `Found ${pains.filter((p) => !p.healthy).length} flaky test files costing ~${total} dev-hours/week`,
+      message,
       pains: pains.map(({ sampleFailure, ...p }) => p),
       totalHoursPerWeek: total,
     });
