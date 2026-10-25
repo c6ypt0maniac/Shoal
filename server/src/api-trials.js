@@ -49,12 +49,26 @@ const ladderFor = (painId) => (state.apiTrials[painId] ??= { status: "idle", ste
 
 export const ladderStatus = (painId) => state.apiTrials[painId] ?? null;
 
-// The ladder as the team sees it: no plans, and causes cut down.
+// The ladder as the team sees it: which file and functions, never the cause or plan.
 export function publicLadder(painId) {
   const l = state.apiTrials[painId];
   if (!l) return null;
   const { diagnoses, ...rest } = l;
-  return { ...rest, pickName: l.pick ? MODELS[l.pick].name : null, diagnoses: diagnoses.map((d) => ({ model: d.model, name: MODELS[d.model].name, file: d.file, location: brief(d.location), cause: brief(d.cause), correct: d.correct, wroteFix: l.fixed.includes(d.model) })) };
+  return { ...rest, pickName: l.pick ? MODELS[l.pick].name : null, diagnoses: diagnoses.map((d) => ({ model: d.model, name: MODELS[d.model].name, file: d.file, location: where(d.location), correct: d.correct, wroteFix: l.fixed.includes(d.model) })) };
+}
+
+// Where the bug is, cut to names only: quoted code, parentheses and line
+// numbers out, the first clause, at most 60 characters. The team learns what
+// needs fixing (this file, these functions), never the cause or the fix.
+export function where(location) {
+  if (location == null) return location;
+  // Parentheses can nest ("(calls lookup(code) ...)"): innermost first, and
+  // an unclosed one drops the rest.
+  let text = cutCode(location);
+  for (let prev = null; prev !== text; ) (prev = text), (text = text.replace(/\([^()]*\)/g, ""));
+  const plain = text.replace(/\(.*$/, "").replace(/\b(on |at )?lines? \d+(\s*[-–]\s*\d+)?/gi, "").replace(/\s+/g, " ").trim();
+  const first = plain.split(/[.;:]\s|,\s(?=[a-z]+ (?:is|was|does|doesn't|never|uses|returns))/)[0].trim();
+  return first.length > 60 ? first.slice(0, 59).trimEnd() + "…" : first;
 }
 
 // A trial Shoal paid for and the team hasn't unlocked: its code stays hidden.
@@ -180,8 +194,9 @@ async function diagnose(pain, model, prompt, ladder) {
 }
 
 // Marks each diagnosis correct or not, blind (labelled A, B, C...). Practice
-// mode: correct when it names a file the test imports.
-async function grade(pain, entries) {
+// mode: correct when it names a file the test imports. Bounties use it too
+// (bounties.js diagnosisRace).
+export async function grade(pain, entries) {
   if (MOCK) {
     for (const d of entries) d.correct = (pain.sourceFiles ?? []).includes(d.file);
     return report(pain, entries);

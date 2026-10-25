@@ -9,7 +9,7 @@
 //   the spend cap stops the ladder before a call that would go over it.
 //   node scripts/api-trials-check.js
 import { mkdtempSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -32,7 +32,7 @@ delete process.env.STRIPE_SECRET_KEY;
 const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
 const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
 await import("../src/index.js");
-const { DEMO_REPO } = await import("../src/repo.js");
+const { DEMO_REPO, WORKSPACE } = await import("../src/repo.js");
 const { addCredits, balanceCents } = await import("../src/credits.js");
 const { state } = await import("../src/store.js");
 
@@ -129,6 +129,33 @@ try {
   await req("/api/trials/sealed", { painId: orders.id });
   p = await ladderDone("test/orders.test.js");
   check("running again asks no model", state.apiTrials[orders.id].diagnosed.length === ALL.length && state.trials.length === trialsBefore);
+
+  console.log("7. Bounties: a diagnosis race, then the winner writes the fix when the team says go");
+  process.env.SHOAL_MOCK_FAIL_MODELS = "claude-haiku-5-5";
+  // A "stable" test that fails without any fix (a stale scan): the verifier
+  // mustn't blame the fix for it.
+  await writeFile(path.join(WORKSPACE, "test/stale.test.js"), 'import { test } from "node:test";\ntest("stale", () => { throw new Error("broken before any fix"); });\n');
+  const posted = JSON.parse((await req("/api/bounties", { painId: orders.id, reward: 20 })).text);
+  check("bounty defaults to the Claude models", JSON.stringify(posted.competitors) === JSON.stringify(["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"]), JSON.stringify(posted.competitors));
+  state.bounties.find((b) => b.id === posted.id).stableTestFiles.push("test/stale.test.js");
+  await req(`/api/bounties/${posted.id}/run`, {});
+  let b = await until("the diagnosis race", async () => { const x = JSON.parse((await req(`/api/bounties/${posted.id}`)).text); return ["awaiting_go_ahead", "failed"].includes(x.status) ? x : null; });
+  check("the race only diagnoses, then waits for the team", b.status === "awaiting_go_ahead" && b.competition.attempts === 0 && !b.winningAttempt, b.status);
+  check("the cheapest correct model is recommended (Haiku was wrong)", b.recommended === "claude-sonnet-5-5" && b.diagnoses.find((d) => d.model === "claude-haiku-5-5")?.correct === false, b.recommended);
+  check("diagnoses show what's broken, not the plan", b.diagnoses.length === 3 && b.diagnoses.every((d) => !("plan" in d)));
+  check("a model with a wrong diagnosis can't be picked", (await req(`/api/bounties/${posted.id}/build`, { model: "claude-haiku-5-5" })).status === 400);
+  check("go-ahead accepted", (await req(`/api/bounties/${posted.id}/build`, {})).status === 202);
+  b = await until("the fix", async () => { const x = JSON.parse((await req(`/api/bounties/${posted.id}`)).text); return ["surviving", "failed"].includes(x.status) ? x : null; });
+  check("only the chosen model wrote the fix, and it won", b.status === "surviving" && b.winner === "claude-sonnet-5-5" && b.competition.attempts === 1, `${b.status} ${b.failReason ?? ""}`);
+  await rm(path.join(WORKSPACE, "test/stale.test.js"), { force: true });
+
+  console.log("8. Deleting bounties");
+  const del = async (id) => { const r = await fetch(`${BASE}/api/bounties/${id}`, { method: "DELETE" }); return { status: r.status, body: await r.json() }; };
+  const gone = await del(posted.id);
+  check("a bounty in its survival window is deleted and refunded", gone.status === 200 && gone.body.escrow === "refunded" && !state.bounties.some((x) => x.id === posted.id), JSON.stringify(gone.body));
+  const held = JSON.parse((await req("/api/bounties", { painId: orders.id, reward: 15 })).text);
+  const gone2 = await del(held.id);
+  check("an unstarted bounty is deleted and its hold released", gone2.status === 200 && gone2.body.escrow === "released", JSON.stringify(gone2.body));
 
   const margins = await req("/api/owner/margins");
   check("owner margin view (local)", margins.status === 200 && JSON.parse(margins.text).rows.some((r) => r.painId === cart.id && r.revenue === charged), margins.text.slice(0, 200));

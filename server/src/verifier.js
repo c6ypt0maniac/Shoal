@@ -9,7 +9,10 @@
 //      of the time (see verifyRuns).
 //   3. Every test file that was stable at scan time must still pass (no
 //      regressions). Other known-flaky files are skipped so one agent's fix
-//      isn't blamed for a different bug.
+//      isn't blamed for a different bug, and so is a "stable" file that
+//      fails without the fix too (the scan is out of date, e.g. a bought fix
+//      it was taken with was clawed back): only a file the fix itself breaks
+//      counts, and the rejection names just those files.
 import { createSandbox, destroySandbox, isTestFile, runTestMany, runTestOnce, writeFiles } from "./repo.js";
 import { emit } from "./events.js";
 import { MANIFESTS } from "./stack.js";
@@ -71,19 +74,46 @@ export async function verify({ bountyId, agentId, testFile, files, stableTestFil
     }
 
     const others = stableTestFiles.filter((f) => f !== testFile);
-    if (others.length) {
-      const suite = await runTestOnce(sandbox, others);
-      if (!suite.passed) {
-        const reason = `Fix broke previously stable tests (${others.join(", ")}).`;
+    let alreadyFailing = [];
+    if (others.length && !(await runTestOnce(sandbox, others)).passed) {
+      const { broken, before, log } = await regressions(sandbox, others);
+      alreadyFailing = before;
+      if (before.length) emit("verify.note", { bountyId, agentId, message: `${before.join(", ")} also fail${before.length === 1 ? "s" : ""} without any fix, so ${before.length === 1 ? "it isn't" : "they aren't"} counted against ${agentId}. Rescan to update which tests are stable.` });
+      if (broken.length) {
+        const reason = `Fix broke previously stable test${broken.length === 1 ? "" : "s"}: ${broken.join(", ")}.`;
         emit("verify.rejected", { bountyId, agentId, reason, message: `${agentId} rejected: regression` });
-        return { passed: false, reason, runs, failureLog: suite.log };
+        return { passed: false, reason, runs, failureLog: log };
       }
     }
 
     emit("verify.passed", { bountyId, agentId, message: `${agentId}'s fix verified: ${needed}/${needed} green, no regressions` });
-    return { passed: true, runs };
+    return { passed: true, runs, alreadyFailing };
   } finally {
     await destroySandbox(sandbox);
+  }
+}
+
+// Which stable files failed with the fix, split into the ones the fix broke
+// and the ones that fail without it too (checked twice on the unpatched
+// code, so a one-off flake there doesn't excuse a real regression).
+async function regressions(sandbox, files) {
+  const failing = [];
+  let log = "";
+  for (const f of files) {
+    const r = await runTestOnce(sandbox, f);
+    if (!r.passed) failing.push(f), (log ||= r.log);
+  }
+  if (!failing.length) return { broken: [], before: [], log };
+  const clean = await createSandbox();
+  try {
+    const before = [];
+    for (const f of failing) {
+      const [a, b] = [await runTestOnce(clean, f), await runTestOnce(clean, f)];
+      if (!a.passed && !b.passed) before.push(f);
+    }
+    return { broken: failing.filter((f) => !before.includes(f)), before, log };
+  } finally {
+    await destroySandbox(clean);
   }
 }
 

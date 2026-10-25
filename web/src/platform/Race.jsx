@@ -21,16 +21,25 @@ function lanes(bounty, events, names) {
     // names() maps a listing id to its name and leaves a name as it is.
     const L = lane(names(e.agentId));
     switch (e.type) {
+      // Diagnosis race (server/src/bounties.js diagnosisRace): no fix until the team picks.
+      case 'diagnosis.done': stage(L, 0.45, 0.5, 2, e.at, 'working', 'diagnosed'); break;
+      // A correct diagnosis finishes its race: all the way to the line.
+      case 'diagnosis.graded': stage(L, e.correct ? 1 : L.lo, e.correct ? 1 : L.lo, 0.6, e.at, e.correct ? 'verified' : 'out', e.correct ? 'correct diagnosis' : 'wrong diagnosis'); break;
+      case 'bounty.recommended': stage(L, 1, 1, 0.6, e.at, 'verified', 'recommended'); break;
+      // The chosen model's fix is a second race: it swims again from the start.
+      case 'bounty.building': stage(L, 0.04, 0.6, 8, e.at, 'working', 'writing the fix'); break;
       case 'work.submitted': stage(L, 0.6, 0.66, 2, e.at, 'working', 'patch in'); break;
       case 'work.error': stage(L, L.lo, L.lo, 1, e.at, 'out', 'no patch'); break;
       case 'verify.started': stage(L, 0.66, 0.7, 2, e.at, 'verifying', 'verifying'); break;
       case 'verify.runs': { const n = e.results ? e.results.filter(Boolean).length : e.passed ?? 0, t = e.results ? e.results.length : e.total ?? 10; stage(L, 0.66 + 0.32 * (n / t), 0.66 + 0.32 * ((n + 1) / t), 1.2, e.at, 'verifying', n + '/' + t + ' green'); break; }
       case 'verify.rejected': stage(L, L.lo, L.lo, 1, e.at, 'out', 'rejected' + (e.reason ? ': ' + e.reason : '')); break;
-      case 'verify.passed': stage(L, 0.98, 0.98, 0.6, e.at, 'verified', 'verified'); break;
+      case 'verify.passed': stage(L, 1, 1, 0.6, e.at, 'verified', 'verified'); break;
       case 'bounty.winner': stage(L, 1, 1, 0.6, e.at, 'won', 'winner'); break;
     }
   }
-  // The event log doesn't survive a server restart, but the bounty knows its winner.
+  // The event log doesn't survive a server restart, but the bounty knows its
+  // diagnoses and its winner.
+  for (const d of bounty.diagnoses || []) { const L = lane(names(d.model)); if (L.state === 'waiting') Object.assign(L, { lo: d.correct ? 1 : 0.45, hi: d.correct ? 1 : 0.45, state: d.correct ? 'verified' : 'out', note: d.model === bounty.recommended ? 'recommended' : d.correct ? 'correct diagnosis' : 'wrong diagnosis' }); }
   if (bounty.winner) Object.assign(lane(names(bounty.winner)), { lo: 1, hi: 1, state: 'won', note: 'winner' });
   const rows = [...map.values()];
   // After the race, anyone still swimming never delivered a verified fix.

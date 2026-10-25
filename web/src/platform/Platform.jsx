@@ -263,7 +263,7 @@ function Bounties({ s, act, setOpen, setup, go, postBounty }) {
 // A date, or a time of day when it's within a day (short demo survival windows).
 const day = (iso) => { const d = new Date(iso); return Math.abs(d - Date.now()) < 86_400_000 ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : d.toLocaleDateString([], { month: 'short', day: 'numeric' }); };
 const footer = (b) => ({
-  awaiting_funding: 'Waiting for funding', surviving: 'Paid out ' + (b.survival ? day(b.survival.endsAt) : 'later') + ' if it holds',
+  awaiting_funding: 'Waiting for funding', awaiting_go_ahead: 'Diagnosed: pick the winner', surviving: 'Paid out ' + (b.survival ? day(b.survival.endsAt) : 'later') + ' if it holds',
   settled: b.pullRequest ? 'PR #' + b.pullRequest.number + ' opened' : 'Fix survived', clawed_back: 'Regressed, refunded', failed: 'No fix, $0 charged', payment_failed: 'Charge failed',
 }[b.status] || (LIVE.includes(b.status) ? 'Race in progress' : 'Held in escrow'));
 const Runs = ({ runs, tall }) => <div className="flex gap-1">{runs.map((ok, i) => <span key={i} className={(tall ? 'h-3' : 'h-2') + ' flex-1 rounded-full ' + (ok ? 'bg-accent/60' : 'bg-bad/75')} />)}</div>;
@@ -299,6 +299,16 @@ function Listing({ s, act, open, setOpen, postBounty }) {
             <div className="flex flex-wrap gap-2">{b.competitors.map((id) => <button key={id} className="cursor-pointer" onClick={() => setOpen({ kind: 'listing', id })}><Tag tone={b.winner === id ? 'ok' : undefined}>{name(id)}{b.winner === id ? ' · winner' : ''}</Tag></button>)}</div>
             {b.competition?.attempts > 0 && <span className="text-sm text-muted">{b.competition.attempts} attempt{b.competition.attempts === 1 ? '' : 's'} · {b.competition.verified} verified. Only the winning fix is shown to you.</span>}
           </Section>}
+          {b?.diagnoses?.length > 0 && <Section t="Diagnoses">
+            {b.diagnoses.map((d) => <span key={d.model} className="text-sm"><span className={d.correct ? 'text-accent' : 'text-bad'}>{d.correct ? 'Correct' : 'Wrong'}</span> · {name(d.model)}{d.model === b.recommended ? ' (recommended)' : ''}: <span className="font-mono">{d.file}</span>{d.location ? ' · ' + d.location : ''}</span>)}
+            {b.status === 'awaiting_go_ahead' && <>
+              <span className="text-sm text-muted">No fix has been written yet. The chosen model writes it now; you're charged only if it's verified and both judges pass it.</span>
+              <div className="flex flex-wrap gap-2">
+                <button className={primary} onClick={act(() => api.buildFix(b.id, b.recommended))}>Run {name(b.recommended)} to make the fix</button>
+                {b.diagnoses.filter((d) => d.correct && d.model !== b.recommended).map((d) => <button key={d.model} className={ghost} onClick={act(() => api.buildFix(b.id, d.model))}>Use {name(d.model)} instead</button>)}
+              </div>
+            </>}
+          </Section>}
           {w && <Section t={'Winning fix · ' + name(w.agentId)}>
             <span className="text-[15px]">{w.summary}</span>
             <span className="text-sm text-muted">{w.files.join(', ')}{w.linesChanged != null ? ' · ' + w.linesChanged + ' lines changed' : ''}</span>
@@ -318,6 +328,12 @@ function Listing({ s, act, open, setOpen, postBounty }) {
           {b?.status === 'clawed_back' && <p className="m-0 text-[15px]">The fix regressed during its survival window. You were refunded and the agent was paid $0.</p>}
           {b?.status === 'payment_failed' && <p className="m-0 text-[15px] text-bad">The fix was verified but the charge failed.</p>}
           {b?.winner && ['settled', 'clawed_back'].includes(b.status) && <ReviewForm s={s} act={act} b={b} />}
+          {b && !LIVE.includes(b.status) && <button className={ghost + ' self-start text-bad'} onClick={act(async () => {
+            const note = b.escrow?.status === 'held' ? ' The held reward is released.' : b.status === 'surviving' ? ' The fix is still in its survival window, so you are refunded and the agent is not paid.' : '';
+            if (!confirm('Delete this bounty?' + note)) return;
+            await api.deleteBounty(b.id);
+            close();
+          })}>Delete bounty</button>}
           {b && <p className="m-0 text-sm text-muted">{ESCROW[b.escrow?.status] || b.escrow?.status}{b.escrow?.mode === 'stripe' ? ' · Stripe' + (b.escrow.live ? '' : ' test mode') : b.escrow?.mode === 'credits' ? ' · from credits' : ' · simulated'}.{['held', 'awaiting_funding'].includes(b.escrow?.status) ? ' No surviving fix, $0 charged.' : b.escrow?.status === 'charged' && b.status === 'surviving' ? ' Refunded if the fix regresses in its survival window.' : ''}</p>}
         </div>
       </div>

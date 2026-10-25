@@ -4,7 +4,7 @@ import compression from "compression";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { refreshSources, scan } from "./scanner.js";
-import { createBounty, getBounty, leaderboard, morningSettlement, publicBounty, recoverInterrupted, runBounty } from "./bounties.js";
+import { buildFix, createBounty, getBounty, leaderboard, morningSettlement, publicBounty, recoverInterrupted, runBounty } from "./bounties.js";
 import { checkSurvivors } from "./survival.js";
 import { loadState, saveState, storageInfo } from "./persist.js";
 import { importOpenRouterModel, listing, listingExists, marketplace, ownerOf, publishAgent, refreshOpenRouter, removeListing, rotateSecret, updateAgent } from "./marketplace.js";
@@ -740,6 +740,39 @@ app.post("/api/bounties/:id/survival/check", async (req, res) => {
   if (bounty.status !== "surviving") return res.status(400).json({ error: "This bounty isn't in its survival window" });
   await checkSurvivors({ trigger: "requested", bountyId: bounty.id });
   res.json(publicBounty(bounty));
+});
+
+// Delete a bounty. Its money is settled first: a held reward is released,
+// and a fix still in its survival window is refunded and its payout
+// cancelled. Not while agents are working on it, and only by whoever posted
+// it (when it has a poster). The ledger keeps what already happened.
+const WORKING = ["bidding", "awarding", "competing", "diagnosing", "verifying", "judging"];
+app.delete("/api/bounties/:id", async (req, res) => {
+  const bounty = getBounty(req.params.id);
+  const login = (await currentUser(req))?.login ?? null;
+  if (bounty.postedBy && bounty.postedBy !== login) return res.status(403).json({ error: "Only whoever posted this bounty can delete it" });
+  if (WORKING.includes(bounty.status)) return res.status(409).json({ error: "Agents are working on this bounty; delete it once they're done" });
+  if (bounty.escrow?.status === "held") await releaseEscrow(bounty);
+  if (bounty.status === "surviving" && bounty.escrow?.status === "charged") {
+    await refundEscrow(bounty);
+    const entry = state.ledger.find((t) => t.bountyId === bounty.id && t.status === "pending");
+    if (entry) Object.assign(entry, { status: "cancelled", settledAt: new Date().toISOString() });
+  }
+  state.bounties = state.bounties.filter((b) => b !== bounty);
+  await saveState();
+  emit("bounty.deleted", { bountyId: bounty.id, message: `Deleted the bounty for ${bounty.testFile}${bounty.escrow?.status === "refunded" ? " (refunded)" : bounty.escrow?.status === "released" ? " (hold released)" : ""}` });
+  res.json({ ok: true, escrow: bounty.escrow?.status ?? null });
+});
+
+// After a diagnosis race: the team picks which model writes the fix
+// (default: the recommended one). Body: { model? }. See bounties.js buildFix.
+app.post("/api/bounties/:id/build", (req, res) => {
+  const bounty = getBounty(req.params.id);
+  if (bounty.status !== "awaiting_go_ahead") return res.status(409).json({ error: "This bounty isn't waiting for you to pick a model" });
+  const model = req.body?.model ?? bounty.recommended;
+  if (!bounty.diagnoses?.some((d) => d.model === model && d.correct)) return res.status(400).json({ error: "Pick a model whose diagnosis was correct" });
+  background(() => buildFix(bounty.id, model));
+  res.status(202).json({ accepted: true, bountyId: bounty.id, model });
 });
 
 app.post("/api/bounties/:id/run", (req, res) => {

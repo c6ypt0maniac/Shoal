@@ -79,6 +79,8 @@ export const api = {
   sealedTrials: (painId) => post('/api/trials/sealed', painId ? { painId } : {}),
   unlock: (trialId) => post('/api/trials/' + id(trialId) + '/unlock', {}),
   authorize: (painId) => post('/api/trials/authorize', { painId }),
+  deleteBounty: (bountyId) => del('/api/bounties/' + id(bountyId)),
+  buildFix: (bountyId, model) => post('/api/bounties/' + id(bountyId) + '/build', model ? { model } : {}),
   prove: (painId) => post('/api/proofs', { painId }),
 
   // Money
