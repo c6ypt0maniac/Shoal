@@ -1,0 +1,16 @@
+# Only server/ and demo-repo/ go into the API image (see Dockerfile).
+**/node_modules
+.git
+.claude
+.vscode
+web
+desktop
+sim
+verify-repo
+# Keys and local state never go into an image.
+**/.env
+**/.env.*
+!server/.env.example
+server/.data
+server/.repos
+server/.workspace*
