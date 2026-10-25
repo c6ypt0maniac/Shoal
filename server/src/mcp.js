@@ -1,5 +1,6 @@
-// MCP server: how the team's own AI app takes part in the free trial round,
-// on the team's own plan (Shoal pays nothing). Works with Claude Code,
+// MCP server: an opt-in way for the team's own AI app to take part, on the
+// team's own plan (trials normally run sealed on Shoal's keys; see
+// api-trials.js). Sealed fixes never go out over it. Works with Claude Code,
 // Claude, ChatGPT (developer-mode connector) and Codex. It can see the
 // problems Shoal found, read the files the team shared, run tests on a
 // candidate patch in a sandbox, submit trial fixes tagged with the model
@@ -132,7 +133,7 @@ function buildServer(client) {
     {
       title: "Submit trial fix",
       description:
-        "Submit a fix for one problem, tagged with the model that wrote it. Shoal verifies it (10 green runs, no test edits, no regressions) and scores it, but doesn't apply it. Returns pass or fail with the failure log so you can retry.",
+        "Submit a fix for one problem, tagged with the model that wrote it. Shoal verifies it (green runs in a row, at least 10 and more for rarely failing tests; no test edits, no regressions) and scores it, but doesn't apply it. Returns pass or fail with the failure log so you can retry.",
       inputSchema: {
         problem_id: z.string().describe("Problem id from list_problems"),
         model: z.enum(MODEL_IDS).describe("The model that wrote this fix"),

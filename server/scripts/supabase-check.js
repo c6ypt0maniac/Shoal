@@ -38,7 +38,7 @@ let logs = "";
 async function start() {
   server = spawn(process.execPath, ["src/index.js"], {
     cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), ".."),
-    env: { ...process.env, PORT, SHOAL_DB_SCHEMA: SCHEMA, SHOAL_DATA_DIR: dataDir, SHOAL_MOCK: "1", SHOAL_MOCK_JUDGES: "1", SHOAL_TEST_USERS: "1", SHOAL_SURVIVAL_MINUTES: "0.02", STRIPE_SECRET_KEY: "" },
+    env: { ...process.env, PORT, SHOAL_WORKSPACE: ".workspace-supabasecheck", SHOAL_DB_SCHEMA: SCHEMA, SHOAL_DATA_DIR: dataDir, SHOAL_MOCK: "1", SHOAL_MOCK_JUDGES: "1", SHOAL_TEST_USERS: "1", SHOAL_SURVIVAL_MINUTES: "0.02", STRIPE_SECRET_KEY: "" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   server.stdout.on("data", (d) => (logs += d));

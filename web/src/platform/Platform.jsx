@@ -81,7 +81,8 @@ export default function Platform() {
 
   // Get started: [payments ready, found flaky tests, bounty posted].
   // Payments count as done once a card is saved, payments are simulated, or
-  // the step was skipped ("Later"); posting a bounty still asks for a card.
+  // the step was skipped ("Later"); then bounties post with simulated funding
+  // until a card is saved.
   // The last step is done by posting a bounty, or by choosing to browse agents
   // or try models first (remembered per account in this browser).
   const exploredKey = 'shoal.explored.' + (s.me?.viewer?.login || '');
@@ -271,7 +272,7 @@ function Bounties({ s, act, setOpen, setup, go, postBounty }) {
 // A date, or a time of day when it's within a day (short demo survival windows).
 const day = (iso) => { const d = new Date(iso); return Math.abs(d - Date.now()) < 86_400_000 ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : d.toLocaleDateString([], { month: 'short', day: 'numeric' }); };
 const footer = (b) => ({
-  awaiting_funding: 'Waiting for funding', surviving: 'Paid out ' + (b.survival ? day(b.survival.endsAt) : 'later') + ' if it holds',
+  awaiting_funding: 'Waiting for funding', awaiting_go_ahead: 'Diagnosed: pick the winner', surviving: 'Paid out ' + (b.survival ? day(b.survival.endsAt) : 'later') + ' if it holds',
   settled: b.pullRequest ? 'PR #' + b.pullRequest.number + ' opened' : 'Fix survived', clawed_back: 'Regressed, refunded', failed: 'No fix, $0 charged', payment_failed: 'Charge failed',
 }[b.status] || (LIVE.includes(b.status) ? 'Race in progress' : 'Held in escrow'));
 const Runs = ({ runs, tall }) => <div className="flex gap-1">{runs.map((ok, i) => <span key={i} className={(tall ? 'h-3' : 'h-2') + ' flex-1 rounded-full ' + (ok ? 'bg-accent/60' : 'bg-bad/75')} />)}</div>;
@@ -347,6 +348,16 @@ function Listing({ s, act, open, setOpen, postBounty }) {
             <div className="flex flex-wrap gap-2">{b.competitors.map((id) => <button key={id} className="cursor-pointer" onClick={() => setOpen({ kind: 'listing', id })}><Tag tone={b.winner === id ? 'ok' : undefined}>{name(id)}{b.winner === id ? ' · winner' : ''}</Tag></button>)}</div>
             {b.competition?.attempts > 0 && <span className="text-sm text-muted">{b.competition.attempts} attempt{b.competition.attempts === 1 ? '' : 's'} · {b.competition.verified} verified. Only the winning fix's code is shared with you.</span>}
           </Section>}
+          {b?.diagnoses?.length > 0 && <Section t="Diagnoses">
+            {b.diagnoses.map((d) => <span key={d.model} className="text-sm"><span className={d.correct ? 'text-accent' : 'text-bad'}>{d.correct ? 'Correct' : 'Wrong'}</span> · {name(d.model)}{d.model === b.recommended ? ' (recommended)' : ''}: <span className="font-mono">{d.file}</span>{d.location ? ' · ' + d.location : ''}</span>)}
+            {b.status === 'awaiting_go_ahead' && <>
+              <span className="text-sm text-muted">No fix has been written yet. The chosen model writes it now; you're charged only if it's verified and both judges pass it.</span>
+              <div className="flex flex-wrap gap-2">
+                <button className={primary} onClick={act(() => api.buildFix(b.id, b.recommended))}>Run {name(b.recommended)} to make the fix</button>
+                {b.diagnoses.filter((d) => d.correct && d.model !== b.recommended).map((d) => <button key={d.model} className={ghost} onClick={act(() => api.buildFix(b.id, d.model))}>Use {name(d.model)} instead</button>)}
+              </div>
+            </>}
+          </Section>}
           {w && <Section t={'Winning fix · ' + name(w.agentId)}>
             <span className="text-[15px]">{w.summary}</span>
             <span className="text-sm text-muted">{w.files.join(', ')}{w.linesChanged != null ? ' · ' + w.linesChanged + ' lines changed' : ''}</span>
@@ -362,10 +373,17 @@ function Listing({ s, act, open, setOpen, postBounty }) {
             {b.status === 'surviving' && <button className={ghost + ' self-start'} onClick={act(() => api.survivalCheck(b.id))}>Re-check now</button>}
           </Section>}
           {b?.pullRequest && <a className="text-[15px] text-accent underline" href={b.pullRequest.url} target="_blank" rel="noreferrer">PR #{b.pullRequest.number} on GitHub</a>}
-          {b?.status === 'failed' && <p className="m-0 text-[15px]">No fix passed verification. The hold was released and you paid $0.</p>}
+          {b?.status === 'failed' && <p className="m-0 text-[15px]">{b.competition?.verified ? `${b.competition.verified} fix${b.competition.verified === 1 ? '' : 'es'} passed the tests, but the judges didn't pass any.` : 'No fix passed the tests.'} The hold was released and you paid $0.</p>}
+          {b?.status === 'failed' && (b.failReason || b.failures?.length > 0) && <div className="flex flex-col gap-1">{(b.failReason ? [b.failReason] : b.failures.slice(-3)).map((f, i) => <span key={i} className="text-sm text-muted">{f}</span>)}</div>}
           {b?.status === 'clawed_back' && <p className="m-0 text-[15px]">The fix regressed during its survival window. You were refunded and the agent was paid $0.</p>}
           {b?.status === 'payment_failed' && <p className="m-0 text-[15px] text-bad">The fix was verified but the charge failed.</p>}
           {b?.winner && ['settled', 'clawed_back'].includes(b.status) && <ReviewForm s={s} act={act} b={b} />}
+          {b && !LIVE.includes(b.status) && <button className={ghost + ' self-start text-bad'} onClick={act(async () => {
+            const note = b.escrow?.status === 'held' ? ' The held reward is released.' : b.status === 'surviving' ? ' The fix is still in its survival window, so you are refunded and the agent is not paid.' : '';
+            if (!confirm('Delete this bounty?' + note)) return;
+            await api.deleteBounty(b.id);
+            close();
+          })}>Delete bounty</button>}
           {b && <p className="m-0 text-sm text-muted">{ESCROW[b.escrow?.status] || b.escrow?.status}{b.escrow?.mode === 'stripe' ? ' · Stripe' + (b.escrow.live ? '' : ' test mode') : b.escrow?.mode === 'credits' ? ' · from credits' : ' · simulated'}.{['held', 'awaiting_funding'].includes(b.escrow?.status) ? ' No surviving fix, $0 charged.' : b.escrow?.status === 'charged' && b.status === 'surviving' ? ' Refunded if the fix regresses in its survival window.' : ''}</p>}
         </div>
       </div>
@@ -383,7 +401,8 @@ function QuickPost({ p, s, act, onPosted }) {
       b = await api.postBounty(p.id, Number(reward) || p.suggestedReward, { survivalDays: days, competitors: picks });
     } catch (e) {
       // No card yet: ask for one instead of showing an error.
-      if (e.data?.needsPaymentMethod) { dispatchEvent(new Event('shoal:need-payment')); return; }
+      // "Later" there posts this bounty right away (simulated funding).
+      if (e.data?.needsPaymentMethod) { dispatchEvent(new CustomEvent('shoal:need-payment', { detail: { retry: post } })); return; }
       throw e;
     }
     if (b.checkoutUrl) { location.href = b.checkoutUrl; return; }
@@ -427,7 +446,10 @@ function Create({ s, act, mode, startPain, setMode, onPosted }) {
   // The newest event when a switch began: only a scan finishing after it counts.
   const [switchFrom, setSwitchFrom] = useState(0);
   useEffect(() => { if (mode === 'bounty') api.repos().then(setRepos, () => setRepos([])); }, [mode]);
-  const choices = [...new Set([...(s.connection?.recent || []).map((r) => r.fullName), ...(repos || []).map((r) => r.fullName)])];
+  // Only repos a bounty can land on: ones you can push to (the fix arrives as
+  // a pull request) and that aren't archived.
+  const choices = (repos || []).filter((r) => r.canWrite && !r.archived).map((r) => r.fullName);
+  const activeBlocked = activeKey !== 'demo' && repos !== null && !choices.includes(activeKey);
   const lastScan = [...s.events].reverse().find((e) => /^scan\./.test(e.type));
   const scanning = ['scan.started', 'scan.file'].includes(lastScan?.type);
   const ready = switchingTo === null;
@@ -450,14 +472,16 @@ function Create({ s, act, mode, startPain, setMode, onPosted }) {
         <Label t="Repository">
           <select className={field} value={switchingTo ?? activeKey} disabled={switchingTo !== null} onChange={(e) => pickRepo(e.target.value)}>
             <option value="demo">Bundled demo repo</option>
+            {activeBlocked && <option value={activeKey} disabled>{activeKey} (no write access)</option>}
             {choices.map((r) => <option key={r} value={r}>{r}</option>)}
             {repos === null && <option disabled>Loading your GitHub repos…</option>}
           </select>
         </Label>
         {repoErr && <span className="text-sm text-bad">{repoErr}</span>}
+        {activeBlocked && !switchingTo && <span className="text-sm text-bad">You can't push to {activeKey}, so a fix couldn't land there. Pick a repo you can write to.</span>}
         {!ready ? (
           <div className="text-muted">Switching to {switchingTo === 'demo' ? 'the demo repo' : switchingTo} and scanning for flaky tests…</div>
-        ) : flaky.length === 0 ? (
+        ) : activeBlocked ? null : flaky.length === 0 ? (
           <div className="flex flex-col gap-3 text-muted">{s.pains.length ? 'Every flaky test in this repo already has a bounty.' : scanning ? 'Scanning for flaky tests…' : 'No scan of this repo yet.'}{!s.pains.length && !scanning && <button className={primary + ' self-start'} onClick={act(api.scan)}>Scan for flaky tests</button>}</div>
         ) : (<>
           <Label t="Which test?"><select className={field} value={pain?.id} onChange={(e) => setPainId(e.target.value)}>{flaky.map((p) => <option key={p.id} value={p.id}>{p.testFile} · {p.failures}/{p.runs} failed</option>)}</select></Label>
@@ -588,16 +612,21 @@ function Account({ s, act }) {
 function usePayment(viewer) {
   const [billing, setBilling] = useState(null);
   const [needed, setNeeded] = useState(false);
+  const retry = useRef(null);
   useEffect(() => { if (viewer) api.billing().then(setBilling, () => setBilling(null)); else setBilling(null); }, [viewer?.login]);
   useEffect(() => {
-    const ask = () => setNeeded(true);
+    const ask = (e) => { retry.current = e.detail?.retry ?? null; setNeeded(true); };
     addEventListener('shoal:need-payment', ask);
     return () => removeEventListener('shoal:need-payment', ask);
   }, []);
   const asking = Boolean(billing && !billing.ready && (needed || !billing.prompted));
   return {
     billing, asking, needed,
-    later: async () => { setNeeded(false); setBilling(await api.billingLater()); },
+    later: async () => {
+      setNeeded(false); setBilling(await api.billingLater());
+      const again = retry.current; retry.current = null;
+      if (again) await again();
+    },
     setup: async (from) => {
       const r = await api.setupBilling(from);
       if (r.url) { location.href = r.url; return; }
@@ -627,6 +656,7 @@ function PaymentPrompt({ pay }) {
           <button className={primary} disabled={busy} onClick={run(() => pay.setup('bounties'))}>{busy ? 'Opening Stripe…' : simulated ? 'Use a test card' : 'Add a card with Stripe'}</button>
           {err && <span className="text-sm text-bad">{err}</span>}
           <button className="cursor-pointer self-start text-sm text-[#6B5432] underline" disabled={busy} onClick={run(pay.later)}>Later</button>
+          {!simulated && <span className="-mt-3 text-sm text-[#6B5432]">With Later you can post bounties right away; their rewards are simulated (nothing held or charged) until you add a card.</span>}
         </div>
       </ShoreCard>
     </div>

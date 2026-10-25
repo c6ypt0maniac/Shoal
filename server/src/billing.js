@@ -23,7 +23,8 @@ export function billingFor(login) {
     ready: Boolean(b?.paymentMethodId),
     card: b?.card ?? null,
     simulated: Boolean(b?.simulated),
-    // Asked once after first sign-in; "Later" stops the prompt until a bounty needs it.
+    // Asked once after first sign-in. "Later" stops the prompt, and bounties
+    // post with simulated funding until a card is saved (index.js openBounty).
     prompted: Boolean(b?.prompted),
     mode: stripeConfigured() ? "stripe" : "simulated",
   };

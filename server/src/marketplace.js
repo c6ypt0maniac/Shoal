@@ -259,6 +259,14 @@ function unavailable(l) {
   return "unknown kind of listing";
 }
 
+// Who competes when the team doesn't pick: the Claude models (Haiku,
+// Sonnet, Opus) that can run here, or Shoal's built-in agents if none can.
+export const DEFAULT_CLAUDE = ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"];
+export function defaultCompetitors() {
+  const claude = DEFAULT_CLAUDE.filter((id) => !modelUnavailable(id));
+  return claude.length ? claude : AGENTS.map((a) => a.id);
+}
+
 // Checks a team's picks for a bounty: they must exist and be able to run.
 export function checkCompetitors(ids) {
   const list = [...new Set((Array.isArray(ids) ? ids : []).map(String))];

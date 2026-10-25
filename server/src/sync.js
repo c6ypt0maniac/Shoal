@@ -4,7 +4,8 @@
 // a manifest changed, refresh the workspace (re-detecting languages), put back
 // fixes the team already bought, drop trials and proofs that were judged on
 // code that has since changed, flag new folders the team hasn't shared,
-// rescan, and re-measure every fix still in its survival window (survival.js). Nothing happens mid-run: while a trial, proof or fix is in progress
+// rescan, and re-measure the fixes in their survival window whose test or
+// imported code changed (survival.js). Nothing happens mid-run: while a trial, proof or fix is in progress
 // the sync waits and runs right after.
 import { emit } from "./events.js";
 import { state } from "./store.js";
@@ -87,8 +88,9 @@ export async function syncNow({ source = "manual" } = {}) {
       message: `Synced to ${short(after)}: ${added} file${added === 1 ? "" : "s"} changed${stale ? `; cleared trials and proofs for ${stale} test${stale === 1 ? "" : "s"} whose code changed` : ""}${conn.newPaths.length ? `; new and not shared with agents: ${conn.newPaths.map((p) => `${p}/`).join(", ")}` : ""}`,
     });
     await scan();
-    // New code is exactly when a held fix might break.
-    await checkSurvivors({ trigger: `new commit ${short(after)}` });
+    // New code is when a held fix might break: re-check the fixes whose test
+    // or imported code this commit touched (at most hourly, survival.js).
+    await checkSurvivors({ trigger: `new commit ${short(after)}`, changed });
     return syncStatus();
   } catch (err) {
     state.sync.error = describeError(err);

@@ -7,8 +7,8 @@ export const ghost = btn + ' border border-ink/15 bg-white/55 text-ink hover:bg-
 export const field = 'w-full rounded-xl border border-ink/15 bg-white/60 px-3 py-2.5 text-base text-ink outline-none focus:border-accent';
 export const card = 'glass flex flex-col gap-3 rounded-[20px] p-6';
 export const money = (n) => '$' + Number(n || 0).toLocaleString();
-export const LIVE = ['competing', 'verifying', 'judging'];
-export const STATUS = { open: 'Open', awaiting_funding: 'Needs funding', competing: 'Racing', verifying: 'Verifying', judging: 'Judging', surviving: 'Survival window', settled: 'Fixed', clawed_back: 'Clawed back', failed: 'No fix', payment_failed: 'Payment failed' };
+export const LIVE = ['diagnosing', 'competing', 'verifying', 'judging'];
+export const STATUS = { open: 'Open', awaiting_funding: 'Needs funding', diagnosing: 'Diagnosing', awaiting_go_ahead: 'Pick the winner', competing: 'Racing', verifying: 'Verifying', judging: 'Judging', surviving: 'Survival window', settled: 'Fixed', clawed_back: 'Clawed back', failed: 'No fix', payment_failed: 'Payment failed' };
 export const tone = (status) => (status === 'settled' ? 'ok' : ['failed', 'clawed_back', 'payment_failed'].includes(status) ? 'bad' : undefined);
 
 // Line icons, 20px, stroke = currentColor.

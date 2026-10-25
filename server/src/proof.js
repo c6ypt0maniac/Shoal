@@ -7,20 +7,28 @@
 //   full suite      every other test still passes; tests that were already
 //                   flaky must fail no more often than before.
 //   rules           no test/CI/manifest edits, only shared files, no secrets.
-//   challenge tests new tests Opus (or GPT-6 Astra, without Claude Code) writes
-//                   after reading ALL the shared code
-//                   and every model's fix, aimed at root causes a fix might
-//                   dodge (e.g. a lock that never releases). A fix must pass
-//                   every challenge test that at least one fix passes.
-//   second opinion  two judges, the best Sonnet and the top OpenAI model,
-//                   each read ALL the shared code with the fix applied, and
-//                   both must find that every root cause is fixed.
+//   challenge tests new tests Sonnet 5.5 (or GPT-6.1 Sol) writes after reading
+//                   the failing test, the code it imports and every fix,
+//                   labelled Fix A, Fix B... never by model, aimed at root
+//                   causes a fix might dodge (e.g. a lock that never
+//                   releases). A fix must pass every challenge test that at
+//                   least one fix passes.
+//   second opinion  two judges from different labs (Sonnet 5.5 and GPT-6.1
+//                   Sol, never the fix's own model), each reading the same
+//                   code with the fix applied; both must find that every
+//                   root cause is fixed. Asked only once every test-based
+//                   check above has passed: a fix that already failed isn't
+//                   worth a judge's tokens.
+// Who pays: Shoal's API keys (the team spends nothing), with a spend cap per
+// bug (spend.js). Running these on the team's own Claude Code / Codex / MCP
+// app is an opt-in setting (state.useTeamPlan).
 //   track record    how this model's trials have gone on this repo (shown,
 //                   not counted: it describes the model, not this fix).
 //   code diff       exactly which lines would land.
 // If the cheapest pick fails, the next-best model is checked, so the model
 // the team can buy is always both good value and proven.
-import { createSandbox, destroySandbox, getStacks, listAllFiles, readRepoFile, runTestDetail, runTestMany, runTestOnce, workspaceDir, writeFiles } from "./repo.js";
+import { createSandbox, destroySandbox, getStacks, listAllFiles, readRepoFile, runTestDetail, runTestMany, runTestOnce, sourcesForTest, workspaceDir, writeFiles } from "./repo.js";
+import { addCompute, addSpend, estimate, fitsCap } from "./spend.js";
 import { challengePath, commandFor, stackFor, testHint } from "./stack.js";
 import { inScope, isSecret } from "./scope.js";
 import { isProtected } from "./verifier.js";
@@ -29,7 +37,7 @@ import { state } from "./store.js";
 import { MODELS, rankedOptions } from "./trials.js";
 import { askClaude } from "./claude-runner.js";
 import { askCodex } from "./codex-runner.js";
-import { judgeViaApi } from "./agents.js";
+import { MOCK, judgeViaApi } from "./agents.js";
 
 const STRESS_PARALLEL = 40;
 const STRESS_MIXED = 10;
@@ -79,7 +87,7 @@ export async function proveProblem(painId) {
   if (!pain || !options.length) return;
   running.add(painId);
   try {
-    const code = await allSharedCode();
+    const code = await proofContext(pain, options.map((o) => o.trial.files));
     const key = options.map((o) => o.trial.id).join(",");
     if (challenges.get(painId)?.key !== key) challenges.set(painId, { key, challenge: await challengeFor(pain, options, code) });
     const { challenge } = challenges.get(painId);
@@ -126,12 +134,20 @@ async function prove(pain, option, rank, { code, challenge, options }) {
   proof.checks.challenge = challengeCheck(challenge, trial.id);
 
   const sandbox = await createSandbox();
+  const started = Date.now();
   try {
     await writeFiles(sandbox, trial.files);
     proof.checks.stress = await stressTest(sandbox, pain);
     proof.checks.suite = await fullSuite(sandbox, pain);
   } finally {
     await destroySandbox(sandbox);
+    addCompute(pain.id, (Date.now() - started) / 1000);
+  }
+  // Judges are the expensive part: only for a fix that passed every test.
+  const failedTests = testsFailed(proof.checks);
+  if (failedTests.length) {
+    proof.checks.review = { ok: false, skipped: true, reason: `Not sent to the judges: it already failed ${failedTests.join(", ")}`, judges: [] };
+    return finishProof(proof, pain);
   }
   proof.checks.review = await startReview(pain, trial, proof.checks.diff, { code, options });
   const waiting = proof.checks.review.judges.filter((j) => j.status === "waiting");
@@ -145,8 +161,21 @@ async function prove(pain, option, rank, { code, challenge, options }) {
   return finishProof(proof, pain);
 }
 
+// The test-based checks this fix failed. Challenge tests count only when they
+// were written and this fix failed one: if none could be written, that's not
+// the fix's doing, and the judges still look at it.
+function testsFailed(checks) {
+  const failed = [];
+  if (!checks.rules.ok) failed.push("the rules");
+  if (!checks.stress.ok) failed.push("the stress test");
+  if (!checks.suite.ok) failed.push("the rest of the suite");
+  if (checks.challenge.tests.some((t) => !t.passed)) failed.push("challenge tests");
+  return failed;
+}
+
 function finishProof(proof, pain) {
-  finishReview(proof.checks.review);
+  // A skipped review has no judges; finishReview would call it a pass.
+  if (!proof.checks.review.skipped) finishReview(proof.checks.review);
   score(proof);
   proof.status = "done";
   proof.finishedAt = new Date().toISOString();
@@ -222,17 +251,29 @@ function trackRecord(model) {
   return { attempts: mine.length, verified, problems: problems.length, firstTry, rate: mine.length ? verified / mine.length : 0 };
 }
 
-// --- All the shared code ------------------------------------------------------
+// --- What the judges and the challenge writer read --------------------------
 
-// Every file the team shared, in full: the reviewer and the challenge-test
-// writer always see the whole codebase, never just the files a fix touched.
-// Lockfiles and binaries aren't code, so they're left out.
+// The failing test, every file it imports (followed through their imports),
+// and every file any fix changed, in full; the rest of the repo only as a
+// list of paths. Sending all shared code made judging cost grow with repo
+// size and was most of a bug's spend. Lockfiles and binaries aren't code.
 const NOT_CODE = /(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$|\.(png|jpe?g|gif|ico|webp|pdf|zip|gz|woff2?|ttf|mp4|mp3)$/i;
+const MAX_OTHER_PATHS = 300;
 
-async function allSharedCode() {
-  const paths = (await listAllFiles(workspaceDir())).filter((p) => inScope(p) && !NOT_CODE.test(p)).sort();
-  return Promise.all(paths.map(async (p) => ({ path: p, content: await readRepoFile(p) })));
+async function proofContext(pain, fixes) {
+  const all = (await listAllFiles(workspaceDir())).filter((p) => inScope(p) && !NOT_CODE.test(p));
+  const imports = await sourcesForTest(pain.testFile).catch(() => []);
+  const wanted = new Set([pain.testFile, ...imports.filter(inScope), ...fixes.flat().map((f) => clean(f.path))]);
+  const shown = all.filter((p) => wanted.has(p)).sort();
+  const files = await Promise.all(shown.map(async (p) => ({ path: p, content: await readRepoFile(p) })));
+  const others = all.filter((p) => !wanted.has(p)).sort();
+  files.others = others.slice(0, MAX_OTHER_PATHS);
+  files.othersMore = Math.max(0, others.length - MAX_OTHER_PATHS);
+  return files;
 }
+
+// The other files' paths, so a reader knows what exists without the cost.
+const otherPaths = (code) => (code.others?.length ? `Other files in the repo (not shown):\n${code.others.join("\n")}${code.othersMore ? `\n…and ${code.othersMore} more` : ""}` : "");
 
 // The shared code with a fix applied on top.
 const withFix = (code, files) => {
@@ -247,47 +288,76 @@ const diffText = (diff) => diff.files.map((f) => `--- ${f.path}\n${f.hunks.map((
 
 // --- Challenge tests ----------------------------------------------------------
 
-// Opus reads all the shared code and every model's fix, then writes
+// Sonnet 5.5 reads the failing test, its imports and every fix, then writes
 // new tests aimed at the root causes, especially ones a fix could dodge
-// instead of fixing. They run against every fix. A test only counts if at
-// least one fix passes it (so it's a fair test); a fix must pass all of those.
+// instead of fixing. The fixes are labelled Fix A, Fix B... never by model, so
+// the writer can't favour its own model's work. They run against every fix.
+// A test only counts if at least one fix passes it (so it's a fair test); a
+// fix must pass all of those.
 async function challengeFor(pain, options, code) {
   // Same language, framework and folder as the failing test (see stack.js).
   const stack = stackFor(getStacks(), pain.testFile);
   if (!stack?.toolOk) return { ok: false, file: null, error: stack ? stack.toolMessage : `No supported test setup for ${pain.testFile}` };
   const file = challengePath(stack, pain.testFile);
-  emit("proof.challenge", { message: `Proof: a judge model is reading all ${code.length} shared files and writing challenge tests for ${pain.testFile}` });
+  // Practice mode: no writer to pay; the other checks still run.
+  if (MOCK) return { ok: true, mock: true, file, author: "practice mode", original: {}, results: {}, fair: [], unfair: [] };
+  emit("proof.challenge", { message: `Proof: a model is reading ${code.length} relevant files and writing challenge tests for ${pain.testFile}` });
 
-  const fixes = await Promise.all(options.map(async (o) => `### ${o.name} changed ${o.trial.files.map((f) => f.path).join(", ")}\n${diffText(await diffFiles(o.trial.files))}`));
+  const fixes = await Promise.all(options.map(async (o, i) => `### Fix ${fixLabel(i)} changed ${o.trial.files.map((f) => f.path).join(", ")}\n${diffText(await diffFiles(o.trial.files))}`));
   const prompt = [
     `The test ${pain.testFile} failed ${pain.failures}/${pain.runs} runs. Several AI models each submitted a fix, and every fix makes that test pass.`,
     "Your job: write NEW tests that check whether each root cause is really fixed. A fix that only avoids triggering a bug, instead of fixing it, must fail your tests.",
-    "Read the whole codebase. Look at the contracts stated in comments and names (for example \"callers run one at a time\" or \"one failing listener mustn't stop the others\") and test them directly, including after errors. If some fixes changed a file that others didn't, test the behavior that change fixes.",
-    `All the shared code, before any fix:\n\n${dump(code)}`,
+    "Read the code below. Look at the contracts stated in comments and names (for example \"callers run one at a time\" or \"one failing listener mustn't stop the others\") and test them directly, including after errors. If some fixes changed a file that others didn't, test the behavior that change fixes.",
+    `The failing test, the code it imports and every file a fix changed, before any fix:\n\n${dump(code)}`,
+    otherPaths(code),
     `The fixes:\n\n${fixes.join("\n\n")}`,
     `Write one test file, saved as ${file}, in ${testHint(stack)}, matching the style and imports of ${pain.testFile}. It must run with: ${commandFor(stack, [file]).cmd}`,
     "Rules: 3 to 8 tests, each one short and with a timeout if the framework supports it, so a deadlock fails instead of hanging. Don't depend on luck with random timing: repeat racy scenarios many times in one test. Don't repeat what the existing test already checks. Test behavior, not implementation details. Give each test a clear, descriptive name.",
     "Reply with only the file, in one fenced code block.",
   ].join("\n\n");
 
-  // Opus through Claude Code, or GPT-6 Astra through Codex when Claude Code
-  // isn't here: either way on the team's own plan.
+  // Sonnet 5.5, then GPT-6.1 Sol, on Shoal's API keys: a mid-tier model is
+  // enough, since a test only counts if some fix passes it. The team's own
+  // Claude Code / Codex first only when the team opted in (useTeamPlan).
+  const timeout = 8 * 60_000;
+  const viaApi = (model) => async () => {
+    const cost = estimate(model, prompt, 8_000);
+    if (!fitsCap(pain.id, cost)) return { capped: true };
+    const r = await judgeViaApi(model, prompt).catch(() => null);
+    if (r) addSpend(pain.id, "writer", r.cost);
+    return r;
+  };
   const writers = [
-    { author: "Opus 5.5", ask: () => askClaude(prompt, { model: "opus", timeout: 8 * 60_000 }) },
-    { author: MODELS["gpt-6-astra"].name, ask: () => askCodex(prompt, { model: "gpt-6-astra", timeout: 8 * 60_000 }) },
+    // Never for sealed fixes: the team's own app would see their code.
+    ...(state.useTeamPlan && !options.some((o) => o.trial.sealed) ? [
+      { author: MODELS["claude-sonnet-5-5"].name, ask: () => askClaude(prompt, { model: "sonnet", timeout }) },
+      { author: MODELS["gpt-6.1-sol"].name, ask: () => askCodex(prompt, { model: "gpt-6.1-sol", timeout }) },
+    ] : []),
+    { author: MODELS["claude-sonnet-5-5"].name, ask: viaApi("claude-sonnet-5-5") },
+    { author: MODELS["gpt-6.1-sol"].name, ask: viaApi("gpt-6.1-sol") },
   ];
   let answer = null;
   let author = null;
+  let capped = false;
   for (const w of writers) {
     answer = await w.ask();
-    if (answer) {
+    if (answer?.capped) { capped = true; answer = null; continue; }
+    if (answer?.text) {
       author = w.author;
       break;
     }
   }
   const source = answer?.text.match(/```[\w#+.-]*\s*\n([\s\S]*?)```/)?.[1];
   if (!source) {
-    return { ok: false, file, error: answer ? `${author} didn't return a test file` : "Neither Claude Code nor Codex is available and signed in, so no challenge tests could be written" };
+    return {
+      ok: false,
+      file,
+      error: author
+        ? `${author} didn't return a test file`
+        : capped
+          ? "No challenge tests: writing them would go over this bug's spend cap"
+          : "No challenge tests could be written: set ANTHROPIC_API_KEY or OPENAI_API_KEY on the server",
+    };
   }
 
   const original = await runChallenge([], { path: file, content: source });
@@ -324,6 +394,7 @@ async function runChallenge(fixFiles, challengeFile) {
 
 function challengeCheck(challenge, trialId) {
   if (!challenge.ok) return { ok: false, error: challenge.error, tests: [] };
+  if (challenge.mock) return { ok: true, author: challenge.author, file: challenge.file, tests: [], note: "Practice mode: no challenge tests are written" };
   const mine = challenge.results[trialId] ?? {};
   const tests = challenge.fair.map((name) => ({ name, passed: mine[name] === true, failsOnOriginal: challenge.original[name] === false }));
   return {
@@ -339,19 +410,43 @@ function challengeCheck(challenge, trialId) {
 
 // --- Second opinion -----------------------------------------------------------
 
-// Two judges from different labs, both on the team's own plan, never the
-// model that wrote the fix: the best Sonnet (Opus for Sonnet's fixes) and the
-// top OpenAI model (GPT-6.1 Sol for GPT-6 Astra's). Each judge runs the first
-// way it can: the team's Claude Code / Codex signed in here (free), then
-// Shoal's API key; otherwise it answers over MCP (list_reviews / get_review /
+// Two judges from different labs, never the model that wrote the fix:
+// Sonnet 5.5 (Opus 5.5 for Sonnet's fixes) and GPT-6.1 Sol (GPT-6 Sol for
+// Sol's fixes). Sol replaced GPT-6 Astra: same verdicts in practice at a
+// fraction of the price. They run on Shoal's API keys. When the team opted in
+// to its own plan (useTeamPlan), its Claude Code / Codex is tried first, and a
+// judge that can't run answers over MCP (list_reviews / get_review /
 // submit_review in mcp.js). Both must pass. Bounties use the same judges on
 // their best verified fixes (judgeAttempt).
 const JUDGES = {
   anthropic: [{ id: "claude-sonnet-5-5", alias: "sonnet" }, { id: "claude-opus-5-5", alias: "opus" }],
-  openai: [{ id: "gpt-6-astra" }, { id: "gpt-6.1-sol" }],
+  openai: [{ id: "gpt-6.1-sol" }, { id: "gpt-6-sol" }],
 };
 
 const judgesFor = (model) => Object.entries(JUDGES).map(([provider, [best, backup]]) => ({ provider, ...(model === best.id ? backup : best) }));
+
+// When OpenAI can't answer (no key, no credits, an outage), another Claude
+// model judges in its place, on Shoal's Anthropic key: never the fix's own
+// model and never the Claude judge already on it.
+const CLAUDE_STAND_INS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"];
+
+// -> the judge's answer, the stand-in's, or null.
+// real: never a practice-mode pass (bounties). standInOnPlan: on the team's
+// plan, stand in through its Claude Code instead of waiting for MCP.
+async function askOrStandIn(judge, prompt, painId, { author, judges, teamPlan = false, real = false, standInOnPlan = false }) {
+  const got = await askJudge(judge, prompt, painId, { teamPlan, real });
+  // On the team's plan a judge that can't run waits for MCP instead (trials).
+  if (got || judge.provider !== "openai" || (teamPlan && !standInOnPlan)) return got;
+  const taken = judges.filter((x) => x !== judge).map((x) => x.model);
+  const id = CLAUDE_STAND_INS.find((m) => m !== author && !taken.includes(m));
+  const reason = judge.error ?? "it couldn't run";
+  const standIn = { provider: "anthropic", model: id, alias: id, name: MODELS[id]?.name };
+  const answer = id && (await askJudge(standIn, prompt, painId, { teamPlan: teamPlan && standInOnPlan, real }));
+  if (!answer) return null;
+  emit("proof.stand_in", { message: `${judge.name} couldn't judge (${reason}); ${standIn.name} judged instead` });
+  Object.assign(judge, { ...standIn, alias: null, standInFor: judge.name, standInReason: reason });
+  return { ...answer, via: `${answer.via}, standing in for ${judge.standInFor}` };
+}
 
 async function startReview(pain, trial, diff, { code, options }) {
   const prompt = reviewPrompt(pain, trial, diff, { code, options });
@@ -359,83 +454,90 @@ async function startReview(pain, trial, diff, { code, options }) {
   const judges = judgesFor(trial.model).map((j) => ({ provider: j.provider, model: j.id, alias: j.alias ?? null, name: MODELS[j.id].name, status: "waiting" }));
   await Promise.all(
     judges.map(async (j) => {
-      const got = await askJudge(j, prompt);
+      const teamPlan = state.useTeamPlan && !trial.sealed;
+      const got = await askOrStandIn(j, prompt, pain.id, { author: trial.model, judges, teamPlan });
       if (got) recordVerdict(j, parseVerdict(got.text), got.via);
+      // Not on the team's plan (or a sealed fix), there's no MCP fallback:
+      // fail with the reason.
+      else if (!state.useTeamPlan || trial.sealed) recordVerdict(j, noJudge(j), null);
     }),
   );
   return { ok: null, filesSeen: code.length, judges };
 }
 
-// One judge's answer: Claude Code / Codex on the team's plan first, then
-// Shoal's API key. -> { text, via, cost } or null if neither is available.
-async function askJudge(j, prompt) {
+const noJudge = (j) => ({ verdict: "fail", summary: `${j.name} couldn't run: ${j.error ?? `set ${j.provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"} on the server, or this bug's spend cap was reached`}.`, remaining: [], risks: [] });
+
+// One judge's answer. In practice mode, a stand-in that passes. Otherwise
+// Shoal's API key, within the bug's spend cap; the team's Claude Code /
+// Codex first only when it opted in, and never for a sealed fix.
+// -> { text, via, cost } or null.
+async function askJudge(j, prompt, painId = null, { teamPlan = state.useTeamPlan, real = false } = {}) {
   const timeout = 8 * 60_000;
-  const plan = j.provider === "anthropic" ? await askClaude(prompt, { model: j.alias, timeout }) : await askCodex(prompt, { model: j.model, timeout });
-  if (plan) return { text: plan.text, via: j.provider === "anthropic" ? "Claude Code" : "Codex", cost: 0 };
+  if (teamPlan) {
+    const plan = j.provider === "anthropic" ? await askClaude(prompt, { model: j.alias ?? j.model, timeout }) : await askCodex(prompt, { model: j.model, timeout });
+    if (plan) return { text: plan.text, via: j.provider === "anthropic" ? "Claude Code" : "Codex", cost: 0 };
+    // On the team's plan with no API keys, the judge answers over MCP instead.
+    if (MOCK) {
+      j.error ??= `${j.provider === "anthropic" ? "Claude Code" : "Codex"} isn't installed and signed in on the machine running Shoal`;
+      return null;
+    }
+  }
+  if (MOCK && real) {
+    j.error ??= "the server has no API keys and the team's own plan isn't turned on (SHOAL_TEAM_PLAN=1 uses its Claude Code / Codex)";
+    return null;
+  }
+  if (MOCK) return { text: JSON.stringify({ verdict: "pass", summary: "Practice-mode judge (no API keys): not a real review." }), via: "practice mode", cost: 0 };
+  if (!fitsCap(painId, estimate(j.model, prompt, 6_000))) return null;
   try {
     const api = await judgeViaApi(j.model, prompt);
+    addSpend(painId, "judges", api.cost);
     return { text: api.text, via: `${MODELS[j.model].name} API`, cost: api.cost };
-  } catch {
+  } catch (err) {
+    // Kept for the stand-in note and the failure message (e.g. no credits).
+    j.error = String(err.message ?? err).slice(0, 200);
     return null;
   }
 }
-
-// Every model that can stand in as a judge when one lab can't run here.
-const SUBSTITUTES = [
-  { provider: "anthropic", id: "claude-sonnet-5-5", alias: "sonnet" },
-  { provider: "anthropic", id: "claude-opus-5-5", alias: "opus" },
-  { provider: "anthropic", id: "claude-haiku-5-5", alias: "haiku" },
-  { provider: "openai", id: "gpt-6-astra" },
-  { provider: "openai", id: "gpt-6.1-sol" },
-];
 
 // The two judges on one bounty attempt that already passed the verifier.
 // author: who wrote it (never judges itself). others: the other verified
 // attempts' files, so the judges can spot a bug this one only avoids.
 // -> { ok, judges, cost }. ok only if both judges ran and both passed.
-// Judges are always real models: the team's Claude Code / Codex here, or an
-// API key (askJudge). Mock agents' fixes get real judges too. If one lab
-// can't run here, the second judge is another model from the lab that can,
-// still never the author. With no real judge at all the fix can't win.
-// SHOAL_MOCK_JUDGES=1 (the check scripts) skips real judges for stand-ins
-// that pass, so checks never spend anyone's plan or API credit.
+// Judges are always real models, for every agent's fix (mock agents'
+// included): Shoal's API keys, or the team's Claude Code / Codex when it
+// opted in (SHOAL_TEAM_PLAN=1). There's no practice-mode pass here: with no
+// real judge the fix can't win. When OpenAI can't run, a Claude model stands
+// in (askOrStandIn), on the team's plan too. SHOAL_MOCK_JUDGES=1 (the check
+// scripts) uses stand-ins that pass, so checks never spend anyone's plan or
+// API credit.
 export async function judgeAttempt({ pain, files, author, others = [] }) {
   if (process.env.SHOAL_MOCK_JUDGES === "1") {
     const judges = judgesFor(author).map((j) => ({ provider: j.provider, model: j.id, name: MODELS[j.id].name, status: "waiting" }));
     for (const j of judges) recordVerdict(j, { verdict: "pass", summary: "Stand-in judge (SHOAL_MOCK_JUDGES=1): not a real review.", remaining: [], risks: [] }, "stand-in");
     return { ok: true, judges, cost: 0 };
   }
-  const code = await allSharedCode();
+  const code = await proofContext(pain, [files, ...others]);
   const diff = await diffFiles(files);
   const fix = { id: `attempt:${author}`, model: author, files };
   const options = others.map((files, i) => ({ trial: { id: `other:${i}`, files } }));
   const prompt = reviewPrompt(pain, fix, diff, { code, options });
   let cost = 0;
-  const newJudge = (j) => ({ provider: j.provider, model: j.id, alias: j.alias ?? null, name: MODELS[j.id].name, status: "waiting" });
-  const run = async (judge) => {
-    const got = await askJudge(judge, prompt);
-    if (!got) return false;
-    cost += got.cost ?? 0;
-    recordVerdict(judge, parseVerdict(got.text), got.via);
-    return true;
-  };
-  const judges = judgesFor(author).map(newJudge);
-  const answered = await Promise.all(judges.map(run));
-  for (let i = 0; i < judges.length; i++) {
-    if (answered[i]) continue;
-    const used = new Set([author, ...judges.map((j) => j.model)]);
-    const working = new Set(judges.filter((_, k) => answered[k]).map((j) => j.provider));
-    // Try the lab that already answered first, then anything else.
-    const subs = SUBSTITUTES.filter((s) => !used.has(s.id)).sort((a, b) => working.has(b.provider) - working.has(a.provider));
-    let replaced = false;
-    for (const s of subs) {
-      const judge = newJudge(s);
-      if (await run(judge)) { judges[i] = judge; answered[i] = replaced = true; break; }
-    }
-    if (replaced) continue;
-    recordVerdict(judges[i], { verdict: "fail", summary: "No real judge could run: sign in to Claude Code (or Codex) on the machine running Shoal, or set ANTHROPIC_API_KEY or OPENAI_API_KEY.", remaining: [], risks: [] }, null);
-    judges[i].unavailable = true;
-  }
+  const all = judgesFor(author).map((j) => ({ provider: j.provider, model: j.id, alias: j.alias ?? null, name: MODELS[j.id].name, status: "waiting" }));
+  const judges = await Promise.all(
+    all.map(async (judge) => {
+      // Bounties have no MCP fallback, so a Claude stand-in steps in on the team's plan as well.
+      const got = await askOrStandIn(judge, prompt, null, { author, judges: all, teamPlan: state.useTeamPlan, real: true, standInOnPlan: true });
+      if (got) {
+        cost += got.cost;
+        recordVerdict(judge, parseVerdict(got.text), got.via);
+      } else {
+        const key = judge.provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
+        recordVerdict(judge, { verdict: "fail", summary: `${judge.name} couldn't judge: ${judge.error ?? `set ${key} on the server`}.`, remaining: [], risks: [] }, null);
+        judge.unavailable = true;
+      }
+      return judge;
+    }),
+  );
   const strip = ({ alias, ...j }) => j;
   return { ok: judges.every((j) => j.ok), judges: judges.map(strip), cost };
 }
@@ -449,9 +551,11 @@ function reviewPrompt(pain, trial, diff, { code, options }) {
     pain.sampleFailure ? `Sample failure:\n${pain.sampleFailure}` : "",
     `The change (unified diff):\n${diffText(diff)}`,
     othersTouched.length ? `Other models' verified fixes also changed ${othersTouched.join(", ")}. This fix didn't. Decide whether those files still contain a bug this fix only avoids.` : "",
-    `All the shared code WITH this fix applied:\n\n${dump(withFix(code, trial.files))}`,
+    `The failing test, the code it imports and every changed file, WITH this fix applied:\n\n${dump(withFix(code, trial.files))}`,
+    otherPaths(code),
     "Pass it only if every root cause behind the failures is fixed. Fail it if it hides a symptom (longer sleeps, retries, looser assertions, swallowed errors) or works around a bug instead of fixing it, leaving broken code that the test just doesn't reach.",
-    'Reply with only JSON: {"verdict": "pass" | "fail", "summary": "one or two sentences", "remaining_bugs": ["file: what is still broken", ...], "risks": ["short risk", ...]}',
+    "The team may read your summary before it sees the fix, so keep it short: say what is fixed or still broken and where, never how to fix it, and quote no code.",
+    'Reply with only JSON: {"verdict": "pass" | "fail", "summary": "one sentence", "remaining_bugs": ["file: what is still broken", ...], "risks": ["short risk", ...]}',
   ].join("\n\n");
 }
 
@@ -494,8 +598,9 @@ function finishReview(review) {
 
 // Reviews waiting on a judge, for the MCP's list_reviews.
 export function pendingReviews() {
+  // A sealed fix's code never goes out over MCP.
   return Object.values(state.proofs)
-    .filter((p) => p.status === "awaiting_review")
+    .filter((p) => p.status === "awaiting_review" && !state.trials.find((t) => t.id === p.trialId)?.sealed)
     .map((p) => ({
       trialId: p.trialId,
       testFile: p.testFile,
@@ -507,7 +612,8 @@ export function pendingReviews() {
 // Everything a judge needs to review one fix (MCP get_review).
 export function reviewRequest(trialId) {
   const proof = state.proofs[trialId];
-  if (proof?.status !== "awaiting_review" || !reviewPrompts.has(trialId)) throw httpError(404, `No review is waiting for ${trialId}. Call list_reviews.`);
+  const sealed = state.trials.find((t) => t.id === trialId)?.sealed;
+  if (proof?.status !== "awaiting_review" || !reviewPrompts.has(trialId) || sealed) throw httpError(404, `No review is waiting for ${trialId}. Call list_reviews.`);
   return { ...pendingReviews().find((r) => r.trialId === trialId), instructions: reviewPrompts.get(trialId) };
 }
 
@@ -611,6 +717,9 @@ function httpError(status, message) {
 }
 
 const clean = (p) => String(p).replace(/\\/g, "/").replace(/^\.\//, "");
+
+// 0 -> "A", 25 -> "Z", 26 -> "AA".
+const fixLabel = (i) => (i >= 26 ? fixLabel(Math.floor(i / 26) - 1) : "") + String.fromCharCode(65 + (i % 26));
 
 function shuffle(list) {
   const a = [...list];

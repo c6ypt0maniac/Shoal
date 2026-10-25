@@ -2,7 +2,8 @@
 // 7-14 days. The team is charged when the fix verifies, but the agent's
 // payout stays pending. During the window Shoal re-measures the bounty's
 // test on the current code (with whatever the team has committed since):
-// after every new commit (sync.js) and on a schedule. If it regresses, the
+// after a new commit that touches the test or the code it imports (sync.js;
+// at most once an hour per fix) and on a schedule. If it regresses, the
 // bounty is clawed back: the team is refunded and the agent's scorecard
 // takes the hit. If it holds to the end, the payout clears.
 //
@@ -24,6 +25,9 @@ const DAY_MS = 24 * 60 * 60_000;
 const CHECK_RUNS = 10;
 const CONFIRM_RUNS = 20;
 const MAX_FAILURES = 2;
+// Commit-triggered checks per fix, at most one per this long. A relevant
+// commit inside it moves the next scheduled check up to when it ends.
+const COMMIT_CHECK_GAP_MS = 60 * 60_000;
 
 // For demos and tests: SHOAL_SURVIVAL_MINUTES makes every window that long,
 // and SHOAL_SURVIVAL_CHECK_MINUTES sets how often it's re-measured.
@@ -68,19 +72,40 @@ export const isCheckingSurvival = () => checking;
 // Re-measures every bounty in its window (or just one), then pays out the
 // ones whose window has ended and claws back the ones that regressed.
 // trigger: why it ran, shown with each check ("new commit", "scheduled", ...).
-export async function checkSurvivors({ trigger, bountyId = null, onlyDue = false } = {}) {
+// changed: the files a new commit changed; then only fixes on the active
+// repo whose test or imported code changed are checked (see commitDue).
+export async function checkSurvivors({ trigger, bountyId = null, onlyDue = false, changed = null } = {}) {
   if (checking) return [];
   checking = true;
   const now = Date.now();
   state.bounties.filter((b) => b.status === "surviving").forEach(shortenForDemo);
   const due = (b) => !onlyDue || now >= Date.parse(b.survival.nextCheckAt) || now >= Date.parse(b.survival.endsAt);
-  const watched = state.bounties.filter((b) => b.status === "surviving" && (!bountyId || b.id === bountyId) && due(b));
+  const watched = state.bounties.filter((b) => b.status === "surviving" && (!bountyId || b.id === bountyId) && due(b) && (!changed || commitDue(b, changed, now)));
   try {
     for (const bounty of watched) await checkOne(bounty, trigger);
     return watched.map((b) => b.id);
   } finally {
     checking = false;
   }
+}
+
+// A commit is worth a check only if it touched the fix's test or the code the
+// test imports (as of the latest scan, or when the bounty was posted), and
+// only once an hour: otherwise the next scheduled check comes no later than
+// the end of that hour.
+function commitDue(bounty, changed, now) {
+  if (!isActive(bounty)) return false;
+  const live = state.pains.find((p) => p.testFile === bounty.testFile);
+  const watched = new Set([bounty.testFile, ...(bounty.pain?.sourceFiles ?? []), ...(live?.sourceFiles ?? [])]);
+  if (!changed.some((f) => watched.has(f))) return false;
+  const last = Date.parse(bounty.survival.lastCommitCheckAt ?? 0);
+  if (now - last >= COMMIT_CHECK_GAP_MS) {
+    bounty.survival.lastCommitCheckAt = new Date(now).toISOString();
+    return true;
+  }
+  const soon = new Date(last + COMMIT_CHECK_GAP_MS).toISOString();
+  if (soon < bounty.survival.nextCheckAt) bounty.survival.nextCheckAt = soon;
+  return false;
 }
 
 async function checkOne(bounty, trigger) {
