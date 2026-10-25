@@ -31,6 +31,9 @@ import { markConnected, reapplyBoughtFixes, setAutoSync, syncNow, syncStatus } f
 import { detectClaude, finishLogin, startLogin } from "./claude-runner.js";
 import { detectCodex, startCodexLogin } from "./codex-runner.js";
 import { startTrialRun, stopTrialRun, trialRun } from "./trial-runner.js";
+import { canStart, isSealed, ladderStatus, runSealedTrials, sealProof, sealTrial } from "./api-trials.js";
+import { marginView } from "./spend.js";
+import { unlockPrice } from "./pricing.js";
 import { integrationStatus } from "./integrations.js";
 import {
   authorizeUrl, getOAuthToken, ciStats, cloneRepo, completeOAuth, getRepo, getViewer, hasToken, listRepos, oauthConfigured, parseRepo, repoFiles, revokeGrant, signedInWithEnvToken, signOut,
@@ -429,9 +432,14 @@ app.get("/api/trials", (_req, res) =>
     pick: overallPick(),
     problems: trialSummary().map((p) => {
       const proof = proofFor(p.painId);
-      return { ...p, proof, fixPrice: proof.proven ? fixPriceCents(costPerFix(proof.proven.model)) / 100 : null };
+      const sealed = isSealed(state.trials.find((t) => t.id === proof.proven?.trialId));
+      // A sealed fix's price is set when it's proven; shown before unlocking.
+      const fixPrice = !proof.proven ? null : sealed ? (ladderStatus(p.painId)?.price ?? unlockPrice(p.painId)) : fixPriceCents(costPerFix(proof.proven.model)) / 100;
+      return { ...p, proof: sealProof(proof), fixPrice, sealed, ladder: ladderStatus(p.painId) };
     }),
-    trials: state.trials.slice(0, 40).map(({ files, ...t }) => ({ ...t, files: files.map((f) => f.path) })),
+    // Sealed trials: file paths and size only, until unlocked (api-trials.js).
+    trials: state.trials.slice(0, 40).map(sealTrial),
+    canRunTrials: canStart() ?? true,
     models: MODELS,
     run: trialRun(),
   }),
@@ -442,6 +450,7 @@ app.get("/api/trials", (_req, res) =>
 // the team gets the result without buying the fix.
 app.get("/api/trials/:id/file", (req, res) => {
   const trial = state.trials.find((t) => t.id === req.params.id);
+  if (isSealed(trial)) return res.status(403).json({ error: "This fix is sealed: unlock it to see the code" });
   const file = trial?.files.find((f) => f.path === req.query.path);
   if (!file) return res.status(404).json({ error: "No such file in this trial" });
   res.attachment(path.basename(file.path)).type("text/plain").send(file.content);
@@ -450,6 +459,7 @@ app.get("/api/trials/:id/file", (req, res) => {
 app.get("/api/trials/:id/repo", async (req, res) => {
   const trial = state.trials.find((t) => t.id === req.params.id);
   if (!trial) return res.status(404).json({ error: "No such trial" });
+  if (isSealed(trial)) return res.status(403).json({ error: "This fix is sealed: unlock it to see the code" });
   const fixed = new Map(trial.files.map((f) => [f.path, f.content]));
   const paths = [...new Set([...(await listAllFiles(WORKSPACE)), ...fixed.keys()])].filter((p) => !isSecret(p));
   const files = await Promise.all(paths.map(async (p) => ({ path: p, data: fixed.get(p) ?? (await readFile(path.join(WORKSPACE, p))) })));
@@ -475,6 +485,50 @@ app.post("/api/trials/stop", (_req, res) => {
   res.json(trialRun());
 });
 
+// Sealed trials on Shoal's API keys (api-trials.js): the step ladder for one
+// flaky test, or every flaky test with no proven fix yet when painId is
+// left out. Needs credits. Runs in the background; follow it on /api/events.
+app.post("/api/trials/sealed", (req, res) => {
+  const painId = req.body?.painId;
+  const noCredits = canStart();
+  if (noCredits) return res.status(402).json({ error: noCredits });
+  const ids = painId ? [painId] : state.pains.filter((p) => !p.healthy && !proofFor(p.id).proven && ladderStatus(p.id)?.status !== "running").map((p) => p.id);
+  if (!ids.length) return res.status(400).json({ error: "No flaky test is waiting for trials. Scan the repo first." });
+  if (painId && !state.pains.some((p) => p.id === painId)) return res.status(404).json({ error: `Unknown problem ${painId}` });
+  background(async () => {
+    for (const id of ids) await runSealedTrials(id).catch((err) => emit("trials.error", { message: `Sealed trials: ${err.message}` }));
+  });
+  res.status(202).json({ started: ids });
+});
+
+// Unlock a sealed, proven fix: charges credits once at the price shown, then
+// the exact fix that was proven lands as a PR (bounties.js runUnlock). No
+// second paid run.
+app.post("/api/trials/:id/unlock", async (req, res) => {
+  const trial = state.trials.find((t) => t.id === req.params.id);
+  if (!trial?.sealed) return res.status(404).json({ error: "No sealed trial with that id" });
+  if (trial.unlockedAt) return res.status(409).json({ error: "Already unlocked" });
+  if (proofFor(trial.painId).proven?.trialId !== trial.id) return res.status(409).json({ error: "Only the proven fix can be unlocked" });
+  if (state.bounties.some((b) => b.trialId === trial.id && !["failed", "payment_failed"].includes(b.status))) {
+    return res.status(409).json({ error: "This fix is already being unlocked" });
+  }
+  const price = ladderStatus(trial.painId)?.price ?? unlockPrice(trial.painId);
+  if (Math.round(price * 100) > balanceCents()) return res.status(402).json({ error: `Not enough credits: unlocking costs $${price.toFixed(2)}. Add credits first.` });
+  const bounty = createBounty({ painId: trial.painId, reward: price, funding: "credits", apiModel: trial.model, trialId: trial.id, unlock: true, survivalDays: req.body?.survivalDays, postedBy: (await currentUser(req))?.login ?? null });
+  background(() => runBounty(bounty.id));
+  res.status(202).json(publicBounty(bounty));
+});
+
+// Shoal's spend against revenue per bug. Owner only: the logins in
+// SHOAL_OWNERS, or, when that isn't set, requests from this machine.
+app.get("/api/owner/margins", async (req, res) => {
+  const owners = (process.env.SHOAL_OWNERS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const login = (await currentUser(req))?.login;
+  const local = !process.env.VERCEL && ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress);
+  if (owners.length ? !owners.includes(login) : !local) return res.status(403).json({ error: "Only Shoal's owner can see margins" });
+  res.json(marginView());
+});
+
 // Approve a model for a problem: by default the best passing trial. That
 // model then fixes it through the API, funded and charged like any bounty.
 // The optimizer's pick fixes it through the API, paid from prepaid credits:
@@ -489,6 +543,7 @@ app.post("/api/trials/approve", (req, res) => {
       error: proof.checking ? "Still building the proof report for this test" : "No fix for this test is proven yet, so it can't be bought",
     });
   }
+  if (trial.sealed) return res.status(409).json({ error: "This fix is sealed: unlock it instead (POST /api/trials/:id/unlock)" });
   const unavailable = modelUnavailable(trial.model);
   if (unavailable) return res.status(503).json({ error: `${MODELS[trial.model].name} can't run yet: ${unavailable}` });
   if (state.bounties.some((b) => b.painId === painId && b.apiModel && !["failed", "settled", "clawed_back", "payment_failed"].includes(b.status))) {
@@ -531,7 +586,7 @@ app.post("/api/proofs", (req, res) => {
   }
   if (req.body?.fresh) resetProofs(painId);
   background(() => proveProblem(painId));
-  res.status(202).json(proofFor(painId));
+  res.status(202).json(sealProof(proofFor(painId)));
 });
 
 // --- Credits -----------------------------------------------------------------

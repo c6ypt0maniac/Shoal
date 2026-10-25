@@ -1,8 +1,8 @@
-// Trials: the free, limited-control round. The team's own Claude connects to
-// Shoal over MCP (see mcp.js), tries fixes with several models, and submits
-// each one here tagged with the model that wrote it. Shoal runs every trial
-// patch through the same verifier as paid bounties, but never applies it.
-// The scoreboard then shows which model to approve for the paid API run.
+// Trials: fixes tried for a flaky test, each tagged with the model that wrote
+// it. Normally Shoal runs them itself on its own API keys, sealed, and sets
+// the tag (api-trials.js); a team that opted in can also submit its own over
+// MCP (mcp.js), where the tag is self-reported. Shoal runs every trial patch
+// through the same verifier as paid bounties, but never applies it.
 import { verify } from "./verifier.js";
 import { emit } from "./events.js";
 import { state, newId } from "./store.js";
@@ -65,7 +65,9 @@ export const providerLabel = (model) => (MODELS[model]?.provider === "openai" ? 
 
 // client: the app that sent it over MCP (e.g. ChatGPT, Codex, Claude Code)
 // and the GitHub login it signed in with. The model tag is self-reported.
-export async function submitTrial({ painId, model, summary, files, client = null }) {
+// sealed + apiCost: Shoal ran it on its own keys (api-trials.js) at that
+// measured cost, which also becomes the model's cost per fix.
+export async function submitTrial({ painId, model, summary, files, client = null, sealed = false, apiCost = null }) {
   const pain = state.pains.find((p) => p.id === painId);
   if (!pain) throw httpError(404, `Unknown problem ${painId}. Call list_problems for valid ids.`);
   if (pain.healthy) throw httpError(400, `${pain.testFile} isn't flaky; nothing to fix`);
@@ -78,6 +80,9 @@ export async function submitTrial({ painId, model, summary, files, client = null
     testFile: pain.testFile,
     model,
     client,
+    sealed,
+    apiCost,
+    unlockedAt: null,
     summary: String(summary ?? "").slice(0, 500),
     files,
     linesChanged: await linesChanged(files),
@@ -87,6 +92,7 @@ export async function submitTrial({ painId, model, summary, files, client = null
     submittedAt: new Date().toISOString(),
   };
   state.trials.unshift(trial);
+  if (apiCost > 0) state.modelCost[model] = { perFix: apiCost, measuredAt: trial.submittedAt };
   emit("trial.submitted", {
     trialId: trial.id,
     model,

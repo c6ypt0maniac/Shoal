@@ -88,10 +88,16 @@ export default function Trials({ s, act, go }) {
                 {pr.awaitingReview && <Tag>Waiting for a review from {pr.awaitingReview.name}</Tag>}
                 {!pr.checking && !pr.proven && pr.candidates?.length > 0 && !pr.awaitingReview && <Tag tone="bad">No fix proven</Tag>}
                 {p.bounty && <Tag tone={tone(p.bounty.status)}>API fix: {STATUS[p.bounty.status] || p.bounty.status}</Tag>}
+                {p.ladder?.status === 'running' && <Tag>Sealed trials: step {p.ladder.step}</Tag>}
+                {p.ladder?.status === 'stopped' && <Tag tone="bad">{p.ladder.stopped === 'cap' ? 'Stopped at the spend cap' : 'No model proved a fix'}</Tag>}
               </div>
+              {pr.candidates?.filter((c) => c.checks?.review?.skipped).map((c) => <span key={c.trialId} className="text-sm text-muted">{c.name}: {c.checks.review.reason}</span>)}
               {pr.awaitingReview && <span className="text-sm text-muted">Ask Claude, ChatGPT or Codex (connected to Shoal over MCP) to review the fixes.</span>}
               <div className="mt-auto flex flex-wrap gap-2 pt-2">
-                {pr.proven && !p.bounty && <button className={primary} disabled={price > balance} onClick={trialAct(() => api.approve(p.painId))}>Buy fix · about {usd(price)}</button>}
+                {pr.proven && !p.bounty && (p.sealed
+                  ? <button className={primary} disabled={price > balance} onClick={trialAct(() => api.unlock(pr.proven.trialId))}>Unlock fix · {usd(price)}</button>
+                  : <button className={primary} disabled={price > balance} onClick={trialAct(() => api.approve(p.painId))}>Buy fix · about {usd(price)}</button>)}
+                {!pr.proven && p.ladder?.status !== 'running' && <button className={ghost} disabled={t.canRunTrials !== true} title={t.canRunTrials === true ? '' : t.canRunTrials} onClick={trialAct(() => api.sealedTrials(p.painId))}>Run sealed trials</button>}
                 {pr.proven && !p.bounty && price > balance && <button className={ghost} onClick={() => go('billing')}>Add credits</button>}
                 {p.attempts > 0 && !pr.checking && !pr.proven && <button className={ghost} onClick={trialAct(() => api.prove(p.painId))}>Build proof report</button>}
               </div>
@@ -107,7 +113,7 @@ export default function Trials({ s, act, go }) {
             <div key={x.id} className="flex flex-col gap-1 border-t border-ink/10 py-3 text-[15px] first:border-t-0">
               <span><span className={x.status === 'passed' ? 'text-accent' : x.status === 'failed' ? 'text-bad' : 'text-muted'}>{x.status === 'passed' ? 'Passed' : x.status === 'failed' ? 'Failed' : 'Verifying'}</span> · {t.models[x.model]?.name || x.model} on <span className="font-mono text-sm">{x.testFile}</span>{x.linesChanged != null ? ' · ' + x.linesChanged + ' lines' : ''}</span>
               <span className="text-sm text-muted">{x.status === 'failed' ? x.reason : x.summary}</span>
-              <span className="flex flex-wrap gap-3 text-sm">{x.files.map((f) => <a key={f} className="text-accent underline" href={'/api/trials/' + x.id + '/file?path=' + encodeURIComponent(f)}>{f}</a>)}<a className="text-accent underline" href={'/api/trials/' + x.id + '/repo'}>Whole repo with this fix (.zip)</a></span>
+              {x.locked ? <span className="text-sm text-muted">Sealed: {x.files.length} file{x.files.length === 1 ? '' : 's'} changed. Unlock to see the code.</span> : <span className="flex flex-wrap gap-3 text-sm">{x.files.map((f) => <a key={f} className="text-accent underline" href={'/api/trials/' + x.id + '/file?path=' + encodeURIComponent(f)}>{f}</a>)}<a className="text-accent underline" href={'/api/trials/' + x.id + '/repo'}>Whole repo with this fix (.zip)</a></span>}
             </div>
           ))}
         </div>

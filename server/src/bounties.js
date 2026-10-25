@@ -12,6 +12,8 @@
 //
 // A model approved from the MCP trials (apiModel) runs the same lifecycle,
 // as the only competitor, paid from credits at API cost plus Shoal's fee.
+// Unlocking a sealed trial (unlock) skips the model call: the exact fix that
+// was proven lands, charged once at the price shown (api-trials.js).
 import { AGENTS, requestModelFix } from "./agents.js";
 import { attemptFix } from "./competitors.js";
 import { checkCompetitors, nameFor } from "./marketplace.js";
@@ -28,6 +30,7 @@ import { openPullRequest } from "./github.js";
 import { chargeEscrow, newEscrow, refundEscrow, releaseEscrow } from "./escrow.js";
 import { cleanSurvivalDays, startSurvival } from "./survival.js";
 import { judgeAttempt } from "./proof.js";
+import { recordRevenue } from "./spend.js";
 import { envLimit, mapLimit } from "./limit.js";
 
 const TAKE_RATE = 0.15;
@@ -55,7 +58,7 @@ export function recoverInterrupted() {
 // survivalDays: 7, 10 or 14 before the agent is paid. competitors: the
 // marketplace listings the team picked to compete (default: Shoal's
 // built-in agents); only those get the team's code. postedBy: GitHub login.
-export function createBounty({ painId, reward, funding = "simulated", apiModel = null, trialId = null, survivalDays, competitors, postedBy = null }) {
+export function createBounty({ painId, reward, funding = "simulated", apiModel = null, trialId = null, unlock = false, survivalDays, competitors, postedBy = null }) {
   const pain = state.pains.find((p) => p.id === painId);
   if (!pain) throw httpError(404, `Unknown pain ${painId}`);
   if (pain.healthy) throw httpError(400, `${pain.testFile} isn't flaky; nothing to fix`);
@@ -83,6 +86,7 @@ export function createBounty({ painId, reward, funding = "simulated", apiModel =
     survival: null,
     apiModel,
     trialId,
+    unlock,
     apiCost: 0,
     createdAt: new Date().toISOString(),
   };
@@ -92,7 +96,9 @@ export function createBounty({ painId, reward, funding = "simulated", apiModel =
     bountyId: bounty.id,
     reward: bounty.reward,
     message:
-      funding === "credits"
+      unlock
+        ? `Unlocked: ${MODELS[apiModel].name}'s proven fix for ${pain.testFile} ($${amount.toFixed(2)} from credits, refunded if it regresses within ${bounty.survivalDays} days)`
+        : funding === "credits"
         ? `API fix approved: ${MODELS[apiModel].name} will ${bounty.title.replace(/^Make/, "make")} (about $${amount.toFixed(2)} from credits, only if verified, refunded if it regresses within ${bounty.survivalDays} days)`
         : `New bounty: $${bounty.reward} to ${bounty.title}, paid only if the fix survives ${bounty.survivalDays} days${bounty.status === "awaiting_funding" ? " (waiting for Stripe funding)" : ""}`,
   });
@@ -136,7 +142,7 @@ export async function runBounty(bountyId) {
   if (bounty.status !== "open") return bounty; // already running or done
   if (!pain) throw httpError(409, `${bounty.testFile} isn't in the latest scan; scan the repo first`);
   // On the bounty's own repo, whichever one is active now.
-  return inRepo(bounty, () => (bounty.apiModel ? runApprovedModel(bounty, pain) : compete(bounty, pain)));
+  return inRepo(bounty, () => (bounty.unlock ? runUnlock(bounty, pain) : bounty.apiModel ? runApprovedModel(bounty, pain) : compete(bounty, pain)));
 }
 
 // Every competitor the team picked attempts the bounty at once, privately.
@@ -227,6 +233,26 @@ async function compete(bounty, pain) {
 }
 
 const API_ATTEMPTS = 3;
+
+// Unlocking a sealed trial: no second paid run. The fix the proof report
+// passed is the one that lands, after one more check that it still passes on
+// the current code.
+async function runUnlock(bounty, pain) {
+  const trial = state.trials.find((t) => t.id === bounty.trialId);
+  if (!trial) return fail(bounty, "The sealed fix is gone (the server restarted or the repo was rescanned). Nothing charged.");
+  const name = MODELS[bounty.apiModel].name;
+  bounty.status = "verifying";
+  const result = await verify({ bountyId: bounty.id, agentId: name, testFile: pain.testFile, files: trial.files, stableTestFiles: bounty.stableTestFiles, flakeRate: pain.flakeRate });
+  const entry = { agentId: bounty.apiModel, summary: trial.summary, files: trial.files, linesChanged: trial.linesChanged, passed: result.passed, reason: result.reason ?? null, runs: result.runs.map((r) => r.passed) };
+  bounty.attempts.push(entry);
+  if (!result.passed) return fail(bounty, `${name}'s fix no longer passes on the current code (${result.reason}). Nothing charged.`);
+  const won = await win(bounty, pain, { id: bounty.apiModel, name, builder: providerLabel(bounty.apiModel) }, entry);
+  if (won.status === "surviving") {
+    trial.unlockedAt = new Date().toISOString();
+    recordRevenue(pain.id, bounty.escrow.charged, pain.testFile);
+  }
+  return won;
+}
 
 // The paid round for a model approved from the trials: it fixes the problem
 // through the API with Shoal driving, retrying with the verifier's failure
@@ -394,6 +420,8 @@ export async function clawBack(bounty, reason) {
   }
   try {
     await refundEscrow(bounty);
+    // The margin view counts a refunded unlock as no sale.
+    if (bounty.unlock) recordRevenue(bounty.painId, -(bounty.escrow.charged ?? 0));
   } catch (err) {
     bounty.escrow.status = "refund_failed";
     emit("escrow.error", { bountyId: bounty.id, message: `Clawed back, but the refund failed: ${err.message}. Refund it by hand.` });

@@ -3,22 +3,50 @@ Runs coding agents against a measurable bug, checks their fixes with repeated an
 
 ## How a fix gets bought
 
+Shoal runs sealed trials on its own Anthropic and OpenAI API keys and pays every token. The team pays only to unlock a fix that was proven.
+
+Start them with `POST /api/trials/sealed {painId?}` (every flaky test without a proven fix when `painId` is left out), or **Run sealed trials** on the dashboard.
+
 1. **Scan.** Shoal runs the connected repo's tests repeatedly and lists the flaky ones.
-2. **Trials (free to Shoal).** The team's own AI app connects to Shoal's MCP server and tries fixes on the team's own plan. Each fix is tagged with the model that wrote it, and Shoal verifies every one but applies none.
-   - **One click on the dashboard:** Shoal drives whichever apps are signed in on the machine, at the same time.
-     - **Claude Code** runs Haiku, Sonnet and Opus on the team's Claude plan.
-     - **Codex** runs GPT-6 Luna, GPT-6 Sol, GPT-6.1 Sol and GPT-6 Astra on the team's ChatGPT plan. Those are the OpenAI models a ChatGPT sign-in offers in Codex.
-   - **By hand:** connect Claude, ChatGPT, Codex or Claude Code to the MCP URL and ask it to run the trials.
+2. **Sealed trials (Shoal pays).** Trials need credits on the account; there are no free trials.
+   - Models are tried in steps, cheapest first, and the ladder stops at the first step whose fix is proven:
+     1. Haiku 5.5, GPT-6 Luna, GPT-5 nano
+     2. Sonnet 5.5, GPT-6.1 Sol
+     3. Opus 5.5, GPT-6 Astra
+   - A model that failed is never retried on the same bug.
+   - Shoal tags each fix with the model that wrote it and records what the call really cost.
+   - Every call is checked against a **spend cap per bug** (`SHOAL_TRIAL_CAP`, default $2.00) before it's made. A call that would go over the cap isn't made, and the ladder stops.
+   - **Sealed:** until the team unlocks, no fix code leaves Shoal: not in `/api/trials`, the MCP tools or the dashboard. The team sees diff stats, which checks passed and the judges' summaries, with quoted code cut.
+   - **Opt-in:** a team can still run trials and judges on its own Claude Code, Codex or MCP app (`useTeamPlan`; `SHOAL_TEAM_PLAN=1` starts with it on). Those fixes aren't sealed, and are bought the old way: Shoal re-runs that model on its keys and charges credits if it passes (`POST /api/trials/approve`).
 3. **Proof report.** The cheapest verified fix is checked again: 50 stress runs, the rest of the suite, the rules, challenge tests and **two judges**.
+   - Verification runs scale with how often the test failed in the scan: enough runs to catch a fix that didn't work with 95% confidence, between 10 and 150, in batches of 10, stopping at the first failure.
    - Every run of a test (in the scan, verification, proof and survival checks) gets its own copy of the sandbox, so parallel runs can't affect each other.
    - The judges are Sonnet 5.5 (`claude-sonnet-5-5`) and GPT-6.1 Sol (`gpt-6.1-sol`). Nobody grades their own work: Opus 5.5 judges Sonnet's fixes, and GPT-6 Sol judges GPT-6.1 Sol's. Both must pass.
    - The judges are asked only after the fix passes the stress runs, the suite, the rules and the challenge tests, so a fix that already failed costs no judge tokens.
    - Challenge tests are written by Sonnet 5.5, or GPT-6.1 Sol if Sonnet isn't available. The writer sees the fixes labelled Fix A, Fix B…, never by model.
    - Judges and the challenge writer read the failing test, the files it imports, every file a fix changed and the failure log, plus a list of the repo's other files. They don't get the whole repo, so the cost doesn't grow with repo size.
-   - They run on **Shoal's API keys**, within a spend cap per bug (`SHOAL_TRIAL_CAP`, default $2.00). A team can opt in to using its own Claude Code, Codex or MCP app instead (`useTeamPlan`; `SHOAL_TEAM_PLAN=1` starts with it on).
-4. **Paid run.** The team buys the proven fix. Shoal runs that model through **Shoal's own API keys** (Anthropic or OpenAI), verifies the result, and charges credits only if it passes.
+   - All of it runs on Shoal's API keys and counts toward the bug's spend cap.
+4. **Unlock.** `POST /api/trials/:id/unlock` re-checks the fix on the current code, then charges the team's credits once, at the price shown before unlocking (see [Pricing](#pricing)). Shoal then reveals the fix and opens a PR, the same way a bounty does. There is no second paid run: the team gets the exact fix that was proven.
 
-Trials and judging never use Shoal's API keys. Only the paid run does.
+## Pricing
+
+Each fix is priced from what Shoal really spent on that bug:
+
+- **Price** = Shoal's spend on the bug up to the proof (fix attempts, challenge writer, judges, sandbox time) **× 6**, rounded up to the next .99.
+- **Floor $2.99, ceiling $19.99.** With the $2.00 cap, a bug can't cost more than the ceiling covers.
+- The price is always shown before the team unlocks.
+- The markup also covers bugs that are tried but never unlocked.
+
+The owner sees spend against revenue for every bug at `GET /api/owner/margins` (GitHub logins in `SHOAL_OWNERS`, or only requests from the server's own machine when that isn't set). Teams never see what Shoal spent.
+
+**Checking the numbers.** Any change to models, run counts, the cap or pricing must be re-checked with the margin simulation:
+
+```sh
+cd sim
+python3 margin_sim.py results.json && python3 extra.py
+```
+
+With what's built (scenario `S3_built`), ×6 gives a 61% gross margin at a 60% unlock rate (average price $5.77, no sale below its own cost). Margin is 58% if bugs are harder, 50% on busy repos (more survival checks) and 32% if only 30% of fixes are unlocked.
 
 ## Bounties: competition, survival window, clawback
 
@@ -32,7 +60,7 @@ This is the backend flow; the website reads it through the JSON API.
 3. **Only the winner's fix is shown.** `GET /api/bounties` returns `winningAttempt`, plus counts of attempts and verified ones. The losing attempts never leave the server. The winning fix is applied and opened as a PR.
 4. **Survival window** (status `surviving`).
    - The team is charged now, but the agent's ledger entry stays `pending`.
-   - Shoal re-runs the bounty's test on the current code, in a sandbox: after every new commit (auto-sync) and on a schedule (every 6 hours at most).
+   - Shoal re-runs the bounty's test on the current code, in a sandbox: after a new commit that touches the test or the code it imports (auto-sync; at most once an hour per fix) and on a schedule (every 6 hours at most).
    - `POST /api/bounties/:id/survival/check` runs a check immediately.
    - A check is 10 runs, plus 20 more if any run fails. Two or more failures count as a regression, and so does a deleted test.
 5. **Outcome.**
@@ -72,7 +100,7 @@ The default sort is `best`, which uses Shoal's verified record only. Stars and e
   - Builders reply once with `POST /api/marketplace/reviews/:id/reply`.
   - Votes: `POST` or `DELETE /api/marketplace/reviews/:id/helpful`.
 
-**Judges.** A verified fix only wins if both judges pass it: the best Sonnet and the top OpenAI model. Neither ever judges its own fix. Verified fixes are judged in scorecard order, and the first that both pass wins. Each judge runs on the team's own Claude Code or Codex if signed in, otherwise on Shoal's API key. If neither is available, nothing wins and the hold is released. Mock mode (no keys) uses stand-in judges.
+**Judges.** A verified fix only wins if both judges pass it: the best Sonnet and the top OpenAI model. Neither ever judges its own fix. Verified fixes are judged in scorecard order, and the first that both pass wins. Each judge runs on Shoal's API key, or on the team's own Claude Code or Codex if the team opted in (`useTeamPlan`). If neither is available, nothing wins and the hold is released. Mock mode (no keys) uses stand-in judges.
 
 ## Storage (Supabase)
 
@@ -151,7 +179,7 @@ These parts still assume one long-running Node process with a writable disk:
 | Repo clones and the workspace are written under `server/` | Only `/tmp` is writable on Vercel | Hosted sandboxes |
 | Tests run as child processes (`repo.js`, `verifier.js`, `proof.js`) | Functions can't reliably install toolchains or run long test loops | Vercel Sandbox, E2B or Modal |
 | Scans, proofs and paid runs keep working after the HTTP response | Functions freeze after responding | A queue or workflow engine (e.g. Temporal, Vercel Queues) |
-| One-click trials, challenge-test writing and the automatic judges start Claude Code or Codex (`claude-runner.js`, `codex-runner.js`) | Neither CLI can run on Vercel | Leave as local-only. Both judges already work over MCP. Challenge tests need a new home: an MCP task for the team's app, or a paid API call. |
+| One-click trials, challenge-test writing and the automatic judges start Claude Code or Codex (`claude-runner.js`, `codex-runner.js`) | Neither CLI can run on Vercel | Only used when a team opts in (`useTeamPlan`). By default trials, challenge tests and judges are API calls on Shoal's keys. |
 | `/api/events` live stream | Limited by the function's maximum duration | Polling `/api/events/poll` (already exists) or a realtime service |
 
 **Until those are done:** host the API on any always-on Node 22+ server (Render, Fly.io, Railway, a VM), and put the website on Vercel.
@@ -174,9 +202,12 @@ All of these are in [`server/.env.example`](server/.env.example). `npm run keys`
 | `SHOAL_WEB_ORIGINS` | The website's origin(s): CORS with cookies, and where GitHub sign-in may return to |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub sign-in on the dashboard and for MCP apps. Setting them turns on the hosted MCP. |
 | `SHOAL_AUTH_SECRET` | Encrypts MCP sign-ins. Required when hosted. Generate one with `openssl rand -hex 32`. |
-| `ANTHROPIC_API_KEY` | Paid runs on Claude models. Also the marketplace agents (model `SHOAL_MODEL`). |
-| `OPENAI_API_KEY` | Paid runs on OpenAI models. Also the marketplace agents when there's no Anthropic key (model `SHOAL_OPENAI_MODEL`, default `gpt-6.1-sol`). |
+| `ANTHROPIC_API_KEY` | Sealed trials, challenge tests and judges on Claude models. Also the marketplace agents (model `SHOAL_MODEL`). |
+| `OPENAI_API_KEY` | Sealed trials, challenge tests and judges on OpenAI models. Also the marketplace agents when there's no Anthropic key (model `SHOAL_OPENAI_MODEL`, default `gpt-6.1-sol`). |
 | `SHOAL_CODEX_MODELS` | Which OpenAI models one-click Codex trials run. Default: `gpt-6-luna,gpt-6-sol,gpt-6.1-sol,gpt-6-astra`. |
+| `SHOAL_TRIAL_CAP` | Most Shoal spends on one bug's trials and proof, in dollars. Default `2`. |
+| `SHOAL_OWNERS` | GitHub logins that can see `/api/owner/margins`. Unset: only requests from the server's own machine. |
+| `SHOAL_TEAM_PLAN=1` | Start with trials and judges on the team's own Claude Code, Codex or MCP app. |
 | `CLAUDE_BIN`, `CODEX_BIN` | Paths to the CLIs, if they aren't on `PATH` |
 | `STRIPE_SECRET_KEY` (+ `STRIPE_ALLOW_LIVE=1` for live) | Real escrow and credit purchases. Simulated without it. |
 | `SHOAL_TRUST_PROXY=1` | Behind a proxy other than Vercel |
@@ -200,7 +231,7 @@ The trial optimizer picks the cheapest model whose quality is within 5 points of
 
 ```sh
 cd server
-npm run check:mcp       # MCP OAuth sign-in end to end + the two-judge review flow (no keys, no spend, no Claude/ChatGPT plan use)
+npm run check:mcp       # MCP OAuth sign-in, the two-judge review flow, judges skipped for a fix that failed its tests, and sealed trials: the step ladder, sealing, unlock, no retries, the spend cap (no keys, no spend)
 npm run check:survival  # bounty competition, survival window, clawback + refund, payout, scorecards, saved state
 npm run check:marketplace  # builder webhook agent, competitor picks, judges, reviews/replies/votes, filters, OpenRouter import
 npm run check:supabase  # Supabase storage on your real project, in a throwaway shoal_test schema (needs SUPABASE_DB_URL)

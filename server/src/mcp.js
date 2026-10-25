@@ -1,5 +1,6 @@
-// MCP server: how the team's own AI app takes part in the free trial round,
-// on the team's own plan (Shoal pays nothing). Works with Claude Code,
+// MCP server: an opt-in way for the team's own AI app to take part, on the
+// team's own plan (trials normally run sealed on Shoal's keys; see
+// api-trials.js). Sealed fixes never go out over it. Works with Claude Code,
 // Claude, ChatGPT (developer-mode connector) and Codex. It can see the
 // problems Shoal found, read the files the team shared, run tests on a
 // candidate patch in a sandbox, submit trial fixes tagged with the model

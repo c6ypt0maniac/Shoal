@@ -124,12 +124,13 @@ export async function chargeEscrow(bounty, amount) {
     await stripe().paymentIntents.capture(escrow.paymentIntentId, { amount_to_capture: cents(amount) });
   }
   if (escrow.mode === "credits") {
-    amount = await chargeCredits({ bountyId: bounty.id, model: bounty.apiModel, apiCost: bounty.apiCost });
+    // An unlock charges the price shown before unlocking (pricing.js).
+    amount = await chargeCredits({ bountyId: bounty.id, model: bounty.apiModel, apiCost: bounty.apiCost, ...(bounty.unlock ? { cents: cents(bounty.reward) } : {}) });
   }
   escrow.status = "charged";
   escrow.charged = amount;
   escrow.released = escrow.mode === "credits" ? 0 : escrow.amount - amount;
-  const via = { simulated: " (simulated)", stripe: " via Stripe", credits: ` from credits (API cost $${bounty.apiCost?.toFixed(4)} + fee)` }[escrow.mode];
+  const via = { simulated: " (simulated)", stripe: " via Stripe", credits: bounty.unlock ? " from credits (unlocked a sealed fix)" : ` from credits (API cost $${bounty.apiCost?.toFixed(4)} + fee)` }[escrow.mode];
   emit("escrow.charged", {
     bountyId: bounty.id,
     amount,

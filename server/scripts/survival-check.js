@@ -17,6 +17,7 @@ delete process.env.SHOAL_SURVIVAL_MINUTES;
 
 await import("../src/index.js");
 const { WORKSPACE, DEMO_REPO } = await import("../src/repo.js");
+const { checkSurvivors } = await import("../src/survival.js");
 
 const BASE = "http://localhost:4107";
 let ok = true;
@@ -61,6 +62,16 @@ check("agent payout is pending, not paid", ledger.find((t) => t.bountyId === fir
 
 b1 = await api(`/api/bounties/${first.id}/survival/check`, {});
 check("survival check: still fixed", b1.status === "surviving" && b1.survival.checks.at(-1).ok === true, JSON.stringify(b1.survival.checks.at(-1)));
+
+// New commits: checked only when they touch the test or its imports, at most hourly.
+let checked = await checkSurvivors({ trigger: "new commit a", changed: ["README.md"] });
+check("a commit that doesn't touch the test or its imports isn't checked", !checked.includes(first.id));
+checked = await checkSurvivors({ trigger: "new commit b", changed: ["src/cart.js"] });
+check("a commit touching the code the test imports is checked", checked.includes(first.id));
+checked = await checkSurvivors({ trigger: "new commit c", changed: ["test/cart.test.js"] });
+b1 = await api(`/api/bounties/${first.id}`);
+check("a second relevant commit within the hour isn't checked again", !checked.includes(first.id));
+check("...and the next scheduled check comes within that hour", Date.parse(b1.survival.nextCheckAt) <= Date.parse(b1.survival.lastCommitCheckAt) + 3_600_000, b1.survival.nextCheckAt);
 
 // The team's code regresses: put the original bug back.
 await writeFile(path.join(WORKSPACE, "src/cart.js"), await readFile(path.join(DEMO_REPO, "src/cart.js"), "utf8"));

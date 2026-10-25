@@ -5,7 +5,8 @@
 // responses from mock.js are used so the demo still runs end to end.
 //
 // Paid runs go through Shoal's own keys: ANTHROPIC_API_KEY for Claude models,
-// OPENAI_API_KEY for OpenAI models. Trials never use these keys (see mcp.js).
+// OPENAI_API_KEY for OpenAI models. So do sealed trials, the challenge
+// writer and the judges (api-trials.js, proof.js).
 import Anthropic from "@anthropic-ai/sdk";
 import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import OpenAI from "openai";
@@ -150,8 +151,15 @@ export async function requestModelFix(model, bounty, pain, { trial, lastFailure 
 // In mock mode a model stands in with its trial's patch, or (competing on a
 // bounty, with no trial) the demo repo's correct fix; with the model's
 // expected cost, so credit charges look real.
+// SHOAL_MOCK_FAIL_MODELS (comma-separated ids) makes those models return a
+// fix that breaks the test, so a check can watch the trial ladder climb.
 async function mockModelFix(model, pain, trial) {
   await new Promise((r) => setTimeout(r, 1500));
+  if ((process.env.SHOAL_MOCK_FAIL_MODELS ?? "").split(",").includes(model)) {
+    const target = pain.sourceFiles?.[0] ?? pain.testFile;
+    const content = `throw new Error("practice mode: ${model} wrote a broken fix");\n${await readRepoFile(target).catch(() => "")}`;
+    return { fix: { summary: "A broken practice-mode fix", files: [{ path: target, content }] }, cost: costPerFix(model) };
+  }
   const fix = trial ? { summary: trial.summary, files: trial.files } : await mockFix(getAgent("rootcause"), pain);
   return { fix, cost: MODELS[model] ? costPerFix(model) : 0.01 };
 }

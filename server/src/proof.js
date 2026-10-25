@@ -328,7 +328,8 @@ async function challengeFor(pain, options, code) {
     return r;
   };
   const writers = [
-    ...(state.useTeamPlan ? [
+    // Never for sealed fixes: the team's own app would see their code.
+    ...(state.useTeamPlan && !options.some((o) => o.trial.sealed) ? [
       { author: MODELS["claude-sonnet-5-5"].name, ask: () => askClaude(prompt, { model: "sonnet", timeout }) },
       { author: MODELS["gpt-6.1-sol"].name, ask: () => askCodex(prompt, { model: "gpt-6.1-sol", timeout }) },
     ] : []),
@@ -430,10 +431,11 @@ async function startReview(pain, trial, diff, { code, options }) {
   const judges = judgesFor(trial.model).map((j) => ({ provider: j.provider, model: j.id, alias: j.alias ?? null, name: MODELS[j.id].name, status: "waiting" }));
   await Promise.all(
     judges.map(async (j) => {
-      const got = await askJudge(j, prompt, pain.id);
+      const got = await askJudge(j, prompt, pain.id, { teamPlan: state.useTeamPlan && !trial.sealed });
       if (got) recordVerdict(j, parseVerdict(got.text), got.via);
-      // Not on the team's plan, there's no MCP fallback: fail with the reason.
-      else if (!state.useTeamPlan) recordVerdict(j, noJudge(j), null);
+      // Not on the team's plan (or a sealed fix), there's no MCP fallback:
+      // fail with the reason.
+      else if (!state.useTeamPlan || trial.sealed) recordVerdict(j, noJudge(j), null);
     }),
   );
   return { ok: null, filesSeen: code.length, judges };
@@ -443,10 +445,11 @@ const noJudge = (j) => ({ verdict: "fail", summary: `${j.name} couldn't run: set
 
 // One judge's answer. In practice mode, a stand-in that passes. Otherwise
 // Shoal's API key, within the bug's spend cap; the team's Claude Code /
-// Codex first only when it opted in. -> { text, via, cost } or null.
-async function askJudge(j, prompt, painId = null) {
+// Codex first only when it opted in, and never for a sealed fix.
+// -> { text, via, cost } or null.
+async function askJudge(j, prompt, painId = null, { teamPlan = state.useTeamPlan } = {}) {
   const timeout = 8 * 60_000;
-  if (state.useTeamPlan) {
+  if (teamPlan) {
     const plan = j.provider === "anthropic" ? await askClaude(prompt, { model: j.alias, timeout }) : await askCodex(prompt, { model: j.model, timeout });
     if (plan) return { text: plan.text, via: j.provider === "anthropic" ? "Claude Code" : "Codex", cost: 0 };
     // On the team's plan with no API keys, the judge answers over MCP instead.
@@ -553,8 +556,9 @@ function finishReview(review) {
 
 // Reviews waiting on a judge, for the MCP's list_reviews.
 export function pendingReviews() {
+  // A sealed fix's code never goes out over MCP.
   return Object.values(state.proofs)
-    .filter((p) => p.status === "awaiting_review")
+    .filter((p) => p.status === "awaiting_review" && !state.trials.find((t) => t.id === p.trialId)?.sealed)
     .map((p) => ({
       trialId: p.trialId,
       testFile: p.testFile,
@@ -566,7 +570,8 @@ export function pendingReviews() {
 // Everything a judge needs to review one fix (MCP get_review).
 export function reviewRequest(trialId) {
   const proof = state.proofs[trialId];
-  if (proof?.status !== "awaiting_review" || !reviewPrompts.has(trialId)) throw httpError(404, `No review is waiting for ${trialId}. Call list_reviews.`);
+  const sealed = state.trials.find((t) => t.id === trialId)?.sealed;
+  if (proof?.status !== "awaiting_review" || !reviewPrompts.has(trialId) || sealed) throw httpError(404, `No review is waiting for ${trialId}. Call list_reviews.`);
   return { ...pendingReviews().find((r) => r.trialId === trialId), instructions: reviewPrompts.get(trialId) };
 }
 

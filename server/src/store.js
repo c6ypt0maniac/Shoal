@@ -45,6 +45,8 @@ export const state = {
   recentRepos: [],
   // What Shoal spent and earned per bug in sealed API trials (spend.js).
   trialSpend: {},
+  // The sealed trial ladder per bug (api-trials.js).
+  apiTrials: {},
   // Run trials, judges and challenge tests on the team's own Claude Code /
   // Codex / MCP app instead of Shoal's API keys. Off by default (Shoal pays
   // every token); SHOAL_TEAM_PLAN=1 starts with it on.
@@ -78,6 +80,7 @@ export function resetRepoState() {
   state.trials = [];
   state.trialRun = null;
   state.proofs = {};
+  state.apiTrials = {};
   state.cantRun = [];
 }
 
@@ -89,5 +92,6 @@ export function resetState() {
   state.trials = [];
   state.trialRun = null;
   state.proofs = {};
+  state.apiTrials = {};
   state.cantRun = [];
 }
