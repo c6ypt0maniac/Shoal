@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import Water from '../components/Water.jsx';
-import { api } from './api.js';
+import { api, apiHref } from './api.js';
 import { useShoal } from './useShoal.js';
 import Race from './Race.jsx';
 import Shore from './Shore.jsx';
@@ -92,8 +92,12 @@ export default function Platform() {
     <>
             <div className="flex flex-wrap items-end justify-between gap-4">
               <div className="flex flex-col gap-1"><h1 className="m-0 text-[clamp(28px,3vw,40px)] font-semibold tracking-[-0.035em]">{TITLES[v]?.[0]}</h1><span className="text-[17px] text-muted">{TITLES[v]?.[1]}</span></div>
-              {['bounties', 'agents', 'selling'].includes(v) && <button className={primary} onClick={() => setCreate(v === 'bounties' ? 'bounty' : 'agent')}><Icon n="plus" size={18} />{v === 'bounties' ? 'Post a bounty' : 'Publish an agent'}</button>}
+              <div className="flex flex-wrap items-center gap-2">
+                <TestPaymentsButton s={s} act={act} />
+                {['bounties', 'agents', 'selling'].includes(v) && <button className={primary} onClick={() => setCreate(v === 'bounties' ? 'bounty' : 'agent')}><Icon n="plus" size={18} />{v === 'bounties' ? 'Post a bounty' : 'Publish an agent'}</button>}
+              </div>
             </div>
+            {testOn(s) && <div className="glass rounded-2xl px-5 py-3 text-[15px] text-[#9A5B00]">Test payments are on: Stripe is bypassed, any amount is allowed, fixes cost $0 and agents run in mock mode, so no money is spent.</div>}
             {err && <div className="glass rounded-2xl px-5 py-3 text-bad">{err}</div>}
             {note && !err && <div className="glass rounded-2xl px-5 py-3 text-accent">{note}</div>}
             {v === 'setup' && <Setup s={s} act={act} steps={steps} onPost={() => setCreate('bounty')} go={go} />}
@@ -262,18 +266,22 @@ function Listing({ s, act, open, setOpen }) {
             <div className="flex flex-col"><span className="text-xl font-semibold">{p.hoursPerWeek} h</span><span className="text-sm text-muted">Lost per week</span></div>
           </div>}
           {!b && <QuickPost p={p} s={s} act={act} onPosted={(nb) => setOpen({ kind: 'bounty', id: nb.id })} />}
-          {b?.status === 'awaiting_funding' && <button className={primary} onClick={act(async () => { const r = await api.fund(b.id); if (r?.checkoutUrl) location.href = r.checkoutUrl; })}>Fund with Stripe</button>}
+          {b?.status === 'awaiting_funding' && <button className={primary} onClick={act(async () => { const r = await api.fund(b.id); if (r?.checkoutUrl) location.href = r.checkoutUrl; })}>{testOn(s) ? 'Start the race (test payments, free)' : 'Fund with Stripe'}</button>}
           {b?.status === 'open' && b.escrow?.status === 'held' && <button className={primary} onClick={act(() => api.run(b.id))}>Start the race</button>}
           {b && <Section t="Competitors">
             <div className="flex flex-wrap gap-2">{b.competitors.map((id) => <button key={id} className="cursor-pointer" onClick={() => setOpen({ kind: 'listing', id })}><Tag tone={b.winner === id ? 'ok' : undefined}>{name(id)}{b.winner === id ? ' · winner' : ''}</Tag></button>)}</div>
             {b.competition?.attempts > 0 && <span className="text-sm text-muted">{b.competition.attempts} attempt{b.competition.attempts === 1 ? '' : 's'} · {b.competition.verified} verified. Only the winning fix is shown to you.</span>}
           </Section>}
-          {b && !['settled', 'clawed_back', 'failed', 'payment_failed'].includes(b.status) && b.competitors.length > 1 && <DemoBet b={b} name={name} act={act} />}
+          {b && !['settled', 'clawed_back', 'failed', 'payment_failed'].includes(b.status) && b.competitors.length > 1 && <DemoBet b={b} name={name} act={act} s={s} />}
           {w && <Section t={'Winning fix · ' + name(w.agentId)}>
             <span className="text-[15px]">{w.summary}</span>
             <span className="text-sm text-muted">{w.files.join(', ')}{w.linesChanged != null ? ' · ' + w.linesChanged + ' lines changed' : ''}</span>
             {w.runs?.length > 0 && <Runs runs={w.runs} />}
             {w.judges?.map((j) => <span key={j.model} className="text-sm"><span className={j.ok ? 'text-accent' : 'text-bad'}>{j.ok ? 'Pass' : 'Fail'}</span> · {j.name}: <span className="text-muted">{j.summary}</span></span>)}
+            {testOn(s) && <div className="flex flex-wrap gap-2">
+              {w.files.map((f) => <a key={f} className={ghost} href={apiHref('/api/bounties/' + b.id + '/fix/file?path=' + encodeURIComponent(f))} download>Download {f.split('/').pop()}</a>)}
+              <a className={ghost} href={apiHref('/api/bounties/' + b.id + '/fix/repo')} download>Download fixed repo (.zip)</a>
+            </div>}
           </Section>}
           {b?.failures?.length > 0 && <Section t="Why the tries failed">{b.failures.map((f, i) => <span key={i} className="text-sm text-bad">{f}</span>)}</Section>}
           {sv && <Section t={'Survival window · ' + day(sv.startedAt) + ' to ' + day(sv.endsAt)}>
@@ -294,18 +302,26 @@ function Listing({ s, act, open, setOpen }) {
   );
 }
 
-function DemoBet({ b, name, act }) {
+// Testing only: bypass Stripe and every cost (server/src/testmode.js).
+const testOn = (s) => Boolean(s.health?.testPayments?.on);
+function TestPaymentsButton({ s, act }) {
+  if (!s.health?.testPayments?.allowed) return null;
+  const on = testOn(s);
+  return <button className={ghost + (on ? ' border-[#9A5B00] text-[#9A5B00]' : '')} aria-pressed={on} title="For testing only: no Stripe, no charges, no API spend, no amount limits" onClick={act(async () => { await api.testPayments(!on); })}>{on ? 'Test payments on · turn off' : 'Bypass payments (testing)'}</button>;
+}
+
+function DemoBet({ b, name, act, s }) {
   const [competitor, setCompetitor] = useState(b.competitors[0]);
   const [amount, setAmount] = useState('10');
   const totals = Object.fromEntries(b.competitors.map((id) => [id, (b.bets || []).filter((x) => x.competitor === id).reduce((sum, x) => sum + x.amount, 0)]));
-  const valid = Number.isInteger(Number(amount)) && Number(amount) >= 1 && Number(amount) <= 1000;
+  const valid = Number.isSafeInteger(Number(amount)) && Number(amount) >= 1 && (testOn(s) || Number(amount) <= 1000);
   return <Section t="Demo predictions">
     <span className="text-sm text-muted">Simulation only · no money is charged or paid out.</span>
     <div className="flex flex-wrap gap-2">
       {b.competitors.map((id) => <button key={id} type="button" onClick={() => setCompetitor(id)} className={'cursor-pointer rounded-xl border px-3 py-2 text-sm ' + (competitor === id ? 'border-ink bg-ink text-paper' : 'border-ink/15 bg-white/60')}>{name(id)} · ${totals[id]}</button>)}
     </div>
     <div className="flex gap-2">
-      <label className="flex min-w-0 flex-1 items-center gap-1 rounded-xl border border-ink/15 bg-white/60 px-3 focus-within:border-accent"><span className="text-muted">$</span><input aria-label="Demo prediction amount" type="number" min="1" max="1000" step="1" value={amount} onChange={(e) => setAmount(e.target.value)} className="w-full min-w-0 bg-transparent py-2.5 tabular-nums outline-none" /></label>
+      <label className="flex min-w-0 flex-1 items-center gap-1 rounded-xl border border-ink/15 bg-white/60 px-3 focus-within:border-accent"><span className="text-muted">$</span><input aria-label="Demo prediction amount" type="number" min="1" max={testOn(s) ? undefined : 1000} step="1" value={amount} onChange={(e) => setAmount(e.target.value)} className="w-full min-w-0 bg-transparent py-2.5 tabular-nums outline-none" /></label>
       <button className={ghost} disabled={!valid} onClick={act(async () => { await api.demoBet(b.id, competitor, Number(amount)); })}>Place demo bet</button>
     </div>
     {(b.bets || []).length > 0 && <span className="text-sm text-muted">{b.bets.length} demo prediction{b.bets.length === 1 ? '' : 's'} placed.</span>}
@@ -324,7 +340,7 @@ function QuickPost({ p, s, act, onPosted }) {
   });
   return (
     <div className="flex flex-col gap-3">
-      <Label t="Your reward"><div className="flex gap-2"><span className="flex items-center rounded-xl border border-ink/15 bg-white/60 px-3 text-muted">$</span><input type="number" min="1" max="10000" className={field + ' tabular-nums'} value={reward} onChange={(e) => setReward(e.target.value)} /></div></Label>
+      <Label t="Your reward"><div className="flex gap-2"><span className="flex items-center rounded-xl border border-ink/15 bg-white/60 px-3 text-muted">$</span><input type="number" min="1" max={testOn(s) ? undefined : 10000} className={field + ' tabular-nums'} value={reward} onChange={(e) => setReward(e.target.value)} /></div></Label>
       <div role="group" aria-label="Survival window" className="flex flex-col gap-1.5 text-sm text-muted">Survival window: the agent is paid only if the fix holds this long
         <div className="flex gap-2">{[7, 10, 14].map((d) => <button key={d} aria-pressed={days === d} onClick={() => setDays(d)} className={'flex-1 cursor-pointer rounded-xl border px-3 py-2 text-[15px] ' + (days === d ? 'border-ink bg-ink text-paper' : 'border-ink/15 bg-white/60 text-ink')}>{d} days</button>)}</div>
         {s.health?.survivalMinutes && <span className="text-accent">Demo mode: this server shortens every window to {s.health.survivalMinutes} minutes.</span>}
@@ -426,7 +442,7 @@ function Billing({ s, act }) {
           <div key={p} className={card}><span className="text-[26px] font-semibold">{money(p)}</span><span className="text-[15px] text-muted">A verified fix uses its real API cost plus the 15% fee. Unverified costs nothing.</span>
             <button className={ghost + ' mt-2 self-start'} onClick={act(async () => { const r = await api.buyCredits(p); if (r?.checkoutUrl) location.href = r.checkoutUrl; })}>Buy</button></div>
         ))}
-        <CustomCredits act={act} />
+        <CustomCredits act={act} s={s} />
       </div>
       {(c?.purchases?.length > 0 || c?.charges?.length > 0) && <>
         <div className="text-[17px] font-semibold">History</div>
@@ -440,21 +456,22 @@ function Billing({ s, act }) {
   );
 }
 
-function CustomCredits({ act }) {
+function CustomCredits({ act, s }) {
   const [v, setV] = useState('');
-  const n = Number(v), ok = Number.isInteger(n) && n >= 5 && n <= 1000;
+  const free = testOn(s), n = Number(v), ok = free ? Number.isSafeInteger(n) && n >= 1 : Number.isInteger(n) && n >= 5 && n <= 1000;
+  const range = free ? 'Any whole amount (test payments: free)' : 'Any whole amount from $5 to $1,000';
   return (
     <div className={card}>
       <span className="text-[26px] font-semibold">Custom</span>
-      <span className="text-[15px] text-muted">Any whole amount from $5 to $1,000.</span>
+      <span className="text-[15px] text-muted">{range}.</span>
       <div className="mt-2 flex gap-2">
         <label className="flex min-w-0 flex-1 items-center gap-1 rounded-xl border border-ink/15 bg-white/60 px-3 focus-within:border-accent">
           <span className="text-muted">$</span>
-          <input type="number" inputMode="numeric" min="5" max="1000" step="1" value={v} onChange={(e) => setV(e.target.value)} placeholder="75" aria-label="Custom credit amount in dollars" className="w-full min-w-0 bg-transparent py-2.5 tabular-nums outline-none" />
+          <input type="number" inputMode="numeric" min={free ? 1 : 5} max={free ? undefined : 1000} step="1" value={v} onChange={(e) => setV(e.target.value)} placeholder="75" aria-label="Custom credit amount in dollars" className="w-full min-w-0 bg-transparent py-2.5 tabular-nums outline-none" />
         </label>
         <button className={ghost} disabled={!ok} onClick={act(async () => { const r = await api.buyCredits(n); if (r?.checkoutUrl) location.href = r.checkoutUrl; else setV(''); })}>Buy</button>
       </div>
-      {v && !ok && <span className="text-sm text-bad">Enter a whole amount from $5 to $1,000.</span>}
+      {v && !ok && <span className="text-sm text-bad">Enter a whole amount{free ? ' of at least $1' : ' from $5 to $1,000'}.</span>}
     </div>
   );
 }

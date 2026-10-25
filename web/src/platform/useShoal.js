@@ -24,6 +24,7 @@ const partsFor = (events) => {
     if (/^(connect|sync|scan|reset)/.test(type)) parts.add('connection');
     if (/^(agent|marketplace|bounty\.(competing|winner|surviving|settled|clawed_back|failed)|verify\.passed|survival)/.test(type)) { parts.add('agents'); parts.add('market'); }
     if (/^auth\./.test(type)) { parts.add('me'); parts.add('health'); }
+    if (/^payments\./.test(type)) parts.add('health');
   }
   return [...parts];
 };

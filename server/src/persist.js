@@ -79,6 +79,7 @@ const VALUES = {
   sync: { get: () => ({ auto: state.sync?.auto ?? true }), set: (v) => (state.sync = { ...state.sync, auto: v.auto }) },
   modelCost: { get: () => state.modelCost, set: (v) => (state.modelCost = v ?? {}) },
   credits: { get: () => state.credits, set: (v) => (state.credits = v) },
+  testPayments: { get: () => state.testPayments === true, set: (v) => (state.testPayments = v === true) },
 };
 
 // Real columns and constraints per table, on top of id + data.
@@ -243,6 +244,7 @@ export async function loadState() {
   }
   VALUES.modelCost.set(saved.modelCost);
   if (saved.credits) VALUES.credits.set(saved.credits);
+  VALUES.testPayments.set(saved.testPayments);
 
   // A fresh or imported store gets everything written now; otherwise only
   // what changes from here on.

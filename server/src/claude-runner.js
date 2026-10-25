@@ -6,11 +6,12 @@
 // Trials run on the team's own Claude login, not Shoal's API key: the key is
 // removed from Claude Code's environment so the free round stays free.
 import { spawn } from "node:child_process";
-import { writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { emit } from "./events.js";
 import { MODELS, tokenCost } from "./trials.js";
+import { state } from "./store.js";
 
 const CLAUDE = process.env.CLAUDE_BIN ?? "claude";
 const IS_WIN = process.platform === "win32";
@@ -159,6 +160,45 @@ export async function askClaude(prompt, { model = "sonnet", timeout = 4 * 60_000
   } catch {
     return null;
   }
+}
+
+// --- Bounty race attempt ------------------------------------------------------------
+
+// One race competitor on the team's Claude login, through Shoal's MCP tools
+// (free to Shoal). The model reads the code, tests patches with run_tests and
+// submits through submit_trial; the newest trial it submitted for this test
+// is its race entry. -> { summary, files } or null if it submitted nothing.
+export async function claudeRaceFix(model, pain, { baseUrl, timeout = 15 * 60_000 } = {}) {
+  const m = TRIAL_MODELS.find((x) => x.id === model);
+  if (!m) return null;
+  const info = await detectClaude();
+  if (!info.installed || !info.loggedIn) return null;
+  const dir = await mkdtemp(path.join(tmpdir(), "shoal-race-"));
+  const mcpFile = path.join(dir, "claude-mcp.json");
+  await writeFile(mcpFile, JSON.stringify({ mcpServers: { shoal: { type: "http", url: `${baseUrl}/mcp`, headers: { "X-Shoal-Client": "Claude Code" } } } }));
+  const since = new Date().toISOString();
+  const prompt = [
+    `You are competing in a Shoal bounty race on ${MODELS[model].name}. Fix one flaky test: problem id ${pain.id}, ${pain.testFile} (failed ${pain.failures}/${pain.runs} runs).`,
+    ...agentRules(model),
+    "Reply with one line: passed or failed, and what you changed.",
+  ].join("\n");
+  try {
+    await claude(
+      [
+        "-p", "--output-format", "json", "--model", m.alias,
+        "--mcp-config", mcpFile, "--strict-mcp-config",
+        "--allowedTools", "mcp__shoal",
+        "--disallowedTools", "Bash", "Edit", "Write", "Read", "Glob", "Grep", "WebFetch", "WebSearch", "Task", "Agent", "NotebookEdit",
+        "--permission-mode", "dontAsk", "--no-session-persistence",
+      ],
+      { input: prompt, timeout },
+    ).done;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+  const mine = state.trials.filter((t) => t.painId === pain.id && t.model === model && t.submittedAt >= since);
+  const best = mine.find((t) => t.status === "passed") ?? mine[0];
+  return best ? { summary: best.summary, files: best.files } : null;
 }
 
 // --- Trial run ------------------------------------------------------------------

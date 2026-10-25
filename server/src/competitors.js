@@ -19,10 +19,12 @@
 import { createHmac } from "node:crypto";
 import { z } from "zod";
 import { MODELS } from "./trials.js";
-import { FIX_SYSTEM, FixSchema, MOCK, contextFiles, fixPrompt, getAgent, requestFix, requestModelFix } from "./agents.js";
+import { FIX_SYSTEM, FixSchema, mockNow, contextFiles, fixPrompt, getAgent, requestFix, requestModelFix } from "./agents.js";
 import { mockFix } from "./mock.js";
 import { decrypt } from "./secrets.js";
 import { state } from "./store.js";
+import { emit } from "./events.js";
+import { claudeRaceFix } from "./claude-runner.js";
 
 const WEBHOOK_TIMEOUT_MS = 10 * 60_000;
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
@@ -31,17 +33,40 @@ const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 export async function attemptFix(id, bounty, pain) {
   const agent = getAgent(id);
   if (agent) return { fix: await requestFix(agent, bounty, pain), cost: 0 };
-  if (MODELS[id]) return requestModelFix(id, bounty, pain);
+  if (MODELS[id]) return (await freeModelFix(id, pain)) ?? requestModelFix(id, bounty, pain);
   const listing = state.listings.find((l) => l.id === id);
   if (listing?.provider === "openrouter") return openRouterFix(listing, pain);
   if (listing?.provider === "builder") return webhookFix(listing, bounty, pain);
   throw new Error(`${id} isn't a marketplace listing that can compete`);
 }
 
+// --- Free fixes (MCP) ---------------------------------------------------------------
+
+// When Shoal wouldn't call a model's API (test payments, mock mode, or no key
+// for it), the model competes for free instead: its passing trial fix for this
+// test if it has one, else a fresh attempt through Claude Code + Shoal's MCP
+// on the team's Claude login. null: fall back to the usual path.
+const apiKeyFor = (id) => Boolean(process.env[MODELS[id].provider === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY"]);
+const localBase = () => `http://localhost:${Number(process.env.PORT) || 4000}`;
+
+async function freeModelFix(id, pain) {
+  if (!mockNow() && apiKeyFor(id)) return null;
+  const trial = state.trials.find((t) => t.painId === pain.id && t.model === id && t.status === "passed");
+  if (trial) {
+    emit("work.reused", { message: `${MODELS[id].name} reused its passing trial fix for ${pain.testFile}` });
+    return { fix: { summary: trial.summary, files: trial.files }, cost: 0 };
+  }
+  if (MODELS[id].provider !== "anthropic") return null;
+  emit("work.claude_code", { message: `${MODELS[id].name} is fixing ${pain.testFile} through Claude Code + Shoal MCP (your plan, free)` });
+  const fix = await claudeRaceFix(id, pain, { baseUrl: localBase() });
+  if (!fix) throw new Error(`${MODELS[id].name} didn't submit a fix through Claude Code (is it installed and signed in?)`);
+  return { fix, cost: 0 };
+}
+
 // --- OpenRouter -------------------------------------------------------------------
 
 async function openRouterFix(listing, pain) {
-  if (MOCK) return { fix: await mockFix(getAgent("rootcause"), pain), cost: 0 };
+  if (mockNow()) return { fix: await mockFix(getAgent("rootcause"), pain), cost: 0 };
   if (!process.env.OPENROUTER_API_KEY) throw new Error("Set OPENROUTER_API_KEY to run OpenRouter models");
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",

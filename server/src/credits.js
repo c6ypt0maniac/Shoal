@@ -7,10 +7,12 @@
 import { emit } from "./events.js";
 import { newId, state } from "./store.js";
 import { saveState } from "./persist.js";
+import { testPayments } from "./testmode.js";
 
 export const PACKS = [10, 25, 50];
 // A pack, or any whole-dollar amount from $5 to $1,000.
-export const isCreditAmount = (d) => PACKS.includes(d) || (Number.isInteger(d) && d >= 5 && d <= 1000);
+// In test payments, any positive whole amount.
+export const isCreditAmount = (d) => PACKS.includes(d) || (Number.isInteger(d) && d >= 5 && d <= 1000) || (testPayments() && Number.isSafeInteger(d) && d >= 1);
 export const SHOAL_FEE = 0.15;
 const MIN_CHARGE_CENTS = 1;
 
@@ -22,7 +24,7 @@ const toCents = (dollars) => Math.round(dollars * 100);
 const toDollars = (cents) => cents / 100;
 
 // What a verified fix costs the team: API cost plus Shoal's fee, at least 1c.
-export const fixPriceCents = (apiCost) => Math.max(MIN_CHARGE_CENTS, Math.ceil(apiCost * (1 + SHOAL_FEE) * 100));
+export const fixPriceCents = (apiCost) => (testPayments() ? 0 : Math.max(MIN_CHARGE_CENTS, Math.ceil(apiCost * (1 + SHOAL_FEE) * 100)));
 
 export const balanceCents = () => book().balanceCents;
 
@@ -45,7 +47,7 @@ export async function addCredits({ dollars, mode, stripeSessionId = null }) {
   book().balanceCents += cents;
   book().purchases.unshift({ id: newId("credit"), cents, mode, stripeSessionId, at: new Date().toISOString() });
   await save();
-  emit("credits.added", { message: `Added $${dollars} of credits${mode === "simulated" ? " (simulated)" : " via Stripe"}. Balance $${toDollars(book().balanceCents).toFixed(2)}` });
+  emit("credits.added", { message: `Added $${dollars} of credits${mode === "test-bypass" ? " (test payments, free)" : mode === "simulated" ? " (simulated)" : " via Stripe"}. Balance $${toDollars(book().balanceCents).toFixed(2)}` });
   return creditsSummary();
 }
 

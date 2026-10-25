@@ -19,6 +19,7 @@ import { getStacks } from "./repo.js";
 import { stackFor } from "./stack.js";
 import { MODELS, costPerFix, linesChanged, providerLabel } from "./trials.js";
 import { balanceCents, fixPriceCents } from "./credits.js";
+import { testPayments } from "./testmode.js";
 import { verify } from "./verifier.js";
 import { emit } from "./events.js";
 import { state, newId, cardFor } from "./store.js";
@@ -71,7 +72,7 @@ export function createBounty({ painId, reward, funding = "simulated", apiModel =
   if (pain.healthy) throw httpError(400, `${pain.testFile} isn't flaky; nothing to fix`);
   // Credit runs carry the estimated fix price (can be cents); bounties a reward.
   const amount = funding === "credits" ? Number(reward) : Math.round(Number(reward) || pain.suggestedReward);
-  if (funding !== "credits" && (amount < 1 || amount > 10_000)) throw httpError(400, "Reward must be between $1 and $10,000");
+  if (funding !== "credits" && (amount < 1 || (amount > 10_000 && !testPayments()) || !Number.isSafeInteger(amount))) throw httpError(400, "Reward must be between $1 and $10,000");
   const bounty = {
     id: newId("bounty"),
     painId,
@@ -112,7 +113,7 @@ export function placeDemoBet(bountyId, { competitor, amount, by = null }) {
   if (DONE.includes(bounty.status)) throw httpError(409, "This race is already finished");
   if (!bounty.competitors.includes(competitor)) throw httpError(400, "Pick a competitor in this race");
   const dollars = Number(amount);
-  if (!Number.isInteger(dollars) || dollars < 1 || dollars > 1_000) throw httpError(400, "Demo bet must be a whole amount from $1 to $1,000");
+  if (!Number.isSafeInteger(dollars) || dollars < 1 || (dollars > 1_000 && !testPayments())) throw httpError(400, "Demo bet must be a whole amount from $1 to $1,000");
   const bet = { id: newId("bet"), competitor, amount: dollars, by: by || "Demo player", createdAt: new Date().toISOString() };
   (bounty.bets ??= []).push(bet);
   emit("bet.placed", { bountyId, agentId: competitor, amount: dollars, message: `${bet.by} placed a $${dollars} demo prediction on ${nameFor(competitor)} (no money)` });

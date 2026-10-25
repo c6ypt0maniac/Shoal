@@ -7,15 +7,17 @@ import { refreshSources, scan } from "./scanner.js";
 import { createBounty, getBounty, leaderboard, morningSettlement, placeDemoBet, publicBounty, recoverInterrupted, runBounty } from "./bounties.js";
 import { checkSurvivors } from "./survival.js";
 import { loadState, saveState, storageInfo } from "./persist.js";
-import { importOpenRouterModel, listing, listingExists, marketplace, ownerOf, publishAgent, refreshOpenRouter, removeListing, rotateSecret, updateAgent } from "./marketplace.js";
+import { importOpenRouterModel, listing, listingExists, marketplace, nameFor, ownerOf, publishAgent, refreshOpenRouter, removeListing, rotateSecret, updateAgent } from "./marketplace.js";
 import { createReview, deleteReview, replyToReview, reviewsFor, voteHelpful } from "./reviews.js";
 import { eventsAfter, emit, waitForEvents } from "./events.js";
 import { state, resetState, DEMO_CONNECTION } from "./store.js";
 import { getStacks, isTestFile, listAllFiles, resetWorkspace, setSource, DEMO_REPO, WORKSPACE } from "./repo.js";
 import { describeStack } from "./stack.js";
+import { testPayments, testPaymentsAllowed } from "./testmode.js";
 import { zip } from "./zip.js";
 import { readFile } from "node:fs/promises";
 import { existsSync, readdirSync, statSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { describeFile } from "./describe.js";
 import { confirmCreditPurchase, confirmFunding, paymentsMode, startCheckout, startCreditCheckout, stripeConfigured, stripeKeyProblem } from "./escrow.js";
 import { isProtected } from "./verifier.js";
@@ -63,34 +65,45 @@ mountMcp(app, { baseUrl: BASE_URL });
 // the SSE stream instead of waiting on the HTTP response.
 const background = (fn) => fn().catch((err) => emit("error", { message: err.message }));
 
-// Pages: / (landing, built from web/), /start (sign in + choose path), /team (dashboard), /builder
-const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../public");
+// Pages: / (landing) and /app (platform), both built from web/. The old
+// server/public pages are never served; their URLs redirect to /app.
 const WEB_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
-const hasLanding = existsSync(path.join(WEB_DIR, "index.html"));
-// Only the root `npm start` rebuilds web/. Starting the server any other way
-// serves whatever was built last, so say so when the source is newer.
-const staleLanding = (() => {
-  const web = path.join(WEB_DIR, "..");
-  if (!hasLanding || !existsSync(path.join(web, "src"))) return false;
+const webSrc = path.join(WEB_DIR, "..");
+// The build is missing, or older than web/src.
+const needsBuild = () => {
+  if (!existsSync(path.join(WEB_DIR, "index.html")) || !existsSync(path.join(WEB_DIR, "app.html"))) return true;
+  if (!existsSync(path.join(webSrc, "src"))) return false;
   const built = statSync(path.join(WEB_DIR, "index.html")).mtimeMs;
-  const sources = ["index.html", "app.html", "vite.config.js", ...readdirSync(path.join(web, "src"), { recursive: true }).map((f) => path.join("src", f))];
-  return sources.some((f) => existsSync(path.join(web, f)) && statSync(path.join(web, f)).mtimeMs > built);
-})();
-// Where Stripe sends the team back to: the React dashboard when it is built, else the old one.
-const dashboard = (query, view) => (hasLanding ? `/app?${query}#${view}` : `/team?${query}`);
-// Older GitHub sign-ins return to "/?github=…"; that, ?switch and a missing build all go to the sign-in page.
-app.get("/", (req, res) => {
-  const signIn = !hasLanding || "github" in req.query || "github_error" in req.query || "switch" in req.query;
-  res.sendFile(path.join(signIn ? PUBLIC_DIR : WEB_DIR, "index.html"));
-});
-app.get("/start", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "index.html")));
+  const sources = ["index.html", "app.html", "vite.config.js", ...readdirSync(path.join(webSrc, "src"), { recursive: true }).map((f) => path.join("src", f))];
+  return sources.some((f) => existsSync(path.join(webSrc, f)) && statSync(path.join(webSrc, f)).mtimeMs > built);
+};
+// Build web/ before serving, however the server was started, so a missing or
+// stale build never falls back to an old page.
+if (!process.env.VERCEL && needsBuild()) {
+  console.log("Web: building web/ ...");
+  if (!existsSync(path.join(webSrc, "node_modules"))) execSync("npm install --no-audit --no-fund", { cwd: webSrc, stdio: "inherit" });
+  execSync("npm run build", { cwd: webSrc, stdio: "inherit" });
+}
+if (!existsSync(path.join(WEB_DIR, "index.html"))) throw new Error("web/dist is missing: run `npm run build` from the repo root.");
+const staleLanding = needsBuild();
+// Where Stripe sends the team back to.
+const dashboard = (query, view) => `/app?${query}#${view}`;
+// Older GitHub sign-ins return to "/?github=…", and ?switch was the old role
+// picker: both now go to the platform, keeping the query.
+const toApp = (req, res) => {
+  const q = new URLSearchParams(req.query);
+  q.delete("switch");
+  res.redirect(`/app${q.size ? `?${q}` : ""}`);
+};
+app.get("/", (req, res, next) => ("github" in req.query || "github_error" in req.query || "switch" in req.query ? toApp(req, res) : next()));
+app.get("/", (_req, res) => res.sendFile(path.join(WEB_DIR, "index.html")));
+app.get(["/start", "/team", "/setup", "/builder", "/index.html", "/team.html", "/setup.html", "/builder.html"], toApp);
 // The platform (marketplace, races, settlement), built from web/app.html.
-app.get("/app", (_req, res) => res.sendFile(hasLanding ? path.join(WEB_DIR, "app.html") : path.join(PUBLIC_DIR, "team.html")));
-app.use(express.static(PUBLIC_DIR, { index: false }));
+app.get("/app", (_req, res) => res.sendFile(path.join(WEB_DIR, "app.html")));
 // Built files in assets/ have a content hash in their name, so browsers can
 // keep them for good instead of re-checking each one on every page load.
 const cacheAssets = (res, file) => file.includes(`${path.sep}assets${path.sep}`) && res.set("Cache-Control", "public, max-age=31536000, immutable");
-if (hasLanding) app.use(express.static(WEB_DIR, { index: false, setHeaders: cacheAssets }));
+app.use(express.static(WEB_DIR, { index: false, setHeaders: cacheAssets }));
 
 app.get("/api/health", (_req, res) =>
   res.json({
@@ -102,10 +115,23 @@ app.get("/api/health", (_req, res) =>
     integrations: integrationStatus(),
     githubToken: hasToken(),
     payments: paymentsMode(),
+    testPayments: { on: testPayments(), allowed: testPaymentsAllowed() },
     // Demo mode: every survival window lasts this many minutes (survival.js).
     survivalMinutes: Number(process.env.SHOAL_SURVIVAL_MINUTES) > 0 ? Number(process.env.SHOAL_SURVIVAL_MINUTES) : null,
   }),
 );
+
+// Test payments (testmode.js): bypass Stripe and every cost while testing.
+// Body: { on: boolean }
+app.get("/api/test-payments", (_req, res) => res.json({ on: testPayments(), allowed: testPaymentsAllowed(), payments: paymentsMode() }));
+app.post("/api/test-payments", async (req, res) => {
+  const on = req.body?.on === true;
+  if (on && !testPaymentsAllowed()) return res.status(403).json({ error: "Test payments are off on a server that takes real money (STRIPE_ALLOW_LIVE=1)" });
+  state.testPayments = on;
+  await saveState();
+  emit("payments.test", { message: on ? "Test payments on: Stripe bypassed, any amount allowed, fixes free, mock agents (no API spend)" : "Test payments off: normal payments again" });
+  res.json({ on: testPayments(), allowed: testPaymentsAllowed(), payments: paymentsMode() });
+});
 
 // --- Repo connection -------------------------------------------------------
 
@@ -241,9 +267,6 @@ app.post("/api/me/role", (req, res) => {
   res.json({ role });
 });
 
-app.get("/team", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "team.html")));
-app.get("/setup", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "setup.html")));
-app.get("/builder", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "builder.html")));
 
 // Point Shoal at a GitHub repo: read metadata + Actions history, clone,
 // install, then rescan. Body: { repo: "owner/name" | url, testCommand?,
@@ -405,6 +428,32 @@ app.get("/api/trials/:id/repo", async (req, res) => {
   res.attachment(name).type("application/zip").send(zip(files));
 });
 
+// Test payments only: download a race winner's fix, one fixed file or the
+// whole repo with the fix applied as a .zip (testmode.js).
+const winningFix = (req, res) => {
+  if (!testPayments()) return res.status(403).json({ error: "Downloading a race fix is only available with test payments on" }), null;
+  const bounty = getBounty(req.params.id);
+  const win = bounty.attempts.find((a) => a.passed && a.agentId === bounty.winner);
+  if (!win) return res.status(404).json({ error: "This race has no winning fix" }), null;
+  return { bounty, win };
+};
+app.get("/api/bounties/:id/fix/file", (req, res) => {
+  const found = winningFix(req, res);
+  const file = found?.win.files.find((f) => f.path === req.query.path);
+  if (!found) return;
+  if (!file) return res.status(404).json({ error: "No such file in the winning fix" });
+  res.attachment(path.basename(file.path)).type("text/plain").send(file.content);
+});
+app.get("/api/bounties/:id/fix/repo", async (req, res) => {
+  const found = winningFix(req, res);
+  if (!found) return;
+  const fixed = new Map(found.win.files.map((f) => [f.path, f.content]));
+  const paths = [...new Set([...(await listAllFiles(WORKSPACE)), ...fixed.keys()])].filter((p) => !isSecret(p));
+  const files = await Promise.all(paths.map(async (p) => ({ path: p, data: fixed.get(p) ?? (await readFile(path.join(WORKSPACE, p))) })));
+  const name = `${(state.connection.fullName ?? "repo").replace(/[^\w.-]+/g, "-")}-fixed-by-${nameFor(found.win.agentId).replace(/[^\w.-]+/g, "-")}.zip`;
+  res.attachment(name).type("application/zip").send(zip(files));
+});
+
 // One-click trial: Shoal finds Claude Code here, runs it against its own MCP
 // server, and stops when it's done (see trial-runner.js). Codex does the same
 // for the OpenAI models, on the team's ChatGPT plan.
@@ -489,8 +538,8 @@ app.get("/api/credits", (_req, res) => res.json({ ...creditsSummary(), payments:
 // Buy a pack: Stripe Checkout when Stripe is set up, otherwise simulated.
 app.post("/api/credits/buy", async (req, res) => {
   const dollars = Number(req.body?.dollars);
-  if (!isCreditAmount(dollars)) return res.status(400).json({ error: "Choose a pack or a whole amount from $5 to $1,000" });
-  if (!stripeConfigured()) return res.json(await addCredits({ dollars, mode: "simulated" }));
+  if (!isCreditAmount(dollars)) return res.status(400).json({ error: testPayments() ? "Choose a whole dollar amount of at least $1" : "Choose a pack or a whole amount from $5 to $1,000" });
+  if (!stripeConfigured()) return res.json(await addCredits({ dollars, mode: testPayments() ? "test-bypass" : "simulated" }));
   const base = `${req.protocol}://${req.get("host")}`;
   const checkoutUrl = await startCreditCheckout(dollars, {
     successUrl: `${base}/api/credits/return?session_id={CHECKOUT_SESSION_ID}`,
@@ -530,6 +579,15 @@ async function openBounty(req, res, opts) {
 app.post("/api/bounties/:id/fund", async (req, res) => {
   const bounty = getBounty(req.params.id);
   if (bounty.escrow.status !== "awaiting_funding") return res.status(400).json({ error: "This bounty is already funded" });
+  // Test payments: a bounty posted before the switch was waiting on Stripe;
+  // hold it as simulated instead and start the race.
+  if (testPayments()) {
+    Object.assign(bounty.escrow, { mode: "simulated", live: false, status: "held", checkoutSessionId: null });
+    bounty.status = "open";
+    emit("escrow.held", { bountyId: bounty.id, amount: bounty.reward, message: `$${bounty.reward} held in escrow (test payments, free)` });
+    background(() => runBounty(bounty.id));
+    return res.json({ bounty: publicBounty(bounty) });
+  }
   res.json({ checkoutUrl: await startCheckout(bounty, checkoutUrls(req, bounty)) });
 });
 
@@ -553,7 +611,7 @@ app.get("/api/escrow/return", async (req, res) => {
       bounty.status = "open";
       background(() => runBounty(bounty.id));
     }
-    res.redirect(starting ? dashboard("funding=held", "bounties") : hasLanding ? "/app#bounties" : "/team");
+    res.redirect(starting ? dashboard("funding=held", "bounties") : "/app#bounties");
   } catch (err) {
     emit("escrow.error", { bountyId: bounty.id, message: `Funding didn't go through: ${err.message}` });
     res.redirect(dashboard("funding=failed", "bounties"));

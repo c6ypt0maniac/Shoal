@@ -78,6 +78,8 @@ export const api = {
   // Money
   credits: () => get('/api/credits'),
   buyCredits: (dollars) => post('/api/credits/buy', { dollars }),
+  // Testing only: bypass Stripe and every cost (server/src/testmode.js).
+  testPayments: (on) => post('/api/test-payments', { on }),
   ledger: () => get('/api/ledger'),
   settlement: () => get('/api/settlement'),
 

@@ -29,7 +29,7 @@ import { state } from "./store.js";
 import { MODELS, rankedOptions } from "./trials.js";
 import { askClaude } from "./claude-runner.js";
 import { askCodex } from "./codex-runner.js";
-import { MOCK, judgeViaApi } from "./agents.js";
+import { mockNow, judgeViaApi } from "./agents.js";
 
 const STRESS_PARALLEL = 40;
 const STRESS_MIXED = 10;
@@ -396,8 +396,8 @@ export async function judgeAttempt({ pain, files, author, others = [] }) {
   const judges = await Promise.all(
     judgesFor(author).map(async (j) => {
       const judge = { provider: j.provider, model: j.id, alias: j.alias ?? null, name: MODELS[j.id].name, status: "waiting" };
-      if (MOCK) {
-        recordVerdict(judge, { verdict: "pass", summary: "Mock judge (no API keys): not a real review.", remaining: [], risks: [] }, "mock");
+      if (mockNow()) {
+        recordVerdict(judge, { verdict: "pass", summary: "Mock judge (no API keys or test payments): not a real review.", remaining: [], risks: [] }, "mock");
         return judge;
       }
       const got = await askJudge(judge, prompt);

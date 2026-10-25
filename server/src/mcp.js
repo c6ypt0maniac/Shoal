@@ -383,7 +383,7 @@ export function mountMcp(app, { baseUrl }) {
 ${connectHelp(url, remote)
   .map((c) => `<h3>${c.app}</h3><p>${c.steps}</p>${c.command ? `<pre style="background:#f3f3f3;padding:10px;border-radius:6px;overflow-x:auto">${c.command}</pre>` : ""}`)
   .join("")}
-<p>Then ask it to run Shoal's trials (prompt <code>run_trials</code>), and watch the results on the <a href="/team">dashboard</a>.</p>
+<p>Then ask it to run Shoal's trials (prompt <code>run_trials</code>), and watch the results on the <a href="/app">dashboard</a>.</p>
 </body>`);
   });
   app.delete("/mcp", notAllowed);

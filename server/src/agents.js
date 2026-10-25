@@ -15,11 +15,14 @@ import { readRepoFile } from "./repo.js";
 import { mockFix } from "./mock.js";
 import { inScope } from "./scope.js";
 import { MODELS, costPerFix, tokenCost } from "./trials.js";
+import { testPayments } from "./testmode.js";
 
 const MODEL = process.env.SHOAL_MODEL ?? "claude-opus-5-5";
 const OPENAI_AGENT_MODEL = process.env.SHOAL_OPENAI_MODEL ?? "gpt-6.1-sol";
 const KEYS = { anthropic: Boolean(process.env.ANTHROPIC_API_KEY), openai: Boolean(process.env.OPENAI_API_KEY) };
 export const MOCK = process.env.SHOAL_MOCK === "1" || (!KEYS.anthropic && !KEYS.openai && process.env.SHOAL_MOCK !== "0");
+// Mock agents now: always in MOCK, and while test payments are on, so no API key is billed.
+export const mockNow = () => MOCK || testPayments();
 
 const client = MOCK || !KEYS.anthropic ? null : new Anthropic();
 // Pro and o-series models can think for many minutes on one fix.
@@ -29,7 +32,7 @@ const openai = MOCK || !KEYS.openai ? null : new OpenAI({ timeout: 20 * 60_000 }
 export function modelUnavailable(model) {
   const provider = MODELS[model]?.provider;
   if (!provider) return `Unknown model ${model}`;
-  if (MOCK || KEYS[provider]) return null;
+  if (mockNow() || KEYS[provider]) return null;
   return provider === "openai" ? "Set OPENAI_API_KEY to run OpenAI models" : "Set ANTHROPIC_API_KEY to run Claude models";
 }
 
@@ -127,7 +130,7 @@ const FALLBACK_MODELS = new Set(["claude-sonnet-5-5", "claude-opus-5-5", "claude
 // the API with Shoal in control. Returns the fix and what the call cost.
 // In mock mode the winning trial patch stands in for the model's answer.
 export async function requestModelFix(model, bounty, pain, { trial, lastFailure } = {}) {
-  if (MOCK) return mockModelFix(model, pain, trial);
+  if (mockNow()) return mockModelFix(model, pain, trial);
   const prompt = await fixPrompt(pain, { trial, lastFailure });
   const unavailable = modelUnavailable(model);
   if (unavailable) throw new Error(unavailable);
@@ -198,7 +201,7 @@ export async function openaiFix(model, prompt, { effort = "high" } = {}) {
 // verdict JSON is parsed by proof.js). -> { text, cost }
 export async function judgeViaApi(model, prompt) {
   const unavailable = modelUnavailable(model);
-  if (unavailable || MOCK) throw new Error(unavailable ?? "mock mode has no API judges");
+  if (unavailable || mockNow()) throw new Error(unavailable ?? "mock mode has no API judges");
   if (MODELS[model].provider === "openai") {
     const r = await openai.responses.create({ model, input: prompt, max_output_tokens: 16_000, ...(MODELS[model].reasoning ? { reasoning: { effort: "high" } } : {}), store: false });
     return { text: r.output_text ?? "", cost: tokenCost(model, openaiUsage(r.usage)) };
@@ -216,7 +219,7 @@ function openaiUsage(usage = {}) {
 // One private attempt at a bounty. Other agents attempt it too, but nobody
 // sees anyone else's work; the winner is picked on verified track record.
 export async function requestFix(agent, bounty, pain) {
-  if (MOCK) return mockFix(agent, pain);
+  if (mockNow()) return mockFix(agent, pain);
   const prompt = [
     `Bounty: "${bounty.title}". Reward: $${bounty.reward}.`,
     `Observed: ${pain.failures}/${pain.runs} runs of ${pain.testFile} failed. Estimated cost: ${pain.hoursPerWeek} dev-hours/week.`,

@@ -13,13 +13,14 @@ import Stripe from "stripe";
 import { emit } from "./events.js";
 import { chargeCredits, refundCredits } from "./credits.js";
 import { MOCK } from "./agents.js";
+import { testPayments } from "./testmode.js";
 
 const key = () => process.env.STRIPE_SECRET_KEY ?? "";
 const isTestKey = () => /^(sk|rk)_test_/.test(key());
 const isLiveKey = () => /^(sk|rk)_live_/.test(key());
-export const stripeLive = () => isLiveKey() && process.env.STRIPE_ALLOW_LIVE === "1" && !MOCK;
-export const stripeConfigured = () => isTestKey() || stripeLive();
-export const paymentsMode = () => (stripeLive() ? "stripe-live" : isTestKey() ? "stripe-test" : "simulated");
+export const stripeLive = () => isLiveKey() && process.env.STRIPE_ALLOW_LIVE === "1" && !MOCK && !testPayments();
+export const stripeConfigured = () => !testPayments() && (isTestKey() || stripeLive());
+export const paymentsMode = () => (testPayments() ? "test-bypass" : stripeLive() ? "stripe-live" : isTestKey() ? "stripe-test" : "simulated");
 
 // Why a key that was set isn't being used, or null.
 export function stripeKeyProblem() {

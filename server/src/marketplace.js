@@ -17,7 +17,7 @@
 //   - agents builders publish with a webhook (publishAgent; competitors.js
 //     has the webhook protocol)
 // Imported and published listings are kept in state.listings (persist.js).
-import { AGENTS, MOCK, modelUnavailable } from "./agents.js";
+import { AGENTS, mockNow, modelUnavailable } from "./agents.js";
 import { MODELS, providerLabel } from "./trials.js";
 import { scorecard } from "./bounties.js";
 import { ratingFor } from "./reviews.js";
@@ -248,9 +248,9 @@ export const nameFor = (id) => allListings().find((l) => l.id === id)?.name ?? i
 
 // Why a listing can't compete right now, or null.
 function unavailable(l) {
-  if (l.provider === "shoal") return MOCK || process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY ? null : "needs ANTHROPIC_API_KEY or OPENAI_API_KEY";
+  if (l.provider === "shoal") return mockNow() || process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY ? null : "needs ANTHROPIC_API_KEY or OPENAI_API_KEY";
   if (MODELS[l.id]) return modelUnavailable(l.id);
-  if (l.provider === "openrouter") return MOCK || process.env.OPENROUTER_API_KEY ? null : "needs OPENROUTER_API_KEY";
+  if (l.provider === "openrouter") return mockNow() || process.env.OPENROUTER_API_KEY ? null : "needs OPENROUTER_API_KEY";
   if (l.provider === "builder") return l.webhookUrl ? null : "has no webhook";
   return "unknown kind of listing";
 }
