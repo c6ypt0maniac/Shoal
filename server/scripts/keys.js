@@ -82,12 +82,24 @@ const rl = readline.createInterface({ input: process.stdin, output: process.stdo
 // Hide what's typed for secrets: once the prompt is out, echo nothing until Enter.
 let hidden = false;
 rl._writeToOutput = (s) => hidden || rl.output.write(s);
-const ask = (q, secret = false) =>
+// What was pasted, without what terminals and copying add: bracketed-paste
+// markers, quotes, or a whole "NAME=value" line.
+const cleanValue = (a, name) =>
+  a
+    .replace(/\x1b\[20[01]~/g, "")
+    .trim()
+    .replace(new RegExp(`^(export\\s+)?${name ?? "[A-Z0-9_]+"}\\s*=\\s*`), "")
+    .replace(/^(["'])(.*)\1$/, "$2")
+    .trim();
+
+const ask = (q, secret = false, name = null) =>
   new Promise((resolve) => {
     rl.question(q, (a) => {
       hidden = false;
-      if (secret) process.stdout.write(a ? "(hidden)\n" : "\n");
-      resolve(a.trim());
+      const value = cleanValue(a, name);
+      // Show that the paste arrived, without showing it.
+      if (secret) process.stdout.write(value ? `(hidden: ${value.length} characters, ends ...${value.slice(-4)})\n` : "(nothing entered)\n");
+      resolve(value);
     });
     hidden = secret;
   });
@@ -104,9 +116,15 @@ for (const i of chosen) {
     console.log("");
     continue;
   }
-  if (!configured(i, env) && !named.length && (await ask("   Set it up now? [Y/n] ")).toLowerCase() === "n") {
-    console.log("");
-    continue;
+  // A key pasted here, instead of "y", is used as the key.
+  let pasted = null;
+  if (!configured(i, env) && !named.length) {
+    const answer = await ask("   Set it up now? [Y/n] ");
+    if (answer.toLowerCase() === "n" || answer.toLowerCase() === "no") {
+      console.log("");
+      continue;
+    }
+    if (answer && !/^y(es)?$/i.test(answer)) pasted = cleanValue(answer, i.vars[0].name);
   }
 
   for (let tries = 0; tries < 3; tries++) {
@@ -116,12 +134,24 @@ for (const i of chosen) {
         console.log(`   ${v.name}: generated`);
         continue;
       }
-      let value;
-      for (;;) {
-        value = await ask(`   ${v.name} (${mask(env[v.name])}${v.optional ? ", optional" : ""}${v.hint ? `: ${v.hint}` : ""}): `, v.secret);
+      let value = v === i.vars[0] && pasted ? pasted : null;
+      if (value) console.log(`   ${v.name}: using what you pasted (${value.length} characters, ends ...${value.slice(-4)})`);
+      pasted = null;
+      for (let empty = 0; !value; ) {
+        value = await ask(`   ${v.name} (${mask(env[v.name])}${v.optional ? ", optional" : ""}${v.hint ? `: ${v.hint}` : ""}): `, v.secret, v.name);
         const problem = value && value !== "-" ? shapeProblem(v, value) : null;
-        if (!problem) break;
-        console.log(`   ${problem}`);
+        if (problem) {
+          console.log(`   ${problem}`);
+          value = null;
+          continue;
+        }
+        // Nothing typed for a required value that isn't set: the paste may not
+        // have arrived (the prompt shows nothing). Ask once more.
+        if (!value && !v.optional && !env[v.name] && ++empty === 1) {
+          console.log(`   Nothing came through. ${v.secret ? "Typing is hidden here, so paste the key, then press Enter. " : ""}Press Enter again to skip.`);
+          continue;
+        }
+        break;
       }
       if (value === "-") setVar(v.name, "");
       else if (value) setVar(v.name, value);
