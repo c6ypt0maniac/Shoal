@@ -817,6 +817,18 @@ app.post("/api/bounties/:id/build", (req, res) => {
   res.status(202).json({ accepted: true, bountyId: bounty.id, model });
 });
 
+// A file from a bounty's winning fix, once the team has paid for it (the
+// fix is in its survival window or settled). For a PR that couldn't be
+// opened on GitHub, this is how the team gets the code.
+app.get("/api/bounties/:id/file", (req, res) => {
+  const bounty = getBounty(req.params.id);
+  if (!["surviving", "settled"].includes(bounty.status)) return res.status(403).json({ error: "The fix is shown once it has won and been paid for" });
+  const winning = bounty.attempts.find((a) => a.passed && a.agentId === bounty.winner);
+  const file = winning?.files.find((f) => f.path === req.query.path);
+  if (!file) return res.status(404).json({ error: "No such file in the winning fix" });
+  res.attachment(path.basename(file.path)).type("text/plain").send(file.content);
+});
+
 app.post("/api/bounties/:id/run", (req, res) => {
   const bounty = getBounty(req.params.id);
   if (bounty.escrow.status !== "held") return res.status(402).json({ error: "Fund this bounty before agents can work on it" });

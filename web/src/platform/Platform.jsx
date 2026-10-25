@@ -273,7 +273,7 @@ function Bounties({ s, act, setOpen, setup, go, postBounty }) {
 const day = (iso) => { const d = new Date(iso); return Math.abs(d - Date.now()) < 86_400_000 ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : d.toLocaleDateString([], { month: 'short', day: 'numeric' }); };
 const footer = (b) => ({
   awaiting_funding: 'Waiting for funding', awaiting_go_ahead: 'Diagnosed: pick the winner', surviving: 'Paid out ' + (b.survival ? day(b.survival.endsAt) : 'later') + ' if it holds',
-  settled: b.pullRequest ? 'PR #' + b.pullRequest.number + ' opened' : 'Fix survived', clawed_back: 'Regressed, refunded', failed: 'No fix, $0 charged', payment_failed: 'Charge failed',
+  settled: b.pullRequest?.url ? 'PR #' + b.pullRequest.number + ' opened' : 'Fix survived', clawed_back: 'Regressed, refunded', failed: 'No fix, $0 charged', payment_failed: 'Charge failed',
 }[b.status] || (LIVE.includes(b.status) ? 'Race in progress' : 'Held in escrow'));
 const Runs = ({ runs, tall }) => <div className="flex gap-1">{runs.map((ok, i) => <span key={i} className={(tall ? 'h-3' : 'h-2') + ' flex-1 rounded-full ' + (ok ? 'bg-accent/60' : 'bg-bad/75')} />)}</div>;
 const Section = ({ t, children }) => <div className="flex flex-col gap-2 border-t border-ink/10 pt-3"><span className="text-sm font-medium text-muted">{t}</span>{children}</div>;
@@ -335,7 +335,11 @@ function Listing({ s, act, open, setOpen, postBounty }) {
           {b ? <><div className="text-sm font-medium text-muted">{LIVE.includes(b.status) ? 'Live race' : 'Race'}</div><Race bounty={b} events={s.events} names={name} /></> : <div className="my-auto flex flex-col items-center gap-4"><div className="flex w-[80%] gap-1">{Array.from({ length: p.runs }, (_, i) => <span key={i} className={'h-8 flex-1 rounded-md ' + (i < p.failures ? 'bg-bad/80' : 'bg-accent/45')} />)}</div><span className="text-sm text-muted">{p.failures} of {p.runs} scan runs failed</span></div>}
         </div>
         <div className="flex flex-col gap-4 p-8 md:overflow-y-auto md:overscroll-contain">
-          <div className="flex flex-col gap-1"><span className="text-[30px] font-semibold tabular-nums tracking-[-0.03em]">{b?.escrow?.mode === 'credits' ? '$' + Number(b.reward).toFixed(2) : money(b ? b.reward : p.suggestedReward)}</span><span className="break-all font-mono text-[15px]">{b?.testFile ?? p.testFile}</span></div>
+          <div className="flex flex-col gap-1"><span className="text-[30px] font-semibold tabular-nums tracking-[-0.03em]">{b?.escrow?.mode === 'credits' ? '$' + Number(b.reward).toFixed(2) : money(b ? b.reward : p.suggestedReward)}</span><span className="break-all font-mono text-[15px]">{b?.testFile ?? p.testFile}</span>
+            {/* The repo the bounty is on, linked to GitHub (the bundled demo repo isn't on GitHub). */}
+            {b?.repo && (b.repo.url
+              ? <a className="text-sm text-accent underline" href={b.repo.url} target="_blank" rel="noreferrer">{b.repo.fullName} on GitHub</a>
+              : <span className="text-sm text-muted">{b.repo.fullName}</span>)}</div>
           {b && <div className="flex flex-wrap gap-2"><Tag tone={tone(b.status)}>{STATUS[b.status] || b.status}</Tag><Tag>{s.health?.survivalMinutes ? s.health.survivalMinutes + '-minute demo survival' : b.survivalDays + '-day survival'}</Tag>{b.language && <Tag>{b.language}</Tag>}{b.apiModel && <Tag>API fix · {name(b.apiModel)}</Tag>}</div>}
           {p && <div className="grid grid-cols-2 gap-4 border-y border-ink/10 py-4 tabular-nums">
             <div className="flex flex-col"><span className="text-xl font-semibold">{Math.round((p.failures / p.runs) * 100)}%</span><span className="text-sm text-muted">Flake rate</span></div>
@@ -350,6 +354,11 @@ function Listing({ s, act, open, setOpen, postBounty }) {
           </Section>}
           {b?.diagnoses?.length > 0 && <Section t="Diagnoses">
             {b.diagnoses.map((d) => <span key={d.model} className="text-sm"><span className={d.correct ? 'text-accent' : 'text-bad'}>{d.correct ? 'Correct' : 'Wrong'}</span> · {name(d.model)}{d.model === b.recommended ? ' (recommended)' : ''}: <span className="font-mono">{d.file}</span>{d.location ? ' · ' + d.location : ''}</span>)}
+            {b.recommended && ['competing', 'verifying', 'judging'].includes(b.status) && <span className="text-sm text-muted">{{
+              competing: 'Step 1 of 3: the chosen model is writing the fix.',
+              verifying: 'Step 2 of 3: running the tests on the fix.',
+              judging: 'Step 3 of 3: the tests passed; two judges are reviewing the fix. The PR opens only if both pass it.',
+            }[b.status]}</span>}
             {b.status === 'awaiting_go_ahead' && <>
               <span className="text-sm text-muted">No fix has been written yet. The chosen model writes it now; you're charged only if it's verified and both judges pass it.</span>
               <div className="flex flex-wrap gap-2">
@@ -372,7 +381,17 @@ function Listing({ s, act, open, setOpen, postBounty }) {
             {sv.reason && <span className="text-sm text-bad">{sv.reason}</span>}
             {b.status === 'surviving' && <button className={ghost + ' self-start'} onClick={act(() => api.survivalCheck(b.id))}>Re-check now</button>}
           </Section>}
-          {b?.pullRequest && <a className="text-[15px] text-accent underline" href={b.pullRequest.url} target="_blank" rel="noreferrer">PR #{b.pullRequest.number} on GitHub</a>}
+          {b?.pullRequest && <Section t="Pull request">
+            {b.pullRequest.url
+              ? <a className="text-[15px] text-accent underline" href={b.pullRequest.url} target="_blank" rel="noreferrer">PR #{b.pullRequest.number} on GitHub: {b.pullRequest.title}</a>
+              : <>
+                <span className="text-[15px] font-medium">{b.pullRequest.title}</span>
+                <span className="text-sm text-muted">Not opened on GitHub: {b.pullRequest.reason}</span>
+                {b.repo?.url && <a className="text-sm text-accent underline" href={b.repo.url + '/compare'} target="_blank" rel="noreferrer">Open a PR yourself on {b.repo.fullName}</a>}
+                <pre className="m-0 max-h-56 overflow-auto whitespace-pre-wrap rounded-xl bg-white/50 p-3 text-xs">{b.pullRequest.body}</pre>
+              </>}
+            <span className="flex flex-wrap gap-3 text-sm">{(b.pullRequest.files || []).map((f) => <a key={f} className="text-accent underline" href={'/api/bounties/' + encodeURIComponent(b.id) + '/file?path=' + encodeURIComponent(f)}>{f}</a>)}</span>
+          </Section>}
           {b?.status === 'failed' && <p className="m-0 text-[15px]">{b.competition?.verified ? `${b.competition.verified} fix${b.competition.verified === 1 ? '' : 'es'} passed the tests, but the judges didn't pass any.` : 'No fix passed the tests.'} The hold was released and you paid $0.</p>}
           {b?.status === 'failed' && (b.failReason || b.failures?.length > 0) && <div className="flex flex-col gap-1">{(b.failReason ? [b.failReason] : b.failures.slice(-3)).map((f, i) => <span key={i} className="text-sm text-muted">{f}</span>)}</div>}
           {b?.status === 'clawed_back' && <p className="m-0 text-[15px]">The fix regressed during its survival window. You were refunded and the agent was paid $0.</p>}

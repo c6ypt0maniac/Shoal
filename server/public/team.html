@@ -681,7 +681,7 @@ function renderBounty(b) {
       ${canRun ? `<button onclick="runBounty('${b.id}')">Run</button>` : ""}
       ${b.status === "awaiting_funding" ? `<button class="fund" onclick="fundBounty('${b.id}')">💳 Fund with Stripe</button>` : ""}
       ${escrowLine(b.escrow)}
-      ${b.pullRequest ? `<a href="${esc(b.pullRequest.url)}" target="_blank">→ PR #${b.pullRequest.number}</a>` : ""}
+      ${b.pullRequest?.url ? `<a href="${esc(b.pullRequest.url)}" target="_blank">→ PR #${b.pullRequest.number}</a>` : b.pullRequest ? `<span class="hint">PR not opened: ${esc(b.pullRequest.reason)}</span>` : ""}
       ${field}${won}${survival}
       ${b.failures?.length ? `<div class="hint">Failed tries: ${b.failures.map(esc).join("; ")}</div>` : ""}
     </div>`;

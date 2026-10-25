@@ -606,13 +606,14 @@ async function settle(bounty, pain, agent, bid) {
 }
 // Only the winning, verified fix ever reaches the team: as a PR on the
 // connected GitHub repo, when the token has write access.
+// The winning fix as a pull request. On a GitHub repo you can push to it's
+// opened there; otherwise (the bundled demo repo, a read-only repo, a GitHub
+// error) the same PR is kept as a draft the team can read and download, with
+// the reason it wasn't opened. Either way bounty.pullRequest says what happened.
 async function surfacePullRequest(bounty, pain, agent, attempt) {
   const repo = bounty.repo ?? state.connection;
-  if (repo.type !== "github") return;
-  if (!repo.canWrite) {
-    emit("pr.skipped", { bountyId: bounty.id, message: `Fix verified but not pushed: GITHUB_TOKEN can't write to ${repo.fullName}` });
-    return;
-  }
+  const title = `[Shoal] ${bounty.title}`;
+  const branch = `shoal/${bounty.id}-${agent.id}`;
   const body = [
     `**Shoal bounty ${bounty.id}**: ${bounty.title}`,
     "",
@@ -627,17 +628,18 @@ async function surfacePullRequest(bounty, pain, agent, attempt) {
     "### Survival window",
     `Shoal keeps re-running \`${pain.testFile}\` on new commits until ${bounty.survival.endsAt.slice(0, 10)}. The agent is paid only if it keeps passing; otherwise the charge is refunded.`,
   ].join("\n");
+  const draft = (reason) => {
+    bounty.pullRequest = { opened: false, reason, title, branch, body, files: attempt.files.map((f) => f.path) };
+    emit("pr.skipped", { bountyId: bounty.id, message: `Fix ready as a pull request, not opened on GitHub: ${reason}` });
+  };
+  if (repo.type !== "github") return draft("this is the bundled demo repo, which isn't on GitHub. Connect your own repo to get real PRs.");
+  if (!repo.canWrite) return draft(`your GitHub sign-in can't push to ${repo.fullName}`);
   try {
-    const pr = await openPullRequest(repo, {
-      branch: `shoal/${bounty.id}-${agent.id}`,
-      title: `[Shoal] ${bounty.title}`,
-      body,
-      files: attempt.files,
-    });
-    bounty.pullRequest = pr;
+    const pr = await openPullRequest(repo, { branch, title, body, files: attempt.files });
+    bounty.pullRequest = { ...pr, opened: true, title, files: attempt.files.map((f) => f.path) };
     emit("pr.opened", { bountyId: bounty.id, url: pr.url, message: `Opened PR #${pr.number} on ${repo.fullName}` });
   } catch (err) {
-    emit("pr.error", { bountyId: bounty.id, message: `Couldn't open PR: ${err.message}` });
+    draft(`GitHub refused it (${err.message})`);
   }
 }
 
