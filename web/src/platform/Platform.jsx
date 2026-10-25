@@ -183,7 +183,7 @@ export default function Platform() {
         </main>
       </div>
       {open && <Listing s={s} act={act} open={open} setOpen={setOpen} postBounty={postBounty} />}
-      {create && <Create s={s} act={act} mode={create} startPain={createPain} setMode={setCreate} onPosted={(b) => { setCreate(null); go('bounties'); if (b?.id) setOpen({ kind: 'bounty', id: b.id }); }} />}
+      {create && <Create s={s} act={act} err={err} mode={create} startPain={createPain} setMode={setCreate} onPosted={(b) => { setCreate(null); go('bounties'); if (b?.id) setOpen({ kind: 'bounty', id: b.id }); }} />}
       </div>
       {locked && <SignInGate s={s} view={view} err={err} />}
       {!locked && pay.asking && <PaymentPrompt pay={pay} />}
@@ -456,7 +456,7 @@ function ReviewForm({ s, act, b }) {
   );
 }
 
-function Create({ s, act, mode, startPain, setMode, onPosted }) {
+function Create({ s, act, err, mode, startPain, setMode, onPosted }) {
   const close = () => setMode(null);
   // A bounty is on a repo: pick it first. Picking another one switches Shoal
   // to it and scans it, then its flaky tests are listed. Bounties keep their
@@ -466,10 +466,11 @@ function Create({ s, act, mode, startPain, setMode, onPosted }) {
   // The newest event when a switch began: only a scan finishing after it counts.
   const [switchFrom, setSwitchFrom] = useState(0);
   useEffect(() => { if (mode === 'bounty') api.repos().then(setRepos, () => setRepos([])); }, [mode]);
-  // Only repos a bounty can land on: ones you can push to (the fix arrives as
-  // a pull request) and that aren't archived.
-  const choices = (repos || []).filter((r) => r.canWrite && !r.archived).map((r) => r.fullName);
-  const activeBlocked = activeKey !== 'demo' && repos !== null && !choices.includes(activeKey);
+  // Every repo you can see. One you can't push to still works: its winning
+  // fix comes as a draft PR to download instead of a GitHub PR.
+  const listed = (repos || []).filter((r) => !r.archived);
+  const choices = [...new Set([...(activeKey !== 'demo' ? [activeKey] : []), ...listed.map((r) => r.fullName)])];
+  const readOnly = (name) => name === activeKey ? s.connection?.canWrite === false : listed.find((r) => r.fullName === name)?.canWrite === false;
   const lastScan = [...s.events].reverse().find((e) => /^scan\./.test(e.type));
   const scanning = ['scan.started', 'scan.file'].includes(lastScan?.type);
   const ready = switchingTo === null;
@@ -492,17 +493,17 @@ function Create({ s, act, mode, startPain, setMode, onPosted }) {
         <Label t="Repository">
           <select className={field} value={switchingTo ?? activeKey} disabled={switchingTo !== null} onChange={(e) => pickRepo(e.target.value)}>
             <option value="demo">Bundled demo repo</option>
-            {activeBlocked && <option value={activeKey} disabled>{activeKey} (no write access)</option>}
-            {choices.map((r) => <option key={r} value={r}>{r}</option>)}
+            {choices.map((r) => <option key={r} value={r}>{r}{readOnly(r) ? ' · read-only (draft PR)' : ''}</option>)}
             {repos === null && <option disabled>Loading your GitHub repos…</option>}
           </select>
         </Label>
         {repoErr && <span className="text-sm text-bad">{repoErr}</span>}
         {s.health?.mock && activeKey !== 'demo' && !switchingTo && <span className="text-sm text-bad">This server has no API keys (practice mode), which only works on the bundled demo repo. Add ANTHROPIC_API_KEY or OPENAI_API_KEY to fix {activeKey}.</span>}
-        {activeBlocked && !switchingTo && <span className="text-sm text-bad">You can't push to {activeKey}, so a fix couldn't land there. Pick a repo you can write to.</span>}
+        {activeKey !== 'demo' && readOnly(activeKey) && !switchingTo && <span className="text-sm text-muted">You can't push to {activeKey}, so the winning fix comes as a draft PR you can download. Get write access (and reconnect) for real PRs.</span>}
+        {err && <span className="text-sm text-bad">{err}</span>}
         {!ready ? (
           <div className="text-muted">Switching to {switchingTo === 'demo' ? 'the demo repo' : switchingTo} and scanning for flaky tests…</div>
-        ) : activeBlocked ? null : flaky.length === 0 ? (
+        ) : flaky.length === 0 ? (
           <div className="flex flex-col gap-3 text-muted">{s.pains.length ? 'Every flaky test in this repo already has a bounty.' : scanning ? 'Scanning for flaky tests…' : 'No scan of this repo yet.'}{!s.pains.length && !scanning && <button className={primary + ' self-start'} onClick={act(api.scan)}>Scan for flaky tests</button>}</div>
         ) : (<>
           <Label t="Which test?"><select className={field} value={pain?.id} onChange={(e) => setPainId(e.target.value)}>{flaky.map((p) => <option key={p.id} value={p.id}>{p.testFile} · {p.failures}/{p.runs} failed</option>)}</select></Label>

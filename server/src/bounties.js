@@ -60,12 +60,8 @@ export function createBounty({ painId, reward, funding = "simulated", apiModel =
   const pain = state.pains.find((p) => p.id === painId);
   if (!pain) throw httpError(404, `Unknown pain ${painId}`);
   if (pain.healthy) throw httpError(400, `${pain.testFile} isn't flaky; nothing to fix`);
-  // A fix lands as a pull request: only on a GitHub repo you can push to
-  // that isn't archived. (The bundled demo repo is for trying Shoal out.)
-  const conn = state.connection;
-  if (conn.type === "github" && (!conn.canWrite || conn.archived)) {
-    throw httpError(403, `Bounties need a repo you can push to: ${conn.fullName} is ${conn.archived ? "archived" : "read-only for you"}`);
-  }
+  // Any repo works: on one you can't push to (or archived), the winning fix
+  // comes as a draft PR the team can read and download (surfacePullRequest).
   // Credit runs carry the estimated fix price (can be cents); bounties a reward.
   const practice = practiceOnly(state.connection.type);
   if (practice) throw httpError(409, practice);
