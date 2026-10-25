@@ -21,6 +21,12 @@
   border: 1px solid rgb(255 255 255 / 0.65);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.75), inset 0 -1px 0 rgb(255 255 255 / 0.2), 0 20px 50px rgb(11 42 64 / 0.08);
 }
+/* The platform sidebar's sand (Shore.jsx), opaque, for panels that sit on it. */
+@utility sand {
+  background: linear-gradient(160deg, #F4E7CB, #EBD9B3 60%, #E6D2A8);
+  border: 1px solid rgb(107 84 50 / 0.18);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.6), 0 20px 50px rgb(11 42 64 / 0.18);
+}
 @utility glass-dark {
   background: rgb(11 42 64 / 0.72);
   backdrop-filter: blur(18px) saturate(1.4);
