@@ -3,12 +3,12 @@ import { useLayoutEffect, useRef, useState } from 'react';
 // The floating Shoal mark: a plank of wood floating in the water, slightly
 // translucent. Beige wood
 // with grain, rough-cut ends, its thickness showing along the lower
-// edge, darker where it's wet, water lapping over that edge with a foam line,
-// and ripples spreading around it. The whole plank is the way into the
+// edge, darker where it's wet, and water lapping over that edge with a foam
+// line. The whole plank is the way into the
 // platform, like Get started.
 
-const PAD = 56; // room around the link for the plank's ends and the ripples
-const END = 40; // how far the plank reaches past the name on each side
+const PAD = 56; // room around the link for the plank's ends and its shadow
+const END = 16; // how far the plank reaches past the logo on each side
 const THICK = 5; // the plank's visible side
 
 // A plank around a w x h box: long and straight, with uneven, worn ends.
@@ -25,12 +25,6 @@ function plank(w, h, dy = 0) {
     'Z',
   ].join('');
 }
-
-// A ripple ring around the plank, `out` px from it.
-const ripple = (w, h, out) => {
-  const cx = w / 2, cy = h / 2 + 3, rx = w / 2 + END + out, ry = h / 2 + out * 0.55;
-  return `M${cx - rx} ${cy}A${rx} ${ry} 0 1 0 ${cx + rx} ${cy}A${rx} ${ry} 0 1 0 ${cx - rx} ${cy}Z`;
-};
 
 export default function Nav() {
   const link = useRef(null);
@@ -52,7 +46,7 @@ export default function Nav() {
         ref={link}
         href="/app"
         aria-label="Open the Shoal platform"
-        className="group pointer-events-auto relative flex -rotate-[1.5deg] items-center gap-2.5 whitespace-nowrap rounded-full px-3 py-[9px] text-[19px] font-semibold tracking-[-0.03em] text-ink outline-offset-8 transition-transform duration-700 hover:-translate-y-px hover:-rotate-[0.5deg] focus-visible:outline-2 focus-visible:outline-accent"
+        className="group pointer-events-auto relative flex -rotate-[1.5deg] items-center gap-2.5 whitespace-nowrap rounded-full px-4 py-[9px] text-[19px] font-semibold tracking-[-0.03em] text-ink outline-offset-8 transition-transform duration-700 hover:-translate-y-px hover:-rotate-[0.5deg] focus-visible:outline-2 focus-visible:outline-accent"
       >
         {size && (
           <svg
@@ -79,11 +73,6 @@ export default function Nav() {
               <filter id="plank-soft" x="-10%" y="-80%" width="120%" height="260%"><feGaussianBlur stdDeviation="1.1" /></filter>
             </defs>
             <g transform={`translate(${PAD} ${PAD})`}>
-              {/* Ripples spreading on the water around it. */}
-              <g fill="none" stroke="#FFFFFF" strokeLinecap="round">
-                <path d={ripple(size.w, size.h, 10)} strokeWidth="1.6" strokeDasharray="14 8 5 10" opacity="0.5" className="transition-opacity duration-700 group-hover:opacity-80" />
-                <path d={ripple(size.w, size.h, 22)} strokeWidth="1.2" strokeDasharray="6 12 18 9" opacity="0.28" className="transition-opacity duration-700 group-hover:opacity-50" />
-              </g>
               {/* Its shadow in the water. */}
               <path d={plank(size.w, size.h, 6)} fill="#0B4A55" opacity="0.2" filter="url(#plank-blur)" />
               {/* The plank, slightly translucent so the water shows through.
@@ -125,8 +114,7 @@ export default function Nav() {
             </g>
           </svg>
         )}
-        <img src="/logo-mark.png" alt="" aria-hidden="true" className="relative block h-[1.2em] w-auto" />
-        <span className="relative">Shoal</span>
+        <img src="/logo-mark.png" alt="" aria-hidden="true" className="relative block h-[1.6em] w-auto" />
       </a>
     </div>
   );
