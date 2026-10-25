@@ -12,6 +12,7 @@ import path from "node:path";
 process.env.PORT = "4107";
 process.env.SHOAL_MOCK = "1";
 process.env.SHOAL_DATA_DIR = await mkdtemp(path.join(tmpdir(), "shoal-survival-"));
+process.env.SHOAL_WORKSPACE = ".workspace-survivalcheck";
 delete process.env.STRIPE_SECRET_KEY;
 delete process.env.SHOAL_SURVIVAL_MINUTES;
 

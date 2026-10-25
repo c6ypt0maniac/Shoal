@@ -28,7 +28,7 @@ const inDir = (dir, file) => (dir === "." ? file : `${dir}/${file}`);
 const TEST_PATTERNS = [
   /\.(test|spec)\.[cm]?[jt]sx?$/, // JS/TS: cart.test.js, cart.spec.ts
   /(^|\/)__tests__\/.+\.[cm]?[jt]sx?$/, // JS/TS: __tests__/cart.js
-  /(^|\/)test_[^/]+\.py$|_test\.py$/, // Python: test_cart.py, cart_test.py
+  /(^|\/)test_[^/]+\.py$|_test\.py$|(^|\/)tests?\.py$/, // Python: test_cart.py, cart_test.py, tests.py
   /_test\.go$/, // Go
   /(^|\/)tests\/[^/]+\.rs$/, // Rust integration tests
   /(^|\/)src\/test\/.+\.(java|kt|kts|scala|groovy)$|[A-Z]\w*Tests?\.(java|kt)$/, // JVM
@@ -37,6 +37,16 @@ const TEST_PATTERNS = [
   /[A-Z]\w*Tests?\.cs$/, // C#
 ];
 export const isTestPath = (p) => TEST_PATTERNS.some((re) => re.test(p.replace(/\\/g, "/")));
+
+// unittest only looks for imports from the folder it runs in, so a test that
+// imports its neighbours (`from calculate import ...` next to tests.py) fails
+// there though it passes run on its own. pytest already adds the test's
+// folder; this does the same for unittest.
+function testDirsOnPath(files) {
+  const dirs = [...new Set(files.map(dirOf))].filter((d) => d !== ".");
+  if (!dirs.length) return "";
+  return IS_WIN ? `set "PYTHONPATH=${dirs.join(";")};%PYTHONPATH%" && ` : `PYTHONPATH=${q(dirs.join(":"))}\${PYTHONPATH:+:$PYTHONPATH} `;
+}
 
 // Per-test results, so a challenge test file can report each test separately.
 const parsers = {
@@ -123,7 +133,7 @@ const STACKS = [
     files: (fw, files, detail, ctx) =>
       fw === "pytest"
         ? `${ctx.python} -m pytest -q -p no:cacheprovider ${detail ? "-rA " : ""}${files.map(q).join(" ")}`
-        : `${ctx.python} -m unittest ${detail ? "-v " : ""}${files.map(q).join(" ")}`,
+        : `${testDirsOnPath(files)}${ctx.python} -m unittest ${detail ? "-v " : ""}${files.map(q).join(" ")}`,
     parser: (fw) => (fw === "pytest" ? "pytest" : "unittest"),
     tool: (fw, ctx) => (fw === "pytest" ? `${ctx.python} -m pytest --version` : `${ctx.python} --version`),
     // Dependencies go into a private virtualenv inside the clone, never into

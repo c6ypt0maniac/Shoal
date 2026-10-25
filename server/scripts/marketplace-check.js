@@ -17,6 +17,7 @@ process.env.SHOAL_MOCK = "1";
 process.env.SHOAL_TEST_USERS = "1";
 process.env.SHOAL_AUTH_SECRET ??= "marketplace-check-secret";
 process.env.SHOAL_DATA_DIR = await mkdtemp(path.join(tmpdir(), "shoal-market-"));
+process.env.SHOAL_WORKSPACE = ".workspace-marketcheck";
 process.env.SHOAL_SURVIVAL_MINUTES = "0.02"; // ~1 second windows
 delete process.env.SUPABASE_DB_URL;
 delete process.env.STRIPE_SECRET_KEY;

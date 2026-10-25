@@ -55,7 +55,7 @@ export async function scan() {
           const failures = runs.filter((r) => !r.passed).length;
           const sampleFailure = runs.find((r) => !r.passed)?.log ?? null;
           // The runner found no tests in the file: a setup mismatch, not a bug.
-          if (failures === runs.length && NO_TESTS.test(sampleFailure ?? "")) {
+          if (runs.every((r) => NO_TESTS.test(r.log))) {
             const reason = "the test runner found no tests in this file (it may be written for a different framework)";
             state.cantRun.push({ testFile, reason });
             emit("scan.error", { message: `Can't run ${testFile}: ${reason}` });
@@ -97,8 +97,13 @@ export async function scan() {
     state.pains = pains;
 
     const total = round1(pains.reduce((s, p) => s + p.hoursPerWeek, 0));
+    // "Found 0 flaky" would read as a clean bill of health when nothing ran.
+    const skipped = state.cantRun.length;
+    const message = !results.length && skipped
+      ? `Couldn't run any of the ${skipped} test file${skipped > 1 ? "s" : ""}, so nothing was checked`
+      : `Found ${pains.filter((p) => !p.healthy).length} flaky test files costing ~${total} dev-hours/week${skipped ? `; ${skipped} test file${skipped > 1 ? "s" : ""} couldn't run` : ""}`;
     emit("scan.completed", {
-      message: `Found ${pains.filter((p) => !p.healthy).length} flaky test files costing ~${total} dev-hours/week`,
+      message,
       pains: pains.map(({ sampleFailure, ...p }) => p),
       totalHoursPerWeek: total,
     });

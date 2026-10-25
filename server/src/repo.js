@@ -47,8 +47,30 @@ export async function buildWorkspace(from, to) {
   return detectStacks(to);
 }
 
+// One server per working copy. A second one on the same folder (a check
+// script, a preview) would copy its own repo in under this one, and this
+// server's scan would then find tests it has no setup for.
+async function claimWorkspace() {
+  const lock = `${WORKSPACE}.lock`;
+  const pid = Number(await readFile(lock, "utf8").catch(() => ""));
+  if (pid && pid !== process.pid && isAlive(pid)) {
+    throw new Error(`Another Shoal server (pid ${pid}) is using ${WORKSPACE}. Stop it, or give this one its own folder with SHOAL_WORKSPACE.`);
+  }
+  await writeFile(lock, String(process.pid));
+}
+
+function isAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
+}
+
 // Fresh working copy of the source, then learn how its tests run.
 export async function resetWorkspace() {
+  await claimWorkspace();
   await rm(WORKSPACE, { recursive: true, force: true });
   await copyTree(source.dir, WORKSPACE);
   source.stacks = await detectStacks(WORKSPACE);

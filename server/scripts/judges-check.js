@@ -8,6 +8,7 @@ process.env.PORT = "4103";
 process.env.SHOAL_MOCK = "1";
 // Its own data folder, so test bounties and credits never touch the real .data/.
 process.env.SHOAL_DATA_DIR = (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "shoal-check-"));
+process.env.SHOAL_WORKSPACE = ".workspace-judgescheck";
 // The MCP review flow is the opt-in "team's own plan" route; by default
 // judges run on Shoal's API keys.
 process.env.SHOAL_TEAM_PLAN = "1";
