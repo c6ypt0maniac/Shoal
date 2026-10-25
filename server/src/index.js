@@ -1,14 +1,15 @@
 import express from "express";
 import cors from "cors";
+import compression from "compression";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { refreshSources, scan } from "./scanner.js";
 import { createBounty, getBounty, leaderboard, morningSettlement, publicBounty, recoverInterrupted, runBounty } from "./bounties.js";
 import { checkSurvivors } from "./survival.js";
-import { loadState, storageInfo } from "./persist.js";
+import { loadState, saveState, storageInfo } from "./persist.js";
 import { importOpenRouterModel, listing, listingExists, marketplace, ownerOf, publishAgent, refreshOpenRouter, removeListing, rotateSecret, updateAgent } from "./marketplace.js";
 import { createReview, deleteReview, replyToReview, reviewsFor, voteHelpful } from "./reviews.js";
-import { eventsAfter, emit } from "./events.js";
+import { eventsAfter, emit, waitForEvents } from "./events.js";
 import { state, resetState, DEMO_CONNECTION } from "./store.js";
 import { getStacks, isTestFile, listAllFiles, resetWorkspace, setSource, DEMO_REPO, WORKSPACE } from "./repo.js";
 import { describeStack } from "./stack.js";
@@ -30,7 +31,7 @@ import { detectCodex, startCodexLogin } from "./codex-runner.js";
 import { startTrialRun, stopTrialRun, trialRun } from "./trial-runner.js";
 import { integrationStatus } from "./integrations.js";
 import {
-  authorizeUrl, ciStats, cloneRepo, completeOAuth, getRepo, getViewer, hasToken, listRepos, oauthConfigured, parseRepo, repoFiles, signOut,
+  authorizeUrl, ciStats, cloneRepo, completeOAuth, getRepo, getViewer, hasToken, listRepos, oauthConfigured, parseRepo, repoFiles, revokeGrant, signedInWithEnvToken, signOut,
 } from "./github.js";
 
 const PORT = Number(process.env.PORT) || 4000;
@@ -48,6 +49,9 @@ const app = express();
 // Behind Vercel's (or any) proxy, trust X-Forwarded-* for the client IP and https.
 if (process.env.VERCEL || process.env.SHOAL_TRUST_PROXY === "1") app.set("trust proxy", 1);
 app.use(WEB_ORIGINS.length ? cors({ origin: WEB_ORIGINS, credentials: true }) : cors());
+// Gzip pages, scripts and JSON (the platform's JavaScript shrinks to about a
+// third). Not /mcp or event streams: those are streamed and must not be buffered.
+app.use(compression({ filter: (req, res) => !req.path.startsWith("/mcp") && !/event-stream/.test(res.getHeader("Content-Type") ?? "") && compression.filter(req, res) }));
 // Trial patches carry whole files, so allow more than the 100kb default.
 app.use(express.json({ limit: "2mb" }));
 
@@ -83,7 +87,10 @@ app.get("/start", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "index.html"
 // The platform (marketplace, races, settlement), built from web/app.html.
 app.get("/app", (_req, res) => res.sendFile(hasLanding ? path.join(WEB_DIR, "app.html") : path.join(PUBLIC_DIR, "team.html")));
 app.use(express.static(PUBLIC_DIR, { index: false }));
-if (hasLanding) app.use(express.static(WEB_DIR, { index: false }));
+// Built files in assets/ have a content hash in their name, so browsers can
+// keep them for good instead of re-checking each one on every page load.
+const cacheAssets = (res, file) => file.includes(`${path.sep}assets${path.sep}`) && res.set("Cache-Control", "public, max-age=31536000, immutable");
+if (hasLanding) app.use(express.static(WEB_DIR, { index: false, setHeaders: cacheAssets }));
 
 app.get("/api/health", (_req, res) =>
   res.json({
@@ -179,6 +186,34 @@ app.post("/api/auth/github/logout", (_req, res) => {
   state.role = null;
   emit("auth.signed_out", { message: "Signed out of GitHub" });
   res.json({ ok: true });
+});
+
+// Delete your Shoal account: everything tied to your GitHub login goes
+// (published agents and imported models, your reviews, replies and helpful
+// votes, reviews of your agents), you're unlinked from bounties you posted
+// (bounties and the ledger stay: they're payment records), Shoal's access
+// on GitHub is revoked, and you're signed out.
+app.delete("/api/me", async (req, res) => {
+  const user = await currentUser(req);
+  if (!user) return res.status(401).json({ error: "Sign in to delete your account" });
+  const testUser = process.env.SHOAL_TEST_USERS === "1" && !process.env.VERCEL && req.get("x-shoal-test-user");
+  if (signedInWithEnvToken() && !testUser) {
+    return res.status(400).json({ error: "This server signs in with GITHUB_TOKEN from server/.env, not a GitHub sign-in. Remove it from .env to sign out." });
+  }
+  const login = user.login;
+  const listings = state.listings.filter((l) => (l.owner ?? l.addedBy) === login).map((l) => l.id);
+  const before = state.reviews.length;
+  state.listings = state.listings.filter((l) => !listings.includes(l.id));
+  state.reviews = state.reviews.filter((r) => r.reviewer !== login && !listings.includes(r.listingId));
+  for (const r of state.reviews) if (r.reply?.by === login) delete r.reply;
+  state.reviewVotes = state.reviewVotes.filter((v) => v.voter !== login && state.reviews.some((r) => r.id === v.reviewId));
+  for (const b of state.bounties) if (b.postedBy === login) b.postedBy = null;
+  const revoked = await revokeGrant();
+  signOut();
+  state.role = null;
+  await saveState();
+  emit("auth.account_deleted", { message: `@${login} deleted their Shoal account (${listings.length} listing${listings.length === 1 ? "" : "s"}, ${before - state.reviews.length} review${before - state.reviews.length === 1 ? "" : "s"} removed)` });
+  res.json({ ok: true, removed: { listings: listings.length, reviews: before - state.reviews.length }, githubAccessRevoked: revoked });
 });
 
 // --- Who you are on Shoal: a team with dev pain, or an agent builder -------
@@ -296,9 +331,15 @@ function describeScope() {
 // requests instead of a held-open stream, because browsers allow only ~6
 // open connections per site and a few open tabs would otherwise starve new
 // page loads.
-app.get("/api/events/poll", (req, res) => {
+// With ?wait=N (seconds, up to 25) the request is held until a new event
+// arrives, so pages see changes at once instead of on their next poll.
+// One held request per tab stays well under the per-site connection limit.
+app.get("/api/events/poll", async (req, res) => {
   res.set("Cache-Control", "no-store");
-  res.json(eventsAfter(Number(req.query.after) || 0));
+  const after = Number(req.query.after) || 0;
+  const wait = Math.min(25, Number(req.query.wait) || 0);
+  if (wait > 0) await waitForEvents(after, wait * 1000, (done) => res.on("close", done));
+  if (!res.writableEnded && !res.destroyed) res.json(eventsAfter(after));
 });
 
 // Retired streaming endpoint. Tabs still running old page code reconnect

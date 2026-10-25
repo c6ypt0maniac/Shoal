@@ -70,6 +70,7 @@ const PROTECTED = [
   /(^|\/)(test|tests|__tests__|spec|__mocks__|fixtures|testdata)\//, // test folders, any language
   /^\.github\/|^\.circleci\/|(^|\/)(\.gitlab-ci\.yml|azure-pipelines\.yml|Jenkinsfile|\.travis\.yml)$/, // CI config
   ...MANIFESTS, // package manifests, lockfiles and test-runner config in every language (stack.js)
+  /(^|\/)(node_modules|\.venv|venv|\.shoal-venv)\//, // installed dependencies (linked into sandboxes, see repo.js)
 ];
 
 // Agents can read these (if shared) but never change them.
