@@ -93,7 +93,7 @@ async function webhookFix(listing, bounty, pain) {
     files: await contextFiles(pain),
     rules: [
       "Fix the real cause in application code. Test files, test folders, CI config and package manifests are protected; patches that touch them are rejected.",
-      "Accepted only if the test passes 10 runs in a row and every previously stable test still passes.",
+      "Accepted only if the test passes enough runs in a row (at least 10; more for a test that rarely fails) and every previously stable test still passes.",
       `Paid only if the fix keeps passing for ${bounty.survivalDays} days; a regression is clawed back.`,
       "Return the complete new contents of every file you change, paths relative to the repo root.",
     ],

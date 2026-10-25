@@ -174,7 +174,7 @@ async function compete(bounty, pain) {
   bounty.status = "verifying";
   const stableTestFiles = bounty.stableTestFiles ?? state.pains.filter((p) => p.healthy).map((p) => p.testFile);
   const attempts = await mapLimit(fixes.filter(Boolean), envLimit("SHOAL_VERIFY_CONCURRENCY", 2), async ({ id, fix, started }) => {
-    const result = await verify({ bountyId: bounty.id, agentId: nameFor(id), testFile: pain.testFile, files: fix.files, stableTestFiles });
+    const result = await verify({ bountyId: bounty.id, agentId: nameFor(id), testFile: pain.testFile, files: fix.files, stableTestFiles, flakeRate: pain.flakeRate });
     const durationMs = Date.now() - started;
     if (result.passed) {
       cardFor(id).verified += 1;
@@ -272,7 +272,7 @@ async function runApprovedModel(bounty, pain) {
 
     bounty.status = "verifying";
     const stableTestFiles = bounty.stableTestFiles ?? state.pains.filter((p) => p.healthy).map((p) => p.testFile);
-    const result = await verify({ bountyId: bounty.id, agentId: name, testFile: pain.testFile, files: fix.files, stableTestFiles });
+    const result = await verify({ bountyId: bounty.id, agentId: name, testFile: pain.testFile, files: fix.files, stableTestFiles, flakeRate: pain.flakeRate });
     const entry = {
       agentId: bounty.apiModel,
       summary: fix.summary,

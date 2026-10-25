@@ -4,7 +4,9 @@
 //   1. Protected scope: test files, test folders, CI config and package
 //      manifests can't be touched. Tests are the spec; editing them (retries,
 //      longer sleeps, looser asserts, deleting the test) is tampering.
-//   2. The target test file must pass VERIFY_RUNS times in a row.
+//   2. The target test file must pass verifyRuns(failure rate) times in a row:
+//      enough that a fix which changes nothing would get through at most 5%
+//      of the time (see verifyRuns).
 //   3. Every test file that was stable at scan time must still pass (no
 //      regressions). Other known-flaky files are skipped so one agent's fix
 //      isn't blamed for a different bug.
@@ -14,8 +16,23 @@ import { MANIFESTS } from "./stack.js";
 import { inScope } from "./scope.js";
 
 export const VERIFY_RUNS = 10;
+const MAX_VERIFY_RUNS = 150;
+const BATCH = 10;
+// Accept a fix that changes nothing at most this often.
+const MISS_RATE = 0.05;
 
-export async function verify({ bountyId, agentId, testFile, files, stableTestFiles = [] }) {
+// How many green runs in a row a fix needs. A test that failed at rate f
+// passes n runs with no fix at all (1 - f)^n of the time; a flat 10 lets a
+// 10%-flaky test through 35% of the time. So n = ln(0.05) / ln(1 - f):
+// 10 at 30% (the minimum), 29 at 10%, 59 at 5%, at most 150.
+export function verifyRuns(flakeRate) {
+  const f = Number(flakeRate);
+  if (!(f > 0) || f >= 1) return VERIFY_RUNS;
+  return Math.min(MAX_VERIFY_RUNS, Math.max(VERIFY_RUNS, Math.ceil(Math.log(MISS_RATE) / Math.log(1 - f))));
+}
+
+// flakeRate: the test's failure rate at scan time (pain.flakeRate).
+export async function verify({ bountyId, agentId, testFile, files, stableTestFiles = [], flakeRate = null }) {
   const outOfScope = files.filter((f) => !inScope(f.path));
   if (outOfScope.length) {
     const reason = `Patch touches files the team didn't share (${outOfScope.map((f) => f.path).join(", ")}).`;
@@ -33,18 +50,22 @@ export async function verify({ bountyId, agentId, testFile, files, stableTestFil
   const sandbox = await createSandbox();
   try {
     await writeFiles(sandbox, files);
-    emit("verify.started", { bountyId, agentId, message: `Running ${testFile} ${VERIFY_RUNS}x with ${agentId}'s patch` });
+    const needed = verifyRuns(flakeRate);
+    emit("verify.started", { bountyId, agentId, message: `Running ${testFile} up to ${needed}x with ${agentId}'s patch` });
 
-    const runs = await runTestMany(sandbox, testFile, VERIFY_RUNS);
+    // In batches, stopping at the first batch with a failure: no point
+    // running the rest once the fix has failed.
+    const runs = [];
+    while (runs.length < needed && runs.every((r) => r.passed)) runs.push(...(await runTestMany(sandbox, testFile, Math.min(BATCH, needed - runs.length))));
     const passes = runs.filter((r) => r.passed).length;
     emit("verify.runs", {
       bountyId,
       agentId,
       results: runs.map((r) => r.passed),
-      message: `${passes}/${VERIFY_RUNS} green`,
+      message: `${passes}/${runs.length} green${runs.length < needed ? ` (stopped at the first failure; ${needed} needed)` : ""}`,
     });
-    if (passes < VERIFY_RUNS) {
-      const reason = `${testFile} still failed ${VERIFY_RUNS - passes}/${VERIFY_RUNS} runs.`;
+    if (passes < runs.length || runs.length < needed) {
+      const reason = `${testFile} still failed ${runs.length - passes} of ${runs.length} runs (${needed} green in a row needed).`;
       emit("verify.rejected", { bountyId, agentId, reason, message: `${agentId} rejected: still flaky` });
       return { passed: false, reason, runs, failureLog: runs.find((r) => !r.passed)?.log };
     }
@@ -59,7 +80,7 @@ export async function verify({ bountyId, agentId, testFile, files, stableTestFil
       }
     }
 
-    emit("verify.passed", { bountyId, agentId, message: `${agentId}'s fix verified: ${VERIFY_RUNS}/${VERIFY_RUNS} green, no regressions` });
+    emit("verify.passed", { bountyId, agentId, message: `${agentId}'s fix verified: ${needed}/${needed} green, no regressions` });
     return { passed: true, runs };
   } finally {
     await destroySandbox(sandbox);

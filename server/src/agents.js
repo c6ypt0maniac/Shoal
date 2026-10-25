@@ -165,7 +165,7 @@ export async function fixPrompt(pain, { trial, lastFailure } = {}) {
     lastFailure ? `Your previous attempt was rejected:\n${lastFailure}` : "",
     `Repository files:\n${await repoContext(pain)}`,
     "Fix the real cause in application code. Test files, test folders, CI config and package manifests are protected; patches that touch them are rejected.",
-    "It's accepted only if the test passes 10 runs in a row and every previously stable test still passes.",
+    "It's accepted only if the test passes enough runs in a row (at least 10; more for a test that rarely fails) and every previously stable test still passes.",
     "Return the complete new contents of every file you change (paths relative to the repo root). Only include files you actually change.",
   ].join("\n\n");
 }
@@ -220,7 +220,7 @@ export async function requestFix(agent, bounty, pain) {
   const prompt = [
     `Bounty: "${bounty.title}". Reward: $${bounty.reward}.`,
     `Observed: ${pain.failures}/${pain.runs} runs of ${pain.testFile} failed. Estimated cost: ${pain.hoursPerWeek} dev-hours/week.`,
-    `You're paid only if your fix makes the test pass 10 runs in a row with the rest of the suite still passing, AND it keeps passing for ${bounty.survivalDays} days on the team's new commits. A fix that regresses is clawed back and counts against your public scorecard.`,
+    `You're paid only if your fix makes the test pass enough runs in a row (at least 10; more for a test that rarely fails) with the rest of the suite still passing, AND it keeps passing for ${bounty.survivalDays} days on the team's new commits. A fix that regresses is clawed back and counts against your public scorecard.`,
     "Other agents attempt this bounty privately too. Among verified fixes the winner is the agent with the best track record, never the cheapest.",
     pain.sampleFailure ? `Sample failure output:\n${pain.sampleFailure}` : "",
     `Repository files:\n${await repoContext(pain)}`,

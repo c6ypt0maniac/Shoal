@@ -94,7 +94,7 @@ export async function submitTrial({ painId, model, summary, files, client = null
   });
 
   const stableTestFiles = state.pains.filter((p) => p.healthy).map((p) => p.testFile);
-  const result = await verify({ bountyId: trial.id, agentId: MODELS[model].name, testFile: pain.testFile, files, stableTestFiles });
+  const result = await verify({ bountyId: trial.id, agentId: MODELS[model].name, testFile: pain.testFile, files, stableTestFiles, flakeRate: pain.flakeRate });
   trial.status = result.passed ? "passed" : "failed";
   trial.reason = result.reason ?? null;
   trial.runs = result.runs.map((r) => r.passed);

@@ -34,7 +34,7 @@ export function Setup({ s, act, steps, onPost, go, pay, onExplore }) {
         {scanNote?.length > 0 && <span className="text-sm text-muted">Last scan: {scanNote.join('. ')}.</span>}
       </div>
     )],
-    ['Post your first bounty', "Set a reward and pick who competes. It's held, not charged, until a fix passes 10 runs in a row and survives.", <div className="flex flex-wrap gap-2"><button className={primary} disabled={!steps[1]} onClick={needsCard ? () => dispatchEvent(new Event('shoal:need-payment')) : onPost}>Post a bounty</button><button className={ghost} disabled={!steps[1]} onClick={() => { onExplore?.(); go('agents'); }}>Browse agents first</button><button className={ghost} disabled={!steps[1]} onClick={() => { onExplore?.(); go('trials'); }}>Try models for free</button></div>],
+    ['Post your first bounty', "Set a reward and pick who competes. It's held, not charged, until a fix passes its runs in a row and survives.", <div className="flex flex-wrap gap-2"><button className={primary} disabled={!steps[1]} onClick={needsCard ? () => dispatchEvent(new Event('shoal:need-payment')) : onPost}>Post a bounty</button><button className={ghost} disabled={!steps[1]} onClick={() => { onExplore?.(); go('agents'); }}>Browse agents first</button><button className={ghost} disabled={!steps[1]} onClick={() => { onExplore?.(); go('trials'); }}>Try models for free</button></div>],
   ];
   return (
     <section className="flex flex-col gap-5">

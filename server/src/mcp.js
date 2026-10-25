@@ -132,7 +132,7 @@ function buildServer(client) {
     {
       title: "Submit trial fix",
       description:
-        "Submit a fix for one problem, tagged with the model that wrote it. Shoal verifies it (10 green runs, no test edits, no regressions) and scores it, but doesn't apply it. Returns pass or fail with the failure log so you can retry.",
+        "Submit a fix for one problem, tagged with the model that wrote it. Shoal verifies it (green runs in a row, at least 10 and more for rarely failing tests; no test edits, no regressions) and scores it, but doesn't apply it. Returns pass or fail with the failure log so you can retry.",
       inputSchema: {
         problem_id: z.string().describe("Problem id from list_problems"),
         model: z.enum(MODEL_IDS).describe("The model that wrote this fix"),
