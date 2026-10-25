@@ -44,6 +44,10 @@
   .setup-row { display: flex; gap: 10px; padding: 6px 0; font-size: 14px; flex-wrap: wrap; align-items: baseline; }
   .setup-row > b { width: 130px; color: #59636e; font-size: 13px; font-weight: 600; }
   .chip { display: inline-block; padding: 2px 9px; border-radius: 12px; background: #eee; font-size: 13px; margin: 0 4px 4px 0; }
+  .chip.on { background: #dafbe1; color: #1a7f37; }
+  .chip.off { background: #f0f0f0; color: #666; }
+  .chip small { opacity: .8; }
+  tr.muted td { color: #777; }
   .chip.live { background: #dafbe1; color: #1a7f37; }
   .hint { font-size: 12px; color: #666; }
   .escrow { margin-top: 6px; font-size: 13px; padding: 5px 9px; border-radius: 5px; background: #f6f8fa; display: inline-block; }
@@ -69,9 +73,6 @@
   .login-code { flex-basis: 100%; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 13px; }
   .login-code span { flex-basis: 100%; }
   .login-code input { flex: 1; min-width: 180px; padding: 6px 8px; font-family: ui-monospace, monospace; font-size: 13px; border: 1px solid #bbb; border-radius: 4px; }
-  .trial-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 4px 0 12px; font-size: 13px; }
-  .trial-controls:empty { display: none; }
-  .device-code { font-family: ui-monospace, monospace; font-size: 16px; font-weight: 700; letter-spacing: 1px; }
   .run-live { font-size: 13px; margin: 0 0 12px; }
   .run-live ul { margin: 6px 0; padding-left: 18px; color: #444; }
   .report { border: 2px solid #2da44e; border-radius: 8px; padding: 12px 14px; margin: 0 0 14px; }
@@ -140,10 +141,19 @@
       </table>
     </section>
     <section>
-      <h2>Model trials <span class="hint">· Claude (Haiku, Sonnet, Opus) and OpenAI (Luna, Sol, Astra) models compete on your flaky tests, free on your own Claude and ChatGPT plans</span></h2>
+      <div class="section-head"><h2>More pain <span class="hint">· measured with numbers, paid only when the number moves</span></h2><button onclick="scanClasses(this)">Scan again</button></div>
+      <table>
+        <thead><tr><th>Problem</th><th>Now</th><th>Target</th><th>Dev-hours / week</th><th>Suggested bounty</th><th></th></tr></thead>
+        <tbody id="classPains"><tr><td colspan="6">Scanning...</td></tr></tbody>
+      </table>
+    </section>
+    <section>
+      <h2>Integrations <span class="hint">· connect Jira and GitLab directly</span></h2>
+      <div id="integrations" class="chips"></div>
+    </section>
+    <section>
+      <h2>Model trials <span class="hint">· Haiku, Sonnet and Opus compete on your flaky tests, free on your Claude plan</span></h2>
       <div id="claudeBox" class="claude-box">Looking for Claude Code on this computer…</div>
-      <div id="codexBox" class="claude-box">Looking for Codex on this computer…</div>
-      <div id="trialControls" class="trial-controls"></div>
       <div id="runBox"></div>
       <table>
         <thead><tr><th>Model</th><th>Tests fixed</th><th>Quality</th><th>Cost per fix</th><th>Avg lines changed</th></tr></thead>
@@ -155,9 +165,9 @@
       </table>
       <div id="proofReports"></div>
       <details id="trialLogWrap" hidden><summary>Every trial</summary><ul id="trialLog"></ul></details>
-      <details class="manual"><summary>Run trials from your own AI app (Claude, ChatGPT, Codex)</summary>
-        <div id="mcpClients"></div>
-        <p class="hint">Trials run on your own plan, so they're free. Each fix is tagged with the model that wrote it; switch models and run again to compare.</p>
+      <details class="manual"><summary>Use your own Claude Code session instead</summary>
+        <div class="cmd"><code id="mcpCmd"></code><button type="button" onclick="copyMcp()">Copy</button></div>
+        <p class="hint">Run that in a terminal, then type <code>/mcp__shoal__run_trials</code> in Claude Code.</p>
       </details>
     </section>
     <section id="ciSection" hidden>
@@ -191,7 +201,7 @@
     <section>
       <h2>Agent leaderboard</h2>
       <table>
-        <thead><tr><th>Agent</th><th>Verified / attempts</th><th>Survived / wins</th><th>Clawbacks</th><th>Earned</th></tr></thead>
+        <thead><tr><th>Agent</th><th>Wins/jobs</th><th>Rollbacks</th><th>Earned</th></tr></thead>
         <tbody id="agents"></tbody>
       </table>
     </section>
@@ -218,11 +228,15 @@ const post = (p, body) =>
 let agentNames = {};
 
 async function refresh() {
-  const [pains, bounties, agents, settlement, conn, ci, trials, credits] = await Promise.all([
+  const [pains, bounties, agents, settlement, conn, ci, trials, credits, classes, integrations] = await Promise.all([
     get("/api/pains"), get("/api/bounties"), get("/api/agents"), get("/api/settlement"), get("/api/connection"), get("/api/ci"),
     get("/api/trials").catch(() => ({ scoreboard: [], problems: [], trials: [], models: {} })),
     get("/api/credits").catch(() => null),
+    get("/api/pain-classes").catch(() => ({ found: [] })),
+    get("/api/integrations").catch(() => null),
   ]);
+  renderClassPains(classes.found);
+  renderIntegrations(integrations);
   agentNames = {
     ...Object.fromEntries(Object.entries(trials.models).map(([id, m]) => [id, m.name])),
     ...Object.fromEntries(agents.map((a) => [a.id, a.name])),
@@ -230,10 +244,11 @@ async function refresh() {
   if (credits) renderCredits(credits);
   renderTrials(trials);
 
-  $("ghBtnLabel").innerHTML = conn.type === "github" ? `<span class="dot"></span> ${esc(conn.fullName)}` : "Connect to GitHub";
-  $("ghBtn").title = conn.type === "github"
+  const remote = ["github", "gitlab", "bitbucket"].includes(conn.type);
+  $("ghBtnLabel").innerHTML = remote ? `<span class="dot"></span> ${esc(conn.fullName)}` : "Connect a repository";
+  $("ghBtn").title = remote
     ? `${conn.fullName} (${conn.defaultBranch}) · ${conn.canWrite ? "can open PRs" : "read-only"} · click to change`
-    : "Set up a GitHub repository";
+    : "Set up a GitHub, GitLab or Bitbucket repository";
   renderSetup(conn, pains);
 
   $("ciSection").hidden = !ci.length;
@@ -245,7 +260,7 @@ async function refresh() {
 
   $("pains").innerHTML = pains.length
     ? pains.map((p) => `<tr>
-        <td>${esc(p.testFile)}</td>
+        <td>${esc(p.testFile)}${p.generated ? `<br><small title="This repo had no tests for that code, so Claude wrote them. They live only in Shoal's workspace and agents can't edit them.">🧪 Shoal-written test for ${esc((p.covers ?? []).join(", "))}${p.failures === p.runs ? " · fails every run: a real bug or a wrong test, worth a look" : ""}</small>` : ""}</td>
         <td class="${p.healthy ? "ok" : "flaky"}">${p.failures}/${p.runs}${p.healthy ? " ✓" : ""}</td>
         <td>${p.hoursPerWeek}</td>
         <td>$${p.suggestedReward}</td>
@@ -257,16 +272,14 @@ async function refresh() {
 
   $("agents").innerHTML = agents.map((a) => `<tr>
       <td><b>${esc(a.name)}</b><br><small>${esc(a.builder)}: ${esc(a.tagline)}</small></td>
-      <td>${a.verified}/${a.attempts}</td>
-      <td>${a.survived}/${a.wins}${a.pending ? ` <small>(${a.pending} in window)</small>` : ""}</td>
-      <td>${a.clawbacks}${a.clawbackRate != null ? ` (${Math.round(a.clawbackRate * 100)}%)` : ""}</td>
-      <td>$${a.earned}</td>
+      <td>${a.wins}/${a.jobs}</td>
+      <td>${a.rollbacks} (${Math.round(a.rollbackRate * 100)}%)</td>
+      <td>$${a.earnings}</td>
     </tr>`).join("");
 
   const s = settlement;
   $("settlement").innerHTML = [
-    ["Cleared today", s.clearedToday.length], ["Clawed back today", s.clawedBackToday.length],
-    ["In survival window", `${s.inSurvival.length} ($${s.pendingPayouts})`], ["Bounties settled", s.bountiesSettled],
+    ["Bounties settled", s.bountiesSettled], ["Bounties failed", s.bountiesFailed],
     ["In escrow now", "$" + s.heldInEscrow], ["Paid to agents", "$" + s.totalPaid],
     ["Platform revenue", "$" + s.platformRevenue],
     ["Dev-hours/week returned", s.hoursReturnedPerWeek], ["Top earner", s.topEarner ?? "-"],
@@ -332,92 +345,47 @@ window.shareHidden = () => busy($("shareBtn"), async () => {
   await post("/api/connection/share", { add: hiddenFiles(pains) });
 });
 
-// --- One-click trial: find Claude Code and Codex, run, report ----------------
+// --- One-click trial: find Claude Code, run, report -------------------------
 
 let claudeInfo = null;
-let codexInfo = null;
 let trialRunState = null;
-const trialRunning = () => trialRunState?.status === "running";
 
 async function checkClaude(fresh) {
   signingIn = false;
   $("claudeBox").className = "claude-box";
   $("claudeBox").textContent = "Looking for Claude Code on this computer…";
   claudeInfo = await get(`/api/claude${fresh ? "?fresh=1" : ""}`).catch(() => ({ installed: false, error: true }));
-  renderRunners();
-}
-
-async function checkCodex(fresh) {
-  codexSignIn = null;
-  $("codexBox").className = "claude-box";
-  $("codexBox").textContent = "Looking for Codex on this computer…";
-  codexInfo = await get(`/api/codex${fresh ? "?fresh=1" : ""}`).catch(() => ({ installed: false, error: true }));
-  renderRunners();
+  renderClaude();
 }
 
 // True while the paste-the-code form is showing, so refreshes don't wipe it.
 let signingIn = false;
-// Codex's device code while its sign-in is open: { url, code }.
-let codexSignIn = null;
-
-function renderRunners() {
-  renderClaude();
-  renderCodex();
-  const ready = [claudeInfo, codexInfo].filter((i) => i?.installed && i.loggedIn).length;
-  const models = [claudeInfo?.installed && claudeInfo.loggedIn && "Haiku, Sonnet, Opus", codexInfo?.installed && codexInfo.loggedIn && (codexInfo.models ?? []).map((m) => m.name).join(", ")].filter(Boolean);
-  $("trialControls").innerHTML = trialRunning()
-    ? `<button type="button" onclick="stopTrials()">■ Stop trial</button>`
-    : ready
-      ? `<button type="button" class="cta" id="runTrialBtn" onclick="runTrials()">▶ Run model trial</button><span class="hint">${esc(models.join(" · "))}</span>`
-      : claudeInfo && codexInfo ? `<span class="hint">Sign in to Claude Code or Codex above to run a trial.</span>` : "";
-}
 
 function renderClaude() {
   const c = claudeInfo;
   if (!c || (signingIn && !c.loggedIn)) return;
+  const running = trialRunState?.status === "running";
   const box = $("claudeBox");
   if (!c.installed) {
     box.className = "claude-box warn";
-    box.innerHTML = `<span class="grow"><b>Claude Code</b> · ${c.error ? "couldn't check (restart the Shoal server)." : "not installed. It runs Haiku, Sonnet and Opus on your Claude plan."}</span>
+    box.innerHTML = `<span class="grow">${c.error ? "Couldn't check for Claude Code (restart the Shoal server)." : "Claude Code isn't installed on this computer. It runs the trials on your Claude plan."}</span>
       <a href="https://claude.com/claude-code" target="_blank">Install Claude Code</a>
       <button type="button" onclick="checkClaude(true)">Check again</button>`;
   } else if (!c.loggedIn) {
     box.className = "claude-box warn";
-    box.innerHTML = `<span class="grow"><b>Claude Code</b> ${esc(c.version)} · not signed in.</span>
+    box.innerHTML = `<span class="grow">Found Claude Code ${esc(c.version)}, but it isn't signed in.</span>
       <button type="button" class="cta" id="loginBtn" onclick="signInClaude()">Sign in to Claude</button>
       <button type="button" onclick="checkClaude(true)">Check again</button>`;
   } else {
     box.className = "claude-box ok";
-    box.innerHTML = `<span class="grow">✓ <b>Claude Code</b> ready${c.email ? ` · signed in as ${esc(c.email)}` : ""} · runs Haiku, Sonnet and Opus</span>`;
-  }
-}
-
-function renderCodex() {
-  const c = codexInfo;
-  if (!c) return;
-  const box = $("codexBox");
-  const models = (c.models ?? []).map((m) => m.name).join(", ");
-  if (!c.installed) {
-    box.className = "claude-box warn";
-    box.innerHTML = `<span class="grow"><b>Codex</b> · ${c.error ? "couldn't check (restart the Shoal server)." : `not installed. It runs ${esc(models || "the OpenAI models")} on your ChatGPT plan. Install: <code>npm install -g @openai/codex</code>`}</span>
-      <a href="https://developers.openai.com/codex/cli" target="_blank">About Codex</a>
-      <button type="button" onclick="checkCodex(true)">Check again</button>`;
-  } else if (!c.loggedIn) {
-    box.className = "claude-box warn";
-    box.innerHTML = `<span class="grow"><b>Codex</b> ${esc(c.version)} · not signed in.</span>
-      ${codexSignIn
-        ? `<span class="login-code"><span>Open <a href="${esc(codexSignIn.url)}" target="_blank">${esc(codexSignIn.url)}</a>, sign in to ChatGPT and enter this code: <span class="device-code">${esc(codexSignIn.code)}</span></span></span>
-           <button type="button" onclick="checkCodex(true)">I've signed in</button>`
-        : `<button type="button" class="cta" id="codexLoginBtn" onclick="signInCodex()">Sign in with ChatGPT</button>
-           <button type="button" onclick="checkCodex(true)">Check again</button>`}`;
-  } else {
-    box.className = `claude-box ${c.usesApiKey ? "warn" : "ok"}`;
-    box.innerHTML = `<span class="grow">✓ <b>Codex</b> ready${c.plan ? ` · signed in with ${esc(c.plan)}` : ""} · runs ${esc(models)}${c.usesApiKey ? " · <b>signed in with an API key, so trials bill that key; sign in with ChatGPT to run them on your plan</b>" : ""}</span>`;
+    box.innerHTML = `<span class="grow">✓ Claude Code ready${c.email ? ` · signed in as ${esc(c.email)}` : ""}</span>
+      ${running
+        ? `<button type="button" onclick="stopTrials()">■ Stop</button>`
+        : `<button type="button" class="cta" id="runTrialBtn" onclick="runTrials()">▶ Run model trial</button>`}`;
   }
 }
 
 window.checkClaude = checkClaude;
-window.checkCodex = checkCodex;
 window.signInClaude = () => busy($("loginBtn"), async () => {
   const { url } = await post("/api/claude/login");
   if (url) window.open(url, "_blank");
@@ -435,32 +403,13 @@ window.finishSignIn = () => busy($("loginCodeBtn"), async () => {
   if (info.installed) {
     claudeInfo = info;
     signingIn = false;
-    renderRunners();
+    renderClaude();
   }
-});
-// Codex signs in with a device code: show the link and code, and check back
-// until Codex reports it's signed in.
-window.signInCodex = () => busy($("codexLoginBtn"), async () => {
-  const signIn = await post("/api/codex/login");
-  if (!signIn.url || !signIn.code) return alertTicker(signIn.error ?? "Codex didn't start its sign-in. Try again, or run codex login in a terminal.");
-  codexSignIn = signIn;
-  window.open(signIn.url, "_blank");
-  renderRunners();
-  const started = Date.now();
-  const poll = setInterval(async () => {
-    const info = await get("/api/codex?fresh=1").catch(() => null);
-    if (info?.loggedIn || Date.now() - started > 15 * 60_000) {
-      clearInterval(poll);
-      codexSignIn = null;
-      if (info) codexInfo = info;
-      renderRunners();
-    }
-  }, 4000);
 });
 window.runTrials = () => busy($("runTrialBtn"), async () => {
   const run = await post("/api/trials/run");
   if (run.status) trialRunState = run;
-  renderRunners();
+  renderClaude();
 });
 window.stopTrials = async () => {
   await post("/api/trials/stop");
@@ -469,11 +418,11 @@ window.stopTrials = async () => {
 
 function renderRun(run, scoreboard) {
   trialRunState = run;
-  renderRunners();
+  renderClaude();
   if (!run) return ($("runBox").innerHTML = "");
   const mins = (end) => Math.max(1, Math.round((new Date(end ?? Date.now()) - new Date(run.startedAt)) / 60000));
   if (run.status === "running") {
-    $("runBox").innerHTML = `<div class="run-live">⏳ <b>Trial running</b> for ${mins()} min on ${esc((run.runners ?? []).map((r) => ({ claude: "Claude Code", codex: "Codex" })[r] ?? r).join(" and "))}. Each stops by itself when its models are done.
+    $("runBox").innerHTML = `<div class="run-live">⏳ <b>Trial running</b> for ${mins()} min. Claude Code stops by itself when every model is done.
       <ul>${run.progress.slice(-6).map((p) => `<li>${esc(p.message)}</li>`).join("")}</ul></div>`;
     return;
   }
@@ -483,11 +432,11 @@ function renderRun(run, scoreboard) {
   const ended = { done: "finished", stopped: "was stopped", timed_out: "timed out", failed: "failed" }[run.status];
   $("runBox").innerHTML = `<div class="report ${winner ? "" : "none"}">
       <h3>${winner ? `🏆 Best value: ${esc(winner.name)}` : "No model got a fix verified"}</h3>
-      <p class="hint">Trial ${ended} after ${mins(run.finishedAt)} min · ${run.problems.length} test${run.problems.length > 1 ? "s" : ""} · ran free on your own ${esc((run.runners ?? ["claude"]).map((r) => ({ claude: "Claude", codex: "ChatGPT" })[r] ?? r).join(" and "))} plan${(run.runners ?? []).length > 1 ? "s" : ""}</p>
+      <p class="hint">Trial ${ended} after ${mins(run.finishedAt)} min · ${run.problems.length} test${run.problems.length > 1 ? "s" : ""} · ran free on your Claude plan</p>
       ${winner ? `<p><b>${esc(winner.reason)}.</b> ${esc(winner.name)} fixed ${winner.fixed} of ${winner.tried ?? run.problems.length} tests,
         quality ${winner.quality}/100, about ${money(winner.costPerFix)} of API cost per fix.
         ${others.map((r) => `${esc(r.name)}: quality ${r.quality}, ${money(r.costPerFix)} per fix.`).join(" ")}</p>` : ""}
-      ${run.summary ? `<p><b>What the agents said:</b> ${esc(run.summary)}</p>` : ""}
+      ${run.summary ? `<p><b>Claude's summary:</b> ${esc(run.summary)}</p>` : ""}
       ${run.error ? `<p class="hint">⚠ ${esc(run.error)}</p>` : ""}
       ${winner ? `<p>Fix each test below with its best-value model, paid from your credits only if the fix is verified.</p>` : ""}
     </div>`;
@@ -541,8 +490,6 @@ function renderTrials({ scoreboard, problems, trials, run, pick }) {
             ? `<span class="hint">Waiting for a verified trial</span>`
             : proof.checking
               ? `<span class="proof-badge checking">⏳ Proving…</span>`
-              : proof.awaitingReview
-                ? `<span class="proof-badge checking">⏳ Waiting for ${esc(proof.awaitingReview.checks.review.judges.filter((j) => j.status === "waiting").map((j) => j.name).join(" + "))}'s review</span>`
               : !proof.candidates.length
                 ? `<button type="button" onclick="buildProof('${p.painId}', this)">Build proof report</button>`
                 : !proven
@@ -596,8 +543,6 @@ function renderProofs(problems) {
 function proofCard(c, proof) {
   const head = c.status === "checking"
     ? `<span class="proof-badge checking">⏳ Checking</span>`
-    : c.status === "awaiting_review"
-      ? `<span class="proof-badge checking">⏳ Waiting for review</span>`
     : c.verdict === "safe"
       ? `<span class="proof-badge good">✓ Safe to buy</span>`
       : `<span class="proof-badge bad">✗ Failed</span>`;
@@ -627,18 +572,12 @@ function proofCard(c, proof) {
        ${k.challenge.source ? `<details><summary class="hint">Show the challenge tests</summary><div class="diff"><div class="diff-file">${esc(k.challenge.file)}</div>${k.challenge.source.split("\n").map((l) => `<div class="dl">${esc(l)}</div>`).join("")}</div></details>` : ""}`));
   } else if (c.status === "checking") parts.push(row(null, "Challenge tests", `<span class="hint">Writing and running challenge tests…</span>`));
   if (k.review) {
-    // Two judges, Claude and OpenAI; both must pass.
-    for (const j of k.review.judges ?? []) {
-      parts.push(j.status === "waiting"
-        ? row(null, `Second opinion from ${esc(j.name)}: waiting`,
-            `<span class="hint">Connect ${j.provider === "openai" ? "ChatGPT or Codex" : "Claude"} to Shoal's MCP, switch to ${esc(j.name)}, and ask it to review Shoal's fixes (prompt <code>review_fixes</code>).</span>`)
-        : row(j.ok, `Second opinion from ${esc(j.name)}: ${j.ok ? "every root cause fixed" : "not fixed"}`,
-            `${esc(j.summary)}
-             ${j.remaining?.length ? `<div><b>Still broken:</b><ul>${j.remaining.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></div>` : ""}
-             ${j.risks?.length ? `<div>Risks:<ul>${j.risks.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></div>` : ""}
-             <span class="hint">${j.via ? `Via ${esc(j.via)}. ` : ""}${k.review.filesSeen ? `Read all ${k.review.filesSeen} shared files with the fix applied.` : ""}</span>`));
-    }
-  } else if (c.status === "checking") parts.push(row(null, "Second opinion", `<span class="hint">Two judges will read all the code…</span>`));
+    parts.push(row(k.review.ok, `Second opinion from ${esc(k.review.reviewer)}: ${k.review.ok ? "every root cause fixed" : "not fixed"}`,
+      `${esc(k.review.summary)}
+       ${k.review.remaining?.length ? `<div><b>Still broken:</b><ul>${k.review.remaining.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></div>` : ""}
+       ${k.review.risks?.length ? `<div>Risks:<ul>${k.review.risks.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></div>` : ""}
+       ${k.review.filesSeen ? `<span class="hint">Read all ${k.review.filesSeen} shared files with the fix applied.</span>` : ""}`));
+  } else if (c.status === "checking") parts.push(row(null, "Second opinion", `<span class="hint">Another model is reading all the code…</span>`));
   if (k.record) parts.push(row(null, "Track record on this repo", `${k.record.verified} of ${k.record.attempts} trial fixes verified · first try on ${k.record.firstTry} of ${k.record.problems} tests <span class="hint">(shown for context, not part of pass/fail)</span>`));
   if (k.diff) {
     parts.push(`<div class="check"><span class="mark na">±</span><div><b>The exact change: +${k.diff.added} −${k.diff.removed} lines</b>
@@ -648,37 +587,41 @@ function proofCard(c, proof) {
         `<div class="dl ${l.type === "+" ? "add" : l.type === "-" ? "del" : ""}">${l.type === " " ? "&nbsp;" : l.type} ${esc(l.text)}</div>`).join("")).join(`<div class="dl gap">⋯</div>`)}</div>`).join("")}</div></div>`);
   }
   if (c.breakdown) {
-    const label = { stress: "stress test", suite: "other tests", rules: "rules", challenge: "challenge tests", review: "second opinions" };
+    const label = { stress: "stress test", suite: "other tests", rules: "rules", challenge: "challenge tests", review: "second opinion" };
     parts.push(`<p class="hint">Checks: ${Object.entries(c.breakdown).map(([name, ok]) => `${ok ? "✓" : "✗"} ${label[name] ?? name}`).join(" · ")}. Pass or fail: safe to buy only when every check passes.</p>`);
   }
   const open = openProofs.has(c.trialId) || (c.verdict === "safe" && !openProofs.size) ? "open" : "";
   return `<details class="proof ${c.verdict ?? "checking"}" data-proof="${esc(c.trialId)}" ${open}><summary>${summary}</summary><div class="checks">${parts.join("")}</div></details>`;
 }
 
-window.copyMcp = (btn) => navigator.clipboard?.writeText(btn.previousElementSibling.textContent);
-get("/api/mcp").then((mcp) => {
-  $("mcpClients").innerHTML = mcp.clients.map((c) => `<p><b>${esc(c.app)}</b>: ${esc(c.steps)}</p>
-    <div class="cmd"><code>${esc(c.command)}</code><button type="button" onclick="copyMcp(this)">Copy</button></div>`).join("");
-}).catch(() => {});
+window.copyMcp = () => navigator.clipboard?.writeText($("mcpCmd").textContent);
+$("mcpCmd").textContent = `claude mcp add --transport http shoal ${location.origin}/mcp`;
 
 function renderBounty(b) {
-  // Only the winner's fix is shown; other attempts stay private.
-  const w = b.winningAttempt;
-  const won = w ? `<div>🏆 ${esc(agentNames[w.agentId] ?? w.agentId)}: ${esc(w.summary)} ${w.runs.map((ok) => (ok ? "🟢" : "🔴")).join("")}</div>` : "";
-  const field = b.competition?.attempts ? `<div class="hint">${b.competition.attempts} private attempt${b.competition.attempts > 1 ? "s" : ""} · ${b.competition.verified} verified</div>` : "";
-  const sv = b.survival;
-  const survival = sv ? `<div class="hint">Survival window: ${esc(sv.status)} · ${sv.checks.length} check${sv.checks.length === 1 ? "" : "s"}${sv.checks.length ? ` (last: ${sv.checks.at(-1).ok ? "still fixed" : "regressed"})` : ""} · ends ${esc(sv.endsAt.slice(0, 16).replace("T", " "))}${sv.reason ? ` · ${esc(sv.reason)}` : ""}
-      ${b.status === "surviving" ? `<button onclick="post('/api/bounties/${b.id}/survival/check')">Check now</button>` : ""}</div>` : "";
-  const canRun = b.status === "open";
+  const bids = b.bids.map((bid) => `<li>${esc(agentNames[bid.agentId] ?? bid.agentId)}: <b>$${bid.price}</b>
+      (${Math.round(bid.confidence * 100)}% confident): ${esc(bid.plan)}</li>`).join("");
+  const attempts = b.attempts.map((a) => `<li>${a.passed ? "✅" : "❌"} ${esc(agentNames[a.agentId] ?? a.agentId)}:
+      ${esc(a.passed ? (a.summary ?? `${a.before} → ${a.after}`) : a.reason)} ${a.runs?.length ? a.runs.map((ok) => (ok ? "🟢" : "🔴")).join("") : ""}</li>`).join("");
+  const canRun = !b.kind && (b.status === "open" || b.status === "awarding");
+  const remote = b.kind === "ci-duration" || b.kind === "pr-cycle-time";
+  const measure = b.remeasure ? `<div class="hint">Re-measured ${esc(b.remeasure.before)} → ${esc(b.remeasure.after)} (target ${esc(b.remeasure.target)}): ${b.remeasure.passed ? "reached" : "not reached yet"}</div>` : "";
+  const classBits = b.kind
+    ? `${remote && b.status === "open" ? `<button onclick="remeasureBounty('${b.id}')">Re-measure now</button>` : ""}
+       ${!remote && b.status === "open" ? `<span class="hint">· an agent submits a fix to POST /api/bounties/${b.id}/submit</span>` : ""}
+       ${b.status === "open" ? `<button onclick="giveUpBounty('${b.id}')">Cancel</button>` : ""}
+       ${b.tickets ? Object.entries(b.tickets).map(([k, v]) => `<span class="chip">${esc(k)} ${esc(v)}</span>`).join(" ") : ""}
+       ${b.testsNote ? `<div class="hint">⚠ ${esc(b.testsNote)}</div>` : ""}${measure}`
+    : "";
   return `<div class="bounty">
       <span class="status ${b.status}">${b.status.replace("_", " ")}</span> <b>${esc(b.title)}</b>${b.escrow?.mode === "credits" ? "" : `: reward up to $${b.reward}`}
-      ${b.apiModel ? `<span class="hint">· approved ${esc(agentNames[b.apiModel] ?? b.apiModel)} via ${b.apiModel.startsWith("claude-") ? "Claude" : "OpenAI"} API · API cost $${b.apiCost.toFixed(4)}</span>` : ""}
+      ${b.apiModel ? `<span class="hint">· approved ${esc(agentNames[b.apiModel] ?? b.apiModel)} via Claude API · API cost $${b.apiCost.toFixed(4)}</span>` : ""}
       ${canRun ? `<button onclick="runBounty('${b.id}')">Run</button>` : ""}
+      ${classBits}
       ${b.status === "awaiting_funding" ? `<button class="fund" onclick="fundBounty('${b.id}')">💳 Fund with Stripe</button>` : ""}
       ${escrowLine(b.escrow)}
       ${b.pullRequest ? `<a href="${esc(b.pullRequest.url)}" target="_blank">→ PR #${b.pullRequest.number}</a>` : ""}
-      ${field}${won}${survival}
-      ${b.failures?.length ? `<div class="hint">Failed tries: ${b.failures.map(esc).join("; ")}</div>` : ""}
+      ${bids ? `<div>Bids:<ul>${bids}</ul></div>` : ""}
+      ${attempts ? `<div>Attempts:<ul>${attempts}</ul></div>` : ""}
     </div>`;
 }
 
@@ -688,8 +631,7 @@ function escrowLine(e) {
   if (e.mode === "credits") {
     const text = {
       held: `🔒 About ${money(e.amount)} from credits, only if the fix is verified`,
-      charged: `💸 ${money(e.charged)} taken from credits, refunded if the fix regresses`,
-      refunded: `↩️ ${money(e.refunded)} refunded to credits: the fix didn't survive`,
+      charged: `💸 ${money(e.charged)} taken from credits`,
       released: `↩️ No verified fix: nothing taken from credits`,
       charge_failed: `⚠️ Fix verified but the credit charge failed`,
     }[e.status] ?? e.status;
@@ -698,8 +640,7 @@ function escrowLine(e) {
   const text = {
     awaiting_funding: `💳 Waiting for the team to fund $${e.amount}`,
     held: `🔒 $${e.amount} held in escrow, not charged yet`,
-    charged: `💸 Charged $${e.charged}${e.released ? `, $${e.released} released back` : ""}, refunded if the fix regresses`,
-    refunded: `↩️ $${e.refunded} refunded: the fix didn't survive`,
+    charged: `💸 Charged $${e.charged}${e.released ? `, $${e.released} released back` : ""}`,
     released: `↩️ Hold released: $0 charged`,
     charge_failed: `⚠️ Fix verified but the charge failed`,
   }[e.status] ?? e.status;
@@ -758,7 +699,7 @@ window.openBountyDialog = async (painId) => {
       <label for="bountyReward">Reward (max you'll pay, $)</label>
       <input id="bountyReward" type="number" min="1" max="10000" step="1" required>
       <div class="pay-note">${{
-        "stripe-live": "💳 <b>Real money, paid with Stripe.</b> Your card is held for the reward and charged only when a fix is verified, then refunded if the fix regresses within the survival window; otherwise the hold is released.",
+        "stripe-live": "💳 <b>Real money, paid with Stripe.</b> Your card is held for the full reward and only charged the winning bid if a fix is verified; otherwise the hold is released.",
         "stripe-test": "💳 <b>Paid with Stripe (test mode, no real money).</b> The money is held, and only charged if a fix is verified. Test card: 4242 4242 4242 4242.",
       }[payments] ?? "🧪 <b>Simulated payment.</b> Set STRIPE_SECRET_KEY on the server to pay with Stripe."}</div>`;
     $("bountyActions").innerHTML = `${cancel}<button type="submit" class="cta" id="dlgPost">${stripe ? "Continue to Stripe →" : "Post bounty"}</button>`;
@@ -782,9 +723,59 @@ window.fundBounty = async (id) => {
   const { checkoutUrl } = await post(`/api/bounties/${id}/fund`);
   if (checkoutUrl) location.href = checkoutUrl;
 };
+function renderClassPains(found) {
+  const rows = (found ?? []).map((p) => {
+    if (p.error) return `<tr class="muted"><td>${esc(p.title)}<br><small>${esc(p.metric)}</small></td><td colspan="4"><small>${esc(p.error)}</small></td><td></td></tr>`;
+    const items = (p.items ?? []).slice(0, 4).map((i) => esc(i.path ?? i.workflow) + (i.count ? ` (${i.count})` : i.dependency ? `: ${esc(i.dependency)}` : i.link ? `: ${esc(i.link)}` : i.version ? ` ${esc(i.runtime)} ${esc(i.version)}` : i.avgMinutes ? ` ${i.avgMinutes} min` : "")).join(", ");
+    return `<tr>
+      <td>${esc(p.title)}<br><small>${esc(p.metric)}${items ? ` · ${items}` : ""}</small><br><small title="${esc(p.guard)}">🛡 ${esc(p.guard)}</small></td>
+      <td class="${p.healthy ? "ok" : "flaky"}">${p.baseline} ${esc(p.unit)}${p.healthy ? " ✓" : ""}</td>
+      <td>${p.target ?? "-"}</td><td>${p.hoursPerWeek ?? "-"}</td><td>${p.healthy ? "-" : "$" + p.suggestedReward}</td>
+      <td>${p.healthy ? "" : `<button class="cta" onclick="postClassBounty('${p.id}', ${p.suggestedReward})">+ Post bounty</button>`}</td>
+    </tr>`;
+  });
+  $("classPains").innerHTML = rows.length ? rows.join("") : `<tr><td colspan="6">Click "Scan again" to measure types, runtimes, dependencies, docs and secrets.</td></tr>`;
+}
+
+function renderIntegrations(s) {
+  if (!s) return ($("integrations").textContent = "Server doesn't report integrations.");
+  const items = [
+    ["jira", "Jira", s.jira, s.jiraDetails?.name || "tickets and bounty updates", s.jiraDetails?.available],
+    ["gitlab", "GitLab", s.gitlab, s.gitlabDetails?.account || "repositories and merge requests", s.gitlabDetails?.available],
+  ];
+  $("integrations").innerHTML = items.map(([id, name, on, detail, available]) => on
+    ? `<span class="chip on">● ${esc(name)} <small>${esc(detail)} · connected</small> <button type="button" onclick="disconnectIntegration('${id}')">Disconnect</button></span>`
+    : `<a class="chip off" href="/api/auth/${id}">○ Connect ${esc(name)}</a>${available ? "" : `<small class="hint"> Sign-in setup pending</small>`}`
+  ).join("");
+}
+
+window.disconnectIntegration = async (provider) => {
+  const response = await fetch(`/api/integrations/${provider}`, { method: "DELETE" });
+  const data = await response.json();
+  if (!response.ok) return alert(data.error ?? "Disconnect failed");
+  await refresh();
+};
+
+const connectionMessage = new URLSearchParams(location.search);
+if (connectionMessage.get("connected")) history.replaceState({}, "", "/team");
+if (connectionMessage.get("connectionError")) {
+  setTimeout(() => alert(connectionMessage.get("connectionError")), 0);
+  history.replaceState({}, "", "/team");
+}
+
+window.scanClasses = (btn) => busy(btn, () => post("/api/pain-classes/scan"));
+window.postClassBounty = async (id, reward) => {
+  const input = prompt("Reward in dollars (held in escrow, paid only if the number reaches its target):", reward);
+  if (input === null) return;
+  const bounty = await post(`/api/pain-classes/${id}/bounty`, { reward: Number(input) });
+  if (bounty.checkoutUrl) location.href = bounty.checkoutUrl;
+  refresh();
+};
+window.remeasureBounty = (id) => post(`/api/bounties/${id}/remeasure`).then(refresh);
+window.giveUpBounty = (id) => post(`/api/bounties/${id}/give-up`).then(refresh);
 window.runBounty = (id) => post(`/api/bounties/${id}/run`);
 
-$("scanBtn").onclick = () => busy($("scanBtn"), () => post("/api/scan"));
+$("scanBtn").onclick = () => busy($("scanBtn"), async () => { await post("/api/scan"); await post("/api/pain-classes/scan"); });
 $("demoBtn").onclick = () => busy($("demoBtn"), () => post("/api/demo", { reward: 400 }));
 $("resetBtn").onclick = () => busy($("resetBtn"), async () => { await post("/api/reset"); $("ticker").innerHTML = ""; });
 
@@ -797,7 +788,7 @@ get("/api/me").then(({ viewer }) => {
 let payments = "simulated";
 get("/api/health").then((h) => {
   payments = h.payments;
-  $("mode").textContent = `${h.mock ? "Mock agents" : `Live agents (${[h.providers?.anthropic && "Claude", h.providers?.openai && "OpenAI"].filter(Boolean).join(" + ") || "API"})`} · ${{ "stripe-live": "Stripe live payments (real money)", "stripe-test": "Stripe test payments" }[h.payments] ?? "Simulated payments"}`;
+  $("mode").textContent = `${h.mock ? "Mock agents" : "Live Claude agents"} · ${{ "stripe-live": "Stripe live payments (real money)", "stripe-test": "Stripe test payments" }[h.payments] ?? "Simulated payments"}`;
 });
 
 // Back from Stripe Checkout.
@@ -832,7 +823,7 @@ async function pollEvents() {
     for (const e of events) {
       tickerLine(e);
       // Re-scan after a fix lands so the Pain Graph shows the test going green.
-      if (e.type === "bounty.settled" && Date.now() - new Date(e.at) < 5000) post("/api/scan");
+      if (e.type === "bounty.settled" && Date.now() - new Date(e.at) < 5000) { post("/api/scan"); post("/api/pain-classes/scan"); }
     }
     if (events.length) refresh();
   } catch {
@@ -853,7 +844,6 @@ document.addEventListener("visibilitychange", () => {
 pollEvents();
 refresh();
 checkClaude();
-checkCodex();
 </script>
 </body>
 </html>

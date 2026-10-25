@@ -29,7 +29,8 @@ export const getStacks = () => source.stacks;
 
 // Fresh working copy of the source, then learn how its tests run.
 export async function resetWorkspace() {
-  await rm(WORKSPACE, { recursive: true, force: true });
+  // Retries: a scan or pip install from an earlier connect may still be releasing files.
+  await rm(WORKSPACE, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
   await cp(source.dir, WORKSPACE, { recursive: true, filter: (src) => path.basename(src) !== ".git" });
   source.stacks = await detectStacks(WORKSPACE);
 }

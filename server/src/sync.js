@@ -3,8 +3,8 @@
 // branch's latest commit. If it moved: pull it, reinstall dependencies only if
 // a manifest changed, refresh the workspace (re-detecting languages), put back
 // fixes the team already bought, drop trials and proofs that were judged on
-// code that has since changed, flag new folders the team hasn't shared,
-// rescan, and re-measure every fix still in its survival window (survival.js). Nothing happens mid-run: while a trial, proof or fix is in progress
+// code that has since changed, flag new folders the team hasn't shared, and
+// rescan. Nothing happens mid-run: while a trial, proof or fix is in progress
 // the sync waits and runs right after.
 import { emit } from "./events.js";
 import { state } from "./store.js";
@@ -13,7 +13,6 @@ import { headSha, pullRepo, reinstall } from "./github.js";
 import { inScope, isSecret } from "./scope.js";
 import { scan } from "./scanner.js";
 import { isProving } from "./proof.js";
-import { checkSurvivors, isCheckingSurvival } from "./survival.js";
 
 const CHECK_EVERY_MS = 60_000;
 let syncing = false;
@@ -25,8 +24,7 @@ const dirOf = (p) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : ".");
 function busy() {
   if (state.trialRun?.status === "running") return "a model trial is running";
   if (isProving()) return "a proof report is being built";
-  if (isCheckingSurvival()) return "a survival check is running";
-  if (state.bounties.some((b) => ["competing", "verifying", "judging"].includes(b.status))) return "a fix is being made";
+  if (state.bounties.some((b) => ["bidding", "awarding", "working", "verifying"].includes(b.status))) return "a fix is being made";
   return null;
 }
 
@@ -86,8 +84,6 @@ export async function syncNow({ source = "manual" } = {}) {
       message: `Synced to ${short(after)}: ${added} file${added === 1 ? "" : "s"} changed${stale ? `; cleared trials and proofs for ${stale} test${stale === 1 ? "" : "s"} whose code changed` : ""}${conn.newPaths.length ? `; new and not shared with agents: ${conn.newPaths.map((p) => `${p}/`).join(", ")}` : ""}`,
     });
     await scan();
-    // New code is exactly when a held fix might break.
-    await checkSurvivors({ trigger: `new commit ${short(after)}` });
     return syncStatus();
   } catch (err) {
     state.sync.error = err.message;
@@ -99,11 +95,10 @@ export async function syncNow({ source = "manual" } = {}) {
 }
 
 // Fixes the team bought live in the workspace, not on GitHub until their PR
-// merges. Put them back unless the same files changed upstream. Also called
-// at startup, after the workspace is rebuilt from the clone.
-export async function reapplyBoughtFixes(changed = []) {
-  for (const b of state.bounties.filter((b) => ["surviving", "settled"].includes(b.status))) {
-    const files = b.attempts.find((a) => a.passed && a.agentId === b.winner)?.files ?? [];
+// merges. Put them back unless the same files changed upstream.
+async function reapplyBoughtFixes(changed) {
+  for (const b of state.bounties.filter((b) => b.status === "settled")) {
+    const files = b.attempts.find((a) => a.passed)?.files ?? [];
     const clash = files.filter((f) => changed.includes(f.path)).map((f) => f.path);
     if (clash.length) {
       emit("sync.step", { message: `${b.title}: ${clash.join(", ")} also changed on GitHub, so the bought fix wasn't re-applied. Check its pull request.` });

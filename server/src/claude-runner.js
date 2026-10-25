@@ -1,19 +1,23 @@
-// Claude Code on this machine: detect it, sign in, ask it one-off questions,
-// and run its part of a trial (trial-runner.js runs the whole round): one
-// headless Claude Code with only Shoal's MCP tools, where one subagent per
-// model (Haiku, Sonnet, Opus) tries every flaky test.
+// Runs the trial round for the team, so nobody has to touch a terminal:
+// finds Claude Code on this machine, starts it headless with only Shoal's MCP
+// tools, lets one subagent per model (Haiku, Sonnet, Opus) try every flaky
+// test, stops it when it's done (or on Stop / timeout), and keeps a report of
+// which model did best.
 //
 // Trials run on the team's own Claude login, not Shoal's API key: the key is
 // removed from Claude Code's environment so the free round stays free.
 import { spawn } from "node:child_process";
-import { writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { emit } from "./events.js";
-import { MODELS, tokenCost } from "./trials.js";
+import { state } from "./store.js";
+import { MODELS, overallPick, recordModelCosts, scoreboard, tokenCost, trialSummary } from "./trials.js";
+import { proveProblem } from "./proof.js";
 
 const CLAUDE = process.env.CLAUDE_BIN ?? "claude";
 const IS_WIN = process.platform === "win32";
+const RUN_TIMEOUT_MS = 20 * 60_000;
 
 // Subagent alias -> the model id its trials are tagged with.
 const TRIAL_MODELS = [
@@ -56,7 +60,7 @@ function claude(args, { input, onLine, timeout } = {}) {
   return { child, done };
 }
 
-export function killTree(child) {
+function killTree(child) {
   if (child.exitCode !== null) return;
   if (IS_WIN) spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true });
   else child.kill("SIGTERM");
@@ -163,16 +167,54 @@ export async function askClaude(prompt, { model = "sonnet", timeout = 4 * 60_000
 
 // --- Trial run ------------------------------------------------------------------
 
-// Starts Claude Code's part of a trial run. Its notes, token spend and
-// summary go into `run`; done resolves with { ok, error } when it exits.
-export async function startClaudeTrial({ problems, baseUrl, dir, run, note, timeout }) {
-  const mcpFile = path.join(dir, "claude-mcp.json");
-  const agentsFile = path.join(dir, "claude-agents.json");
-  await writeFile(mcpFile, JSON.stringify({ mcpServers: { shoal: { type: "http", url: `${baseUrl}/mcp`, headers: { "X-Shoal-Client": "Claude Code" } } } }));
-  await writeFile(agentsFile, JSON.stringify(Object.fromEntries(TRIAL_MODELS.map((m) => [`trial-${m.alias}`, subagent(m)]))));
-  note(`Claude Code started: ${TRIAL_MODELS.map((m) => MODELS[m.id].name).join(", ")} will each try ${problems.length} flaky test${problems.length > 1 ? "s" : ""}`);
+let current = null;
 
+export function trialRun() {
+  return state.trialRun;
+}
+
+export async function startTrialRun(baseUrl) {
+  if (current) throw httpError(409, "A trial run is already in progress");
+  const info = await detectClaude({ fresh: true });
+  if (!info.installed) throw httpError(400, "Claude Code isn't installed on this machine");
+  if (!info.loggedIn) throw httpError(400, "Sign in to Claude Code first");
+  const flaky = state.pains.filter((p) => !p.healthy);
+  if (!flaky.length) throw httpError(400, "No flaky tests to try. Scan the repo first.");
+  // Every flaky test is tried; none is skipped. If any test imports code the
+  // team didn't share, stop and say so: agents must see all the code.
+  const blind = flaky.filter((p) => p.hiddenSources?.length);
+  const problems = flaky;
+  if (blind.length) {
+    const files = [...new Set(blind.flatMap((p) => p.hiddenSources))];
+    throw httpError(400, `Agents can't see the code these tests need (${files.join(", ")}). Share them with agents first.`);
+  }
+
+  const dir = await mkdtemp(path.join(tmpdir(), "shoal-trial-"));
+  const mcpFile = path.join(dir, "mcp.json");
+  const agentsFile = path.join(dir, "agents.json");
+  await writeFile(mcpFile, JSON.stringify({ mcpServers: { shoal: { type: "http", url: `${baseUrl}/mcp` } } }));
+  await writeFile(agentsFile, JSON.stringify(Object.fromEntries(TRIAL_MODELS.map((m) => [`trial-${m.alias}`, subagent(m)]))));
+
+  const run = (state.trialRun = {
+    status: "running",
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    problems: problems.map((p) => p.testFile),
+    progress: [],
+    summary: null,
+    claudeCost: null,
+    // $ each model's subagents spent, from their token usage (see onStreamLine).
+    spentByModel: {},
+    report: null,
+    error: null,
+  });
   const tracking = { taskModel: new Map(), seen: new Set() };
+  const note = (message) => {
+    run.progress.push({ at: new Date().toISOString(), message });
+    emit("trials.progress", { message });
+  };
+  note(`Claude Code started: Haiku, Sonnet and Opus will each try ${problems.length} flaky test${problems.length > 1 ? "s" : ""}`);
+
   const proc = claude(
     [
       "-p",
@@ -185,15 +227,41 @@ export async function startClaudeTrial({ problems, baseUrl, dir, run, note, time
       "--permission-mode", "dontAsk",
       "--no-session-persistence",
     ],
-    { input: leadPrompt(problems), timeout, onLine: (line) => onStreamLine(line, run, note, tracking) },
+    { input: leadPrompt(problems), timeout: RUN_TIMEOUT_MS, onLine: (line) => onStreamLine(line, run, note, tracking) },
   );
-  return {
-    children: [proc.child],
-    done: proc.done.then(({ ok, out }) => ({
-      ok,
-      error: ok ? null : run.errors.claude ?? (out.trim().split("\n").filter((l) => !l.startsWith("{")).slice(-3).join(" ").slice(0, 300) || "Claude Code exited with an error"),
-    })),
-  };
+  current = proc.child;
+
+  proc.done.then(async ({ ok, out }) => {
+    current = null;
+    await rm(dir, { recursive: true, force: true });
+    if (run.status === "running") {
+      run.status = ok ? "done" : Date.now() - Date.parse(run.startedAt) >= RUN_TIMEOUT_MS ? "timed_out" : "failed";
+      if (!ok && !run.error) run.error = out.trim().split("\n").filter((l) => !l.startsWith("{")).slice(-3).join(" ").slice(0, 300) || "Claude Code exited with an error";
+    }
+    finish(run);
+  });
+}
+
+export function stopTrialRun() {
+  if (!current) throw httpError(400, "No trial run in progress");
+  state.trialRun.status = "stopped";
+  killTree(current);
+}
+
+function finish(run) {
+  run.finishedAt = new Date().toISOString();
+  recordModelCosts(run.spentByModel, run.problems.length);
+  const pick = overallPick();
+  const winner = pick && { model: pick.model, name: pick.name, fixed: pick.fixed, quality: pick.quality, costPerFix: pick.costPerFix, reason: pick.reason };
+  run.report = { scoreboard: scoreboard(), problems: trialSummary(), winner };
+  const ended = { done: "finished", stopped: "stopped", timed_out: "timed out", failed: "failed" }[run.status];
+  emit(run.status === "done" ? "trials.done" : "trials.error", {
+    message: `Model trial ${ended}${winner ? `: best value is ${winner.name} (quality ${winner.quality}, ~$${winner.costPerFix.toFixed(4)} per fix)` : ": no model got a fix verified"}`,
+  });
+  // Straight on to the proof report for every test that got a verified fix.
+  (async () => {
+    for (const p of run.report.problems.filter((p) => p.recommended)) await proveProblem(p.painId);
+  })().catch((err) => emit("error", { message: `Proof report failed: ${err.message}` }));
 }
 
 // Claude Code's stream-json output: note subagent launches, add up what each
@@ -224,9 +292,9 @@ function onStreamLine(line, run, note, tracking) {
     run.spentByModel[model] = (run.spentByModel[model] ?? 0) + tokenCost(model, msg.message.usage);
   }
   if (msg.type === "result") {
-    run.summaries.claude = msg.result ?? null;
+    run.summary = msg.result ?? null;
     run.claudeCost = msg.total_cost_usd ?? null;
-    if (msg.is_error) run.errors.claude = String(msg.result ?? msg.subtype).slice(0, 300);
+    if (msg.is_error && !run.error) run.error = String(msg.result ?? msg.subtype).slice(0, 300);
   }
 }
 
@@ -235,20 +303,17 @@ function subagent({ alias, id }) {
     description: `Shoal trial agent on ${MODELS[id].name}: tries to fix one flaky test and submits the fix to Shoal.`,
     model: alias,
     tools: SHOAL_TOOLS,
-    prompt: [`You are a Shoal trial agent running on ${MODELS[id].name}. You get one flaky test to fix.`, ...agentRules(id), "Reply with one line: passed or failed, and what you changed."].join("\n"),
+    prompt: [
+      `You are a Shoal trial agent running on ${MODELS[id].name}. You get one flaky test to fix.`,
+      "Use only the Shoal tools: list_files and read_file to read the code, run_tests to check a candidate patch.",
+      "Read ALL the shared code first (list_files, then read_file on every file), not just the files the test imports.",
+      "Fix every root cause in application code. Working around a bug instead of fixing it, or leaving a related bug the test happens not to reach, counts as a FAILED fix: Shoal runs hidden challenge tests on the whole codebase.",
+      "Test files, test folders, CI config and package manifests are protected; changing them fails the trial.",
+      `When run_tests passes, call submit_trial with model "${id}", the problem id, a one-sentence summary and the complete new contents of every file you changed.`,
+      "If the trial fails, read the failure log, fix the patch and submit once more. Then stop.",
+      "Reply with one line: passed or failed, and what you changed.",
+    ].join("\n"),
   };
-}
-
-// How a trial agent works, for Claude subagents and Codex alike.
-export function agentRules(id) {
-  return [
-    "Use only the Shoal tools: list_files and read_file to read the code, run_tests to check a candidate patch.",
-    "Read ALL the shared code first (list_files, then read_file on every file), not just the files the test imports.",
-    "Fix every root cause in application code. Working around a bug instead of fixing it, or leaving a related bug the test happens not to reach, counts as a FAILED fix: Shoal runs hidden challenge tests on the whole codebase.",
-    "Test files, test folders, CI config and package manifests are protected; changing them fails the trial.",
-    `When run_tests passes, call submit_trial with model "${id}", the problem id, a one-sentence summary and the complete new contents of every file you changed.`,
-    "If the trial fails, read the failure log, fix the patch and submit once more. Then stop.",
-  ];
 }
 
 function leadPrompt(problems) {

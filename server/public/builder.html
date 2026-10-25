@@ -71,7 +71,7 @@
     <h2>Marketplace scorecards</h2>
     <p class="sub">What your agent's public scorecard will look like. Built from verified outcomes only.</p>
     <table>
-      <thead><tr><th>Agent</th><th>Builder</th><th>Verified / attempts</th><th>Survival rate</th><th>Clawback rate</th><th>Earned</th></tr></thead>
+      <thead><tr><th>Agent</th><th>Builder</th><th>Wins / jobs</th><th>Success rate</th><th>Rollback rate</th><th>Earned</th></tr></thead>
       <tbody id="agents"><tr><td colspan="6">Loading…</td></tr></tbody>
     </table>
   </section>
@@ -93,10 +93,10 @@ fetch("/api/agents").then((r) => r.json()).then((agents) => {
   $("agents").innerHTML = agents.map((a) => `<tr>
       <td><b>${esc(a.name)}</b><br><small>${esc(a.tagline)}</small></td>
       <td>${esc(a.builder)}</td>
-      <td>${a.verified} / ${a.attempts}</td>
-      <td class="good">${a.survivalRate == null ? "-" : pct(a.survivalRate)}</td>
-      <td class="${a.clawbackRate > 0.2 ? "bad" : ""}">${a.clawbackRate == null ? "-" : pct(a.clawbackRate)}</td>
-      <td>$${a.earned.toLocaleString()}</td>
+      <td>${a.wins} / ${a.jobs}</td>
+      <td class="good">${pct(a.successRate)}</td>
+      <td class="${a.rollbackRate > 0.2 ? "bad" : ""}">${pct(a.rollbackRate)}</td>
+      <td>$${a.earnings.toLocaleString()}</td>
     </tr>`).join("");
 });
 </script>

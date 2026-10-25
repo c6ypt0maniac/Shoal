@@ -3,6 +3,3 @@ node_modules/
 .repos/
 .env
 .data/
-web/dist/
-.env.*
-!.env.example

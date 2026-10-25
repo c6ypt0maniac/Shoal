@@ -11,7 +11,7 @@
 // mock agent's scripted fix would be taking money for nothing.
 import Stripe from "stripe";
 import { emit } from "./events.js";
-import { chargeCredits, refundCredits } from "./credits.js";
+import { chargeCredits } from "./credits.js";
 import { MOCK } from "./agents.js";
 
 const key = () => process.env.STRIPE_SECRET_KEY ?? "";
@@ -26,7 +26,7 @@ export function stripeKeyProblem() {
   if (!key() || stripeConfigured()) return null;
   if (!isLiveKey()) return "STRIPE_SECRET_KEY isn't a Stripe secret key";
   if (process.env.STRIPE_ALLOW_LIVE !== "1") return "STRIPE_SECRET_KEY is a LIVE key; set STRIPE_ALLOW_LIVE=1 to take real money";
-  return "live payments need real agents; set ANTHROPIC_API_KEY or OPENAI_API_KEY (mock agents can't take real money)";
+  return "live payments need real Claude agents; set ANTHROPIC_API_KEY (mock agents can't take real money)";
 }
 
 let client = null;
@@ -59,7 +59,7 @@ export async function startCheckout(bounty, { successUrl, cancelUrl }) {
           unit_amount: cents(bounty.reward),
           product_data: {
             name: `Shoal bounty: ${bounty.title}`,
-            description: "Held in escrow. Charged only when an agent's fix is verified, refunded if the fix regresses within the survival window; otherwise the hold is released.",
+            description: "Held in escrow. You're only charged if an agent's fix is verified; otherwise the hold is released.",
           },
         },
       },
@@ -89,9 +89,8 @@ export async function confirmFunding(bounty, sessionId) {
   emit("escrow.held", { bountyId: bounty.id, amount: bounty.reward, message: `$${bounty.reward} held in escrow via Stripe (not charged yet)` });
 }
 
-// Fix verified: charge the team. Shoal holds it through the survival window
-// (the agent is paid only after; see survival.js) and refunds it on a
-// clawback. Credit runs deduct the real API cost plus fee instead.
+// Fix verified: charge only what the winning agent is owed. Credit runs
+// deduct the real API cost plus fee from the prepaid balance instead.
 export async function chargeEscrow(bounty, amount) {
   const escrow = bounty.escrow;
   if (escrow.mode === "stripe") {
@@ -144,23 +143,6 @@ export async function confirmCreditPurchase(sessionId) {
   if (session.metadata?.kind !== "credits") throw httpError(400, "That isn't a credit purchase");
   if (session.payment_status !== "paid") throw httpError(402, `Payment didn't complete (status: ${session.payment_status})`);
   return { dollars: session.amount_total / 100, sessionId: session.id };
-}
-
-// The fix regressed inside its survival window: give the team its money
-// back. Stripe refunds the captured charge; credits go back on the balance.
-export async function refundEscrow(bounty) {
-  const escrow = bounty.escrow;
-  if (escrow.status !== "charged") return 0;
-  if (escrow.mode === "stripe") {
-    const refund = await stripe().refunds.create({ payment_intent: escrow.paymentIntentId, amount: cents(escrow.charged), metadata: { bountyId: bounty.id, reason: "clawback" } });
-    escrow.refundId = refund.id;
-  }
-  if (escrow.mode === "credits") await refundCredits({ bountyId: bounty.id });
-  escrow.status = "refunded";
-  escrow.refunded = escrow.charged;
-  const via = { simulated: " (simulated)", stripe: " via Stripe", credits: " to credits" }[escrow.mode];
-  emit("escrow.refunded", { bountyId: bounty.id, amount: escrow.refunded, message: `Refunded $${escrow.refunded}${via}: the fix didn't survive` });
-  return escrow.refunded;
 }
 
 // No verified fix: cancel the authorization so the team pays nothing.

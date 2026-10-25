@@ -5,16 +5,29 @@
 // opening PRs needs a token with write access.
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { rm, mkdir, readdir } from "node:fs/promises";
+import { rm, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { REPOS_DIR, sh } from "./repo.js";
 import { MANIFESTS, detectStacks, installCommand } from "./stack.js";
 
 const API = "https://api.github.com";
 
 // Shoal runs locally for one person, so the signed-in token lives in memory.
-let oauthToken = null;
+let oauthToken = process.env.GITHUB_OAUTH_TOKEN ?? null;
 const token = () => oauthToken ?? process.env.GITHUB_TOKEN;
 export const hasToken = () => Boolean(token());
+const envFile = process.env.SHOAL_ENV_FILE || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../.env");
+
+async function persistOAuthToken(value) {
+  const original = await readFile(envFile, "utf8").catch((error) => error.code === "ENOENT" ? "# Shoal local configuration\n" : Promise.reject(error));
+  const lines = original.split(/\r?\n/).filter((line) => !line.startsWith("GITHUB_OAUTH_TOKEN="));
+  if (value) lines.push(`GITHUB_OAUTH_TOKEN=${JSON.stringify(value)}`);
+  const next = lines.join("\n").replace(/\n{3,}/g, "\n\n").replace(/\n*$/, "\n");
+  const temp = `${envFile}.${process.pid}.tmp`;
+  await writeFile(temp, next, { mode: 0o600 });
+  await rename(temp, envFile);
+  value ? (process.env.GITHUB_OAUTH_TOKEN = value) : delete process.env.GITHUB_OAUTH_TOKEN;
+}
 
 // --- Sign in with GitHub (OAuth web flow) ---------------------------------
 // Setup: github.com/settings/developers -> New OAuth App, callback URL
@@ -28,16 +41,10 @@ export const oauthConfigured = () => Boolean(process.env.GITHUB_CLIENT_ID && pro
 export function authorizeUrl(callbackUrl, returnTo = "/") {
   const state = randomUUID();
   pendingStates.set(state, returnTo);
-  return githubAuthorizeUrl(callbackUrl, state);
-}
-
-// GitHub's consent page. callbackUrl may be a subpath of the OAuth App's
-// registered callback (GitHub allows that), e.g. .../callback/mcp.
-export function githubAuthorizeUrl(callbackUrl, state, scope = OAUTH_SCOPES) {
   const params = new URLSearchParams({
     client_id: process.env.GITHUB_CLIENT_ID,
     redirect_uri: callbackUrl,
-    scope,
+    scope: OAUTH_SCOPES,
     state,
     allow_signup: "true",
   });
@@ -49,15 +56,6 @@ export function githubAuthorizeUrl(callbackUrl, state, scope = OAUTH_SCOPES) {
 export async function completeOAuth({ code, state, callbackUrl }) {
   const returnTo = pendingStates.get(state);
   if (!pendingStates.delete(state)) throw Object.assign(new Error("Sign-in expired or was tampered with; try again"), { status: 400 });
-  oauthToken = await exchangeCode(code, callbackUrl);
-  cache.clear();
-  // Warm the caches now so the pages after sign-in don't wait on GitHub.
-  listRepos().catch(() => {});
-  return returnTo;
-}
-
-// The one-time code from GitHub's redirect -> an access token.
-export async function exchangeCode(code, callbackUrl) {
   const res = await fetch("https://github.com/login/oauth/access_token", {
     signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
     method: "POST",
@@ -71,31 +69,17 @@ export async function exchangeCode(code, callbackUrl) {
   });
   const data = await res.json();
   if (!data.access_token) throw Object.assign(new Error(data.error_description ?? "GitHub sign-in failed"), { status: 401 });
-  return data.access_token;
+  oauthToken = data.access_token;
+  await persistOAuthToken(oauthToken);
+  cache.clear();
+  // Warm the caches now so the pages after sign-in don't wait on GitHub.
+  listRepos().catch(() => {});
+  return returnTo;
 }
 
-// Someone else's token (an MCP client's sign-in), not the dashboard's.
-export async function loginFor(userToken) {
-  const me = await gh("/user", { token: userToken });
-  if (!me?.login) throw Object.assign(new Error("GitHub didn't say who signed in"), { status: 401 });
-  return me.login;
-}
-
-// Whether that token can read the repo. Cached for 5 minutes per token+repo,
-// since every MCP request asks.
-const access = new Map();
-export async function canAccessRepo(fullName, userToken) {
-  const key = `${fullName}\0${userToken}`;
-  const hit = access.get(key);
-  if (hit && Date.now() - hit.at < 5 * 60_000) return hit.ok;
-  const ok = Boolean(await gh(`/repos/${fullName}`, { token: userToken }).catch(() => null));
-  if (access.size > 1000) access.clear();
-  access.set(key, { ok, at: Date.now() });
-  return ok;
-}
-
-export function signOut() {
+export async function signOut() {
   oauthToken = null;
+  await persistOAuthToken(null);
   cache.clear();
 }
 
@@ -131,8 +115,7 @@ async function cached(key, maxAgeMs, load) {
 
 const GITHUB_TIMEOUT_MS = 15_000;
 
-async function gh(endpoint, { method = "GET", body, token: asUser } = {}) {
-  const auth = asUser ?? token();
+async function gh(endpoint, { method = "GET", body } = {}) {
   const res = await fetch(API + endpoint, {
     signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
     method,
@@ -140,7 +123,7 @@ async function gh(endpoint, { method = "GET", body, token: asUser } = {}) {
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
       "User-Agent": "shoal-hackathon",
-      ...(auth && { Authorization: `Bearer ${auth}` }),
+      ...(token() && { Authorization: `Bearer ${token()}` }),
       ...(body && { "Content-Type": "application/json" }),
     },
     body: body && JSON.stringify(body),
@@ -171,10 +154,7 @@ export async function getViewer() {
 export async function listRepos() {
   if (!hasToken()) return [];
   return cached("repos", 60_000, async () => {
-    // Owned, collaborator and organization repos, private ones included (the
-    // repo scope covers them). Org repos also need the org to allow this OAuth
-    // App, or GitHub hides them.
-    const repos = await gh("/user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member");
+    const repos = await gh("/user/repos?per_page=100&sort=pushed&affiliation=owner");
     return (repos ?? []).map((r) => ({
       fullName: r.full_name,
       private: r.private,
@@ -188,7 +168,7 @@ export async function listRepos() {
 export async function getRepo(fullName) {
   return cached(`repo:${fullName}`, 60_000, async () => {
     const repo = await gh(`/repos/${fullName}`);
-    if (!repo) throw Object.assign(new Error(`Repo ${fullName} not found${hasToken() ? ": check you can see it on GitHub, and for an organization repo that the org allows Shoal's OAuth App" : ". For a private repo, sign in with GitHub first"}`), { status: 404 });
+    if (!repo) throw Object.assign(new Error(`Repo ${fullName} not found (private repos need GITHUB_TOKEN)`), { status: 404 });
     return {
       fullName: repo.full_name,
       defaultBranch: repo.default_branch,
@@ -207,6 +187,12 @@ export async function headSha(fullName, branch, { fresh = false } = {}) {
   if (fresh) cache.delete(`head:${fullName}:${branch}`);
   return cached(`head:${fullName}:${branch}`, 10_000, async () => {
     const commit = await gh(`/repos/${fullName}/commits/${encodeURIComponent(branch)}`);
+    if (!commit) {
+      const hint = hasToken()
+        ? "The repository or branch was not found, or the signed-in GitHub account cannot access it."
+        : "Sign in with GitHub to sync this private repository.";
+      throw Object.assign(new Error(`Cannot sync ${fullName}:${branch}. ${hint}`), { status: 404 });
+    }
     return { sha: commit.sha, message: commit.commit?.message?.split("\n")[0] ?? "", at: commit.commit?.committer?.date ?? null };
   });
 }
@@ -260,13 +246,14 @@ export async function reinstall(dir, changed, onStep = () => {}) {
 // Shallow-clones the repo and installs each project's dependencies the way
 // its language does (npm, pip into a private venv, go mod, cargo, bundler,
 // composer, dotnet...). Returns the clone folder and a note per project.
-export async function cloneRepo(fullName, onStep = () => {}) {
-  const dir = path.join(REPOS_DIR, fullName.replace("/", "__"));
+export async function cloneRepo(fullName, onStep = () => {}, remote = null) {
+  const dir = path.join(REPOS_DIR, `${remote?.host ? remote.host + "__" : ""}${fullName.replaceAll("/", "__")}`);
   await rm(dir, { recursive: true, force: true });
   await mkdir(REPOS_DIR, { recursive: true });
   const auth = token() ? `x-access-token:${token()}@` : "";
-  const clone = await sh(`git clone --depth 1 "https://${auth}github.com/${fullName}.git" "${dir}"`, REPOS_DIR);
-  if (!clone.ok) throw new Error(`git clone failed: ${redact(clone.output).slice(-400)}`);
+  const url = remote?.url ?? `https://${auth}github.com/${fullName}.git`;
+  const clone = await sh(`git clone --depth 1 "${url}" "${dir}"`, REPOS_DIR);
+  if (!clone.ok) throw new Error(`git clone failed: ${(remote?.secret ? clone.output.replaceAll(remote.secret, "***") : redact(clone.output)).slice(-400)}`);
 
   for (const stack of await detectStacks(dir)) {
     const where = stack.root === "." ? "" : ` in ${stack.root}/`;
@@ -306,6 +293,18 @@ export async function ciStats(fullName, perPage = 100) {
       avgMinutes: minutes.length ? Math.round((minutes.reduce((a, b) => a + b, 0) / minutes.length) * 10) / 10 : null,
     }))
     .sort((a, b) => b.failureRate - a.failureRate || (b.avgMinutes ?? 0) - (a.avgMinutes ?? 0));
+}
+
+// How long merged PRs took from opened to merged (median hours).
+export async function pullStats(fullName, perPage = 100) {
+  const prs = (await gh(`/repos/${fullName}/pulls?state=closed&per_page=${perPage}`)) ?? [];
+  const hours = prs
+    .filter((pr) => pr.merged_at)
+    .map((pr) => (new Date(pr.merged_at) - new Date(pr.created_at)) / 3_600_000)
+    .sort((a, b) => a - b);
+  const mid = Math.floor(hours.length / 2);
+  const median = hours.length ? (hours.length % 2 ? hours[mid] : (hours[mid - 1] + hours[mid]) / 2) : 0;
+  return { merged: hours.length, medianHours: Math.round(median * 10) / 10 };
 }
 
 // Opens a PR containing the given full-file contents on a new branch.

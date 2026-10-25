@@ -2,6 +2,10 @@
 // is recorded here; pages poll for events newer than the last one they saw.
 
 const history = [];
+const listeners = [];
+
+// Other code (Slack, Jira, Linear) follows the lifecycle by subscribing here.
+export const onEvent = (fn) => listeners.push(fn);
 const HISTORY_LIMIT = 500;
 let seq = 0;
 
@@ -10,6 +14,11 @@ export function emit(type, data = {}) {
   history.push(event);
   if (history.length > HISTORY_LIMIT) history.shift();
   console.log(`[${type}]`, data.message ?? "");
+  for (const fn of listeners) {
+    try {
+      Promise.resolve(fn(event)).catch(() => {});
+    } catch {}
+  }
   return event;
 }
 

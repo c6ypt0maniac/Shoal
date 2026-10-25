@@ -1,6 +1,4 @@
-// App state. Most of it is in memory; bounties, the ledger, scorecards and
-// the connection are also saved to disk (see persist.js).
-import { randomBytes } from "node:crypto";
+// In-memory state. Good enough for a hackathon demo; swap for SQLite later.
 
 export const DEMO_CONNECTION = { type: "demo", fullName: "demo-repo (bundled)", canWrite: false };
 
@@ -12,11 +10,16 @@ export const state = {
   // Real GitHub Actions telemetry for the connected repo (informational).
   ci: [],
   pains: [],
+  // Measured problems of every other class (types, runtimes, deps, docs, CI, PRs...); see pain-classes.js.
+  classPains: [],
+  // Test files Shoal had Claude write for shared code that had none (see generated-tests.js).
+  generatedTests: [],
+  generatedCovers: {},
   bounties: [],
   ledger: [],
   // Trial fixes submitted over MCP, verified but never applied (see trials.js).
   trials: [],
-  // The latest one-click trial run (Claude Code and Codex, see trial-runner.js).
+  // The latest one-click trial run (Claude Code driven by claude-runner.js).
   trialRun: null,
   // Proof reports keyed by trial id (see proof.js).
   proofs: {},
@@ -27,43 +30,23 @@ export const state = {
   // Measured API cost per fix for each model, from the latest trial run.
   // Kept across resets: it describes the models, not one repo.
   modelCost: {},
-  // Public scorecards, built only from real outcomes (see bounties.js,
-  // survival.js). Keyed by persona agent id or model id. Kept across resets:
-  // they describe the agents, not one repo.
-  agents: {},
-  // Marketplace listings Shoal doesn't ship with: models imported from
-  // OpenRouter and agents builders published (see marketplace.js).
-  listings: [],
-  // Verified-buyer reviews and their helpful votes (see reviews.js).
-  reviews: [],
-  reviewVotes: [],
-  // Prepaid credits (see credits.js).
-  credits: null,
+  // Seeded scorecards so the leaderboard isn't empty on first load.
+  agents: {
+    flakehunter: { jobs: 14, wins: 11, rollbacks: 3, earnings: 1320 },
+    rootcause: { jobs: 9, wins: 8, rollbacks: 0, earnings: 2610 },
+    speedy: { jobs: 21, wins: 13, rollbacks: 6, earnings: 1870 },
+  },
 };
 
-// Unique across restarts, since bounties and the ledger are kept on disk.
 let nextId = 1;
-const run = randomBytes(3).toString("hex");
-export const newId = (prefix) => `${prefix}_${run}${nextId++}`;
-
-// An agent's scorecard, created empty the first time it competes.
-//   attempts  bounties it tried
-//   verified  attempts whose fix passed the verifier
-//   wins      verified attempts picked as the winner (surfaced to the team)
-//   survived  wins that held through the survival window and were paid
-//   clawbacks wins that regressed inside the window and were refunded
-//   earned    payouts after Shoal's fee; paid: what teams paid for them
-//   delivered attempts that returned a fix at all (the rest errored)
-//   verifiedMs total time from start to verified fix, over verified attempts
-export function cardFor(id) {
-  const card = (state.agents[id] ??= {});
-  for (const k of ["attempts", "delivered", "verified", "verifiedMs", "wins", "survived", "clawbacks", "earned", "paid"]) card[k] ??= 0;
-  return card;
-}
+export const newId = (prefix) => `${prefix}_${nextId++}`;
 
 // Clears bounty activity; the connection and its CI telemetry are kept.
 export function resetState() {
   state.pains = [];
+  state.classPains = [];
+  state.generatedTests = [];
+  state.generatedCovers = {};
   state.bounties = [];
   state.ledger = [];
   state.trials = [];

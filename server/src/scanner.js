@@ -5,6 +5,7 @@ import { NO_TESTS, stackFor } from "./stack.js";
 import { emit } from "./events.js";
 import { state, newId } from "./store.js";
 import { inScope, isSecret } from "./scope.js";
+import { generateTests } from "./generated-tests.js";
 
 const RUNS_PER_FILE = 10;
 // Rough cost model, shown in the UI so judges can see the math.
@@ -14,6 +15,8 @@ const DOLLARS_PER_DEV_HOUR = 25;
 
 export async function scan() {
   emit("scan.started", { message: `Running each test file ${RUNS_PER_FILE}x to detect flakes` });
+  // Untested shared code gets tests written by Claude first, so there is something to run.
+  await generateTests().catch((err) => emit("scan.warning", { message: `Couldn't write tests for untested code: ${err.message}` }));
   const sandbox = await createSandbox();
   try {
     // Only tests inside the folders the team shared with agents.
@@ -61,6 +64,8 @@ export async function scan() {
         id: existing?.id ?? newId("pain"),
         kind: "flaky-test",
         title: `Flaky tests in ${r.testFile}`,
+        generated: state.generatedTests.includes(r.testFile),
+        covers: state.generatedCovers[r.testFile] ?? null,
         testFile: r.testFile,
         ...(await splitSources(r.testFile, sandbox)),
         flakeRate,

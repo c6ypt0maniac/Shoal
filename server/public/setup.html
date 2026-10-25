@@ -112,7 +112,7 @@
       <a class="signin" href="/api/auth/github?return=/setup">Sign in with GitHub</a></div>
     <input type="text" id="repoSearch" placeholder="Search your repositories..." autocomplete="off">
     <div class="repo-list" id="repoList"></div>
-    <label class="field">Or paste any public repo <input type="text" id="repoInput" placeholder="owner/repo or https://github.com/owner/repo"></label>
+    <label class="field">Or paste any public repo <input type="text" id="repoInput" placeholder="owner/repo, or a GitHub, GitLab or Bitbucket URL"></label>
     <label class="field">How do you run tests?
       <select id="cmdSelect">
         <option value="node --test">node --test</option>
@@ -146,7 +146,7 @@
     </div>
     <div class="note">
       🔒 <b>Never shared:</b> <code>.env</code> files, keys, certificates and <code>secrets/</code> folders, even if their folder is ticked.<br>
-      🧪 Share the folders with your <b>tests</b> and the <b>code they test</b>, or Shoal can't find flaky tests to fix.
+      🧪 Share the code you want agents to work on. Tests are optional: Shoal also finds type escapes, old runtimes, unused dependencies, broken docs and secrets without them.
     </div>
   </section>
 
@@ -161,6 +161,7 @@
       <li data-step="clone">Clone &amp; install</li>
       <li data-step="scan">Scan for flaky tests</li>
     </ul>
+    <p class="hint" id="progressMsg"></p>
   </section>
 
   <div class="err" id="err"></div>
@@ -241,7 +242,7 @@ $("repoList").onclick = (e) => {
 };
 $("repoInput").oninput = () => {
   const v = $("repoInput").value.trim();
-  if (v) chooseRepo(v.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$|\/$/g, ""));
+  if (v) chooseRepo(v.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$|\/$/g, ""));  // GitLab/Bitbucket URLs and gitlab:/bitbucket: prefixes go to the server as typed
 };
 
 // ---------- Step 3: folder tree ----------
@@ -436,7 +437,8 @@ async function connect() {
 
 function setProgress(name) {
   const items = [...$("progress").children];
-  const idx = name === "done" ? items.length : items.findIndex((li) => li.dataset.step === name);
+  // Installing dependencies is part of the "clone" step.
+  const idx = name === "done" ? items.length : items.findIndex((li) => li.dataset.step === (name === "install" ? "clone" : name));
   items.forEach((li, i) => (li.className = i < idx ? "done" : i === idx ? "active" : ""));
 }
 // Connect progress: poll for connect.step events only while connecting.
@@ -449,7 +451,7 @@ async function watchProgress() {
     const res = await fetch(`/api/events/poll?after=${last}`).then((r) => r.json()).catch(() => null);
     if (!res) continue;
     last = res.last;
-    for (const e of res.events) if (e.type === "connect.step") setProgress(e.step);
+    for (const e of res.events) if (e.type === "connect.step") { setProgress(e.step); $("progressMsg").textContent = e.message ?? ""; }
   }
 }
 
@@ -472,7 +474,6 @@ $("next").onclick = async () => {
   if (step === 1 && !sel.problems.size && !$("problemNote").value.trim()) return ($("err").textContent = "Pick at least one problem, or describe it.");
   if (step === 2 && !sel.repo) return ($("err").textContent = "Choose a repository, paste one, or use the demo repo.");
   if (step === 3 && sel.files.length && !sel.files.some(isVisible)) return ($("err").textContent = "Share at least one file.");
-  if (step === 3 && sel.files.some((f) => f.test) && !sel.files.some((f) => f.test && isVisible(f))) return ($("err").textContent = "Share at least one test file (🧪), or Shoal has no tests to scan.");
   if (step < 4) return show(step + 1);
   $("next").disabled = $("back").disabled = true;
   try { await connect(); }

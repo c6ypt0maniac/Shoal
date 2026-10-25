@@ -19,6 +19,7 @@ export const isSecret = (p) => NEVER_SHARE.some((re) => re.test(p));
 export function inScope(relPath) {
   const p = relPath.replace(/\\/g, "/").replace(/^\.\//, "");
   if (isSecret(p)) return false;
+  if (state.generatedTests?.includes(p)) return true;
   const shared = state.connection.sharedPaths;
   if (!shared?.length) return true;
   const dir = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : ".";

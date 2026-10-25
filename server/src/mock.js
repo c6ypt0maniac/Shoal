@@ -1,4 +1,4 @@
-// Canned agent behaviour for offline demos (no API keys), or as a
+// Canned agent behaviour for offline demos (no ANTHROPIC_API_KEY), or as a
 // backup if the API is slow on stage. Each persona fails or succeeds the same
 // way every time, so the demo story is predictable:
 //   FlakeHunter edits the test        -> rejected for tampering
@@ -9,6 +9,28 @@ import { readRepoFile } from "./repo.js";
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 const jitter = (min, max) => min + Math.random() * (max - min);
+
+const BIDS = {
+  flakehunter: {
+    "test/cart.test.js": { price: 90, confidence: 0.92, plan: "Bump the sleep in the test from 30ms to 200ms so the coupon always lands." },
+    "test/orders.test.js": { price: 70, confidence: 0.9, plan: "Relax the uniqueness assertion to tolerate the occasional duplicate." },
+  },
+  speedy: {
+    "test/cart.test.js": { price: 140, confidence: 0.7, plan: "Make the pricing lookup latency constant so timing is predictable." },
+    "test/orders.test.js": { price: 120, confidence: 0.72, plan: "Use the current timestamp for order IDs instead of a small random range." },
+  },
+  rootcause: {
+    "test/cart.test.js": { price: 310, confidence: 0.88, plan: "applyCoupon never returns its promise, so awaiting it does nothing. Return the promise so callers wait for the discount." },
+    "test/orders.test.js": { price: 260, confidence: 0.9, plan: "Only 200 possible IDs means collisions are guaranteed at volume. Switch to crypto.randomUUID()." },
+  },
+};
+
+export async function mockBid(agent, pain) {
+  await delay(jitter(600, 1800));
+  const bid = BIDS[agent.id]?.[pain.testFile];
+  if (!bid) return { bid: false, price: 0, confidence: 0, plan: "Not my kind of job." };
+  return { bid: true, ...bid };
+}
 
 export async function mockFix(agent, pain) {
   await delay(jitter(1500, 3000));

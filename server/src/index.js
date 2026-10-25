@@ -3,90 +3,50 @@ import cors from "cors";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { refreshSources, scan } from "./scanner.js";
-import { createBounty, getBounty, leaderboard, morningSettlement, publicBounty, runBounty } from "./bounties.js";
-import { checkSurvivors } from "./survival.js";
-import { loadState, storageInfo } from "./persist.js";
-import { importOpenRouterModel, listing, listingExists, marketplace, ownerOf, publishAgent, refreshOpenRouter, removeListing, rotateSecret, updateAgent } from "./marketplace.js";
-import { createReview, deleteReview, replyToReview, reviewsFor, voteHelpful } from "./reviews.js";
+import { collectBids, createBounty, getBounty, leaderboard, morningSettlement, runBounty } from "./bounties.js";
 import { eventsAfter, emit } from "./events.js";
 import { state, resetState, DEMO_CONNECTION } from "./store.js";
 import { getStacks, isTestFile, listAllFiles, resetWorkspace, setSource, DEMO_REPO, WORKSPACE } from "./repo.js";
 import { describeStack } from "./stack.js";
 import { zip } from "./zip.js";
 import { readFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
 import { describeFile } from "./describe.js";
 import { confirmCreditPurchase, confirmFunding, paymentsMode, startCheckout, startCreditCheckout, stripeConfigured, stripeKeyProblem } from "./escrow.js";
 import { isProtected } from "./verifier.js";
 import { PROBLEMS, cleanProblems, cleanSharedPaths, isSecret } from "./scope.js";
-import { AGENTS, MOCK, modelUnavailable } from "./agents.js";
+import { MOCK } from "./agents.js";
 import { MODELS, costPerFix, overallPick, scoreboard, trialSummary } from "./trials.js";
-import { PACKS, addCredits, balanceCents, creditsSummary, fixPriceCents, isCreditAmount } from "./credits.js";
+import { PACKS, addCredits, balanceCents, creditsSummary, fixPriceCents } from "./credits.js";
 import { mountMcp } from "./mcp.js";
-import { proofFor, proveProblem, resetProofs } from "./proof.js";
-import { markConnected, reapplyBoughtFixes, setAutoSync, syncNow, syncStatus } from "./sync.js";
-import { detectClaude, finishLogin, startLogin } from "./claude-runner.js";
-import { detectCodex, startCodexLogin } from "./codex-runner.js";
-import { startTrialRun, stopTrialRun, trialRun } from "./trial-runner.js";
-import { integrationStatus } from "./integrations.js";
+import { proofFor, proveProblem } from "./proof.js";
+import { CLASSES, createClassBounty, failClassBounty, remeasure, scanClasses, verifyClassFix } from "./pain-classes.js";
+import { canOpenChanges, ciStats as hostCiStats, cloneRepo as hostCloneRepo, getRepo as hostGetRepo, hostLabel, parseRemote, repoFiles as hostRepoFiles } from "./hosts.js";
+import { agentCard, authorize, beginIntegrationAuth, disconnectIntegration, finishIntegrationAuth, integrationStatus, openFromRequest, parsers, startIntegrations } from "./integrations.js";
+import { markConnected, setAutoSync, syncNow, syncStatus } from "./sync.js";
+import { detectClaude, finishLogin, startLogin, startTrialRun, stopTrialRun, trialRun } from "./claude-runner.js";
 import {
-  authorizeUrl, ciStats, cloneRepo, completeOAuth, getRepo, getViewer, hasToken, listRepos, oauthConfigured, parseRepo, repoFiles, signOut,
+  authorizeUrl, completeOAuth, getViewer, hasToken, listRepos, oauthConfigured, parseRepo, repoFiles, signOut,
 } from "./github.js";
 
 const PORT = Number(process.env.PORT) || 4000;
-// Where this server is reachable from outside: OAuth redirects and the MCP
-// URL are built from it. On Vercel it defaults to the production domain.
-const BASE_URL = (
-  process.env.SHOAL_PUBLIC_URL ||
-  (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : `http://localhost:${PORT}`)
-).replace(/\/$/, "");
-// The website, when it's hosted separately (e.g. its own Vercel project):
-// those origins may call the API from the browser, with cookies.
-const WEB_ORIGINS = (process.env.SHOAL_WEB_ORIGINS ?? "").split(",").map((o) => o.trim().replace(/\/$/, "")).filter(Boolean);
-
 const app = express();
-// Behind Vercel's (or any) proxy, trust X-Forwarded-* for the client IP and https.
-if (process.env.VERCEL || process.env.SHOAL_TRUST_PROXY === "1") app.set("trust proxy", 1);
-app.use(WEB_ORIGINS.length ? cors({ origin: WEB_ORIGINS, credentials: true }) : cors());
+app.use(cors());
 // Trial patches carry whole files, so allow more than the 100kb default.
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "2mb", verify: (req, _res, buf) => (req.rawBody = buf) }));
 
-// MCP endpoint for the team's own AI app (Claude, ChatGPT, Codex): the free
-// trial round, plus its GitHub sign-in (see mcp.js and oauth.js).
-mountMcp(app, { baseUrl: BASE_URL });
+// MCP endpoint for the team's own Claude: the trial round (see mcp.js).
+mountMcp(app);
 
 // Long-running steps run in the background; the dashboard follows along on
 // the SSE stream instead of waiting on the HTTP response.
 const background = (fn) => fn().catch((err) => emit("error", { message: err.message }));
 
-// Pages: / (landing, built from web/), /start (sign in + choose path), /team (dashboard), /builder
+// Pages: / (sign in + choose path), /team (dashboard), /builder
 const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../public");
-const WEB_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
-const hasLanding = existsSync(path.join(WEB_DIR, "index.html"));
-// Where Stripe sends the team back to: the React dashboard when it is built, else the old one.
-const dashboard = (query, view) => (hasLanding ? `/app?${query}#${view}` : `/team?${query}`);
-// Older GitHub sign-ins return to "/?github=…"; that, ?switch and a missing build all go to the sign-in page.
-app.get("/", (req, res) => {
-  const signIn = !hasLanding || "github" in req.query || "github_error" in req.query || "switch" in req.query;
-  res.sendFile(path.join(signIn ? PUBLIC_DIR : WEB_DIR, "index.html"));
-});
-app.get("/start", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "index.html")));
-// The platform (marketplace, races, settlement), built from web/app.html.
-app.get("/app", (_req, res) => res.sendFile(hasLanding ? path.join(WEB_DIR, "app.html") : path.join(PUBLIC_DIR, "team.html")));
-app.use(express.static(PUBLIC_DIR, { index: false }));
-if (hasLanding) app.use(express.static(WEB_DIR, { index: false }));
+app.use(express.static(PUBLIC_DIR));
 
 app.get("/api/health", (_req, res) =>
-  res.json({
-    ok: true,
-    mock: MOCK,
-    // Which paid-run APIs Shoal has keys for.
-    providers: { anthropic: Boolean(process.env.ANTHROPIC_API_KEY), openai: Boolean(process.env.OPENAI_API_KEY) },
-    // Which outside APIs have their keys set (npm run keys -- --check tests them).
-    integrations: integrationStatus(),
-    githubToken: hasToken(),
-    payments: paymentsMode(),
-  }),
+  res.json({ ok: true, mock: MOCK, githubToken: hasToken(), payments: paymentsMode() }),
 );
 
 // --- Repo connection -------------------------------------------------------
@@ -106,7 +66,10 @@ app.get("/api/repo-files", async (req, res) => {
   const { files, truncated, head = null } =
     req.query.repo === "demo"
       ? { files: await listAllFiles(DEMO_REPO), truncated: false }
-      : await repoFiles(parseRepo(req.query.repo), { fresh: req.query.fresh === "1" });
+      : await (async () => {
+          const { host, fullName } = parseRemote(req.query.repo);
+          return hostRepoFiles(host, fullName, { fresh: req.query.fresh === "1" });
+        })();
   res.json({
     head,
     files: files.map((p) => ({
@@ -123,22 +86,11 @@ app.get("/api/repo-files", async (req, res) => {
 app.get("/api/problems", (_req, res) => res.json(Object.entries(PROBLEMS).map(([id, p]) => ({ id, ...p }))));
 
 // Sign in with GitHub: redirect to GitHub's login/consent page, then GitHub
-// redirects back to the callback with a one-time code. Always built from
-// BASE_URL, never the host the page was opened on: GitHub only accepts the
-// callback registered on the OAuth App, so 127.0.0.1 vs localhost must not matter.
-const callbackUrl = () => `${BASE_URL}/api/auth/github/callback`;
+// redirects back to the callback with a one-time code.
+const callbackUrl = (req) => `${req.protocol}://${req.get("host")}/api/auth/github/callback`;
 
-// Only same-site paths or the website's own origins, so the redirect can't
-// be pointed at another site.
-const safeReturn = (p) => {
-  if (typeof p !== "string") return "/";
-  if (/^\/(?!\/)/.test(p)) return p;
-  try {
-    return WEB_ORIGINS.includes(new URL(p).origin) ? p : "/";
-  } catch {
-    return "/";
-  }
-};
+// Only same-site paths, so the redirect can't be pointed at another site.
+const safeReturn = (p) => (typeof p === "string" && /^\/(?!\/)/.test(p) ? p : "/");
 
 app.get("/api/auth/github", (req, res) => {
   if (!oauthConfigured()) return res.status(400).send("GitHub sign-in isn't set up: start the server with GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET.");
@@ -151,16 +103,14 @@ app.get("/api/auth/github/callback", async (req, res) => {
     returnTo = safeReturn(await completeOAuth({ code: req.query.code, state: req.query.state, callbackUrl: callbackUrl(req) }));
     const viewer = await getViewer();
     emit("auth.signed_in", { message: `Signed in to GitHub as @${viewer.login}` });
-    res.redirect(withQuery(returnTo, "github=signed-in"));
+    res.redirect(`${returnTo}?github=signed-in`);
   } catch (err) {
-    res.redirect(withQuery(returnTo, `github_error=${encodeURIComponent(err.message)}`));
+    res.redirect(`${returnTo}?github_error=${encodeURIComponent(err.message)}`);
   }
 });
 
-const withQuery = (url, query) => `${url}${url.includes("?") ? "&" : "?"}${query}`;
-
-app.post("/api/auth/github/logout", (_req, res) => {
-  signOut();
+app.post("/api/auth/github/logout", async (_req, res) => {
+  await signOut();
   state.role = null;
   emit("auth.signed_out", { message: "Signed out of GitHub" });
   res.json({ ok: true });
@@ -169,15 +119,6 @@ app.post("/api/auth/github/logout", (_req, res) => {
 // --- Who you are on Shoal: a team with dev pain, or an agent builder -------
 
 const ROLES = ["team", "builder"];
-
-// Who's signed in: the dashboard's GitHub sign-in. Test scripts can play
-// several people with an X-Shoal-Test-User header, only when the server was
-// started with SHOAL_TEST_USERS=1, and never on Vercel.
-async function currentUser(req) {
-  const test = process.env.SHOAL_TEST_USERS === "1" && !process.env.VERCEL && req.get("x-shoal-test-user");
-  if (test) return { login: String(test) };
-  return getViewer().catch(() => null);
-}
 
 app.get("/api/me", async (_req, res) => {
   const viewer = await getViewer().catch(() => null);
@@ -199,44 +140,40 @@ app.get("/builder", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "builder.h
 // install, then rescan. Body: { repo: "owner/name" | url, testCommand?,
 // problems?: [{ id, note? }], sharedPaths?: ["src", "test", ...] }
 // Each stage emits a connect.step event so the dashboard can show progress.
+let connecting = false;
 app.post("/api/connect", async (req, res) => {
+  // Two connects at once fight over the same workspace folder.
+  if (connecting) return res.status(409).json({ error: "Another connect is still running. Wait for it to finish (installing dependencies can take a few minutes)." });
+  connecting = true;
   const step = (name, message) => emit("connect.step", { step: name, message });
   try {
     await connect(req.body, step, res);
   } catch (err) {
+    connecting = false;
     emit("connect.failed", { message: `Connect failed: ${err.message}` });
     throw err;
   }
 });
 
-// Shoal holds one repo at a time, so it can't switch away while it still
-// owes a team a survival verdict on this one.
-function assertNothingSurviving() {
-  const watched = state.bounties.filter((b) => b.status === "surviving");
-  if (watched.length) {
-    throw Object.assign(new Error(`${watched.length} fix${watched.length > 1 ? "es are" : " is"} still in the survival window on ${state.connection.fullName}. Wait for ${watched.length > 1 ? "them" : "it"} to settle first.`), { status: 409 });
-  }
-}
-
 async function connect(body, step, res) {
-  assertNothingSurviving();
-  const fullName = parseRepo(body?.repo);
-  step("repo", `Looking up ${fullName} on GitHub`);
-  const repo = await getRepo(fullName);
-  step("ci", `Reading GitHub Actions history for ${repo.fullName}`);
-  const ci = await ciStats(fullName).catch((err) => {
-    emit("connect.warning", { message: `Couldn't read GitHub Actions history: ${err.message}` });
+  const { host, fullName } = parseRemote(body?.repo);
+  const label = hostLabel(host);
+  step("repo", `Looking up ${fullName} on ${label}`);
+  const repo = await hostGetRepo(host, fullName);
+  step("ci", `Reading ${label} CI history for ${repo.fullName}`);
+  const ci = await hostCiStats(host, fullName).catch((err) => {
+    emit("connect.warning", { message: `Couldn't read ${label} CI history: ${err.message}` });
     return [];
   });
   step("clone", `Cloning ${fullName} (${repo.defaultBranch}) and installing dependencies`);
-  const dir = await cloneRepo(fullName, (message) => step("install", message));
+  const dir = await hostCloneRepo(host, fullName, (message) => step("install", message));
 
   setSource(dir, body?.testCommand);
   await resetWorkspace();
   resetState();
   const connectedTo = dir;
   state.connection = {
-    type: "github",
+    type: host,
     ...repo,
     testCommand: body?.testCommand || null,
     problems: cleanProblems(body?.problems),
@@ -251,11 +188,18 @@ async function connect(body, step, res) {
   });
   res.json({ connection: state.connection, ci });
   step("scan", `Scanning ${repo.fullName} for flaky tests`);
-  background(() => scan());
+  // The lock holds until the scan ends: a new connect would delete the folder it's reading.
+  background(async () => {
+    try {
+      await scan();
+      await scanClasses();
+    } finally {
+      connecting = false;
+    }
+  });
 }
 
 app.post("/api/connect/demo", async (req, res) => {
-  assertNothingSurviving();
   setSource(DEMO_REPO);
   await resetWorkspace();
   resetState();
@@ -296,22 +240,66 @@ app.get("/api/events", (_req, res) => {
 app.post("/api/scan", async (_req, res) => res.json(await scan()));
 app.get("/api/pains", (_req, res) => res.json(state.pains));
 
-app.get("/api/bounties", (_req, res) => res.json(state.bounties.map(publicBounty)));
-app.get("/api/bounties/:id", (req, res) => res.json(publicBounty(getBounty(req.params.id))));
-// Post a bounty. With Stripe set up, the reward is held via Checkout first:
-// the response carries checkoutUrl and the bounty runs once funding clears.
-// Body: { painId, reward, survivalDays?: 7 | 10 | 14, competitors?: [listing ids] }
-// competitors: who may compete (and see the shared code); default Shoal's
-// built-in agents. Any marketplace listing that's available can be picked.
-app.post("/api/bounties", async (req, res) =>
-  openBounty(req, res, {
-    painId: req.body?.painId,
-    reward: req.body?.reward,
-    survivalDays: req.body?.survivalDays,
-    competitors: req.body?.competitors,
-    postedBy: (await currentUser(req))?.login ?? null,
+// --- Pain classes: types, runtimes, dependencies, docs, secrets, CI, PR speed ---
+app.get("/api/pain-classes", (_req, res) =>
+  res.json({
+    catalog: Object.entries(CLASSES).map(([id, c]) => ({ id, title: c.title, metric: c.metric, unit: c.unit, where: c.where, guard: c.guard })),
+    found: state.classPains,
   }),
 );
+app.post("/api/pain-classes/scan", async (req, res) => res.json(await scanClasses({ only: Array.isArray(req.body?.only) ? req.body.only : undefined })));
+app.post("/api/pain-classes/:id/bounty", (req, res) =>
+  openBounty(req, res, { classPainId: req.params.id, reward: req.body?.reward }, createClassBounty),
+);
+// A fix for a local class: { agentId, files: [{ path, content }] }. Shoal measures again and pays only if the number moved.
+app.post("/api/bounties/:id/submit", async (req, res) => res.json(await verifyClassFix(req.params.id, { agentId: String(req.body?.agentId ?? "agent"), files: req.body?.files })));
+// Remote classes (CI duration, PR speed) are judged on fresh telemetry after the change lands.
+app.post("/api/bounties/:id/remeasure", async (req, res) => res.json(await remeasure(req.params.id)));
+app.post("/api/bounties/:id/give-up", async (req, res) => res.json(await failClassBounty(req.params.id)));
+
+// --- Integrations: Slack, Jira, Linear out; Jira, GitHub, Bitbucket, GitLab in ---
+app.get("/api/integrations", (_req, res) => res.json(integrationStatus()));
+const sameSiteSettings = (req, res, next) => {
+  const origin = req.get("origin");
+  const expected = `${req.protocol}://${req.get("host")}`;
+  if (origin && origin !== expected) return res.status(403).json({ error: "Integration settings can only be changed from this Shoal dashboard." });
+  next();
+};
+app.delete("/api/integrations/:provider", sameSiteSettings, async (req, res) => res.json(await disconnectIntegration(req.params.provider)));
+app.get("/api/auth/:provider", (req, res) => {
+  const base = `${req.protocol}://${req.get("host")}`;
+  try {
+    res.redirect(beginIntegrationAuth(req.params.provider, base));
+  } catch (error) {
+    res.redirect(`/team?connectionError=${encodeURIComponent(error.message)}`);
+  }
+});
+app.get("/api/auth/:provider/callback", async (req, res) => {
+  const base = `${req.protocol}://${req.get("host")}`;
+  try {
+    const connected = await finishIntegrationAuth(req.params.provider, req.query, base);
+    res.redirect(`/team?connected=${encodeURIComponent(connected.provider)}`);
+  } catch (error) {
+    res.redirect(`/team?connectionError=${encodeURIComponent(error.message)}`);
+  }
+});
+app.get("/.well-known/agent-card.json", (req, res) => res.json(agentCard(`${req.protocol}://${req.get("host")}`)));
+app.post("/api/hooks/:provider", (req, res) => {
+  const parse = parsers[req.params.provider];
+  if (!parse) return res.status(404).json({ error: "Unknown provider" });
+  const auth = authorize(req);
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
+  const request = parse(req.body ?? {}, req.get("x-github-event"));
+  if (!request) return res.json({ ignored: true });
+  const result = openFromRequest({ source: req.params.provider, ...request });
+  res.status(result.bounty ? 201 : 200).json(result);
+});
+
+app.get("/api/bounties", (_req, res) => res.json(state.bounties));
+app.get("/api/bounties/:id", (req, res) => res.json(getBounty(req.params.id)));
+// Post a bounty. With Stripe set up, the reward is held via Checkout first:
+// the response carries checkoutUrl and the bounty runs once funding clears.
+app.post("/api/bounties", (req, res) => openBounty(req, res, { painId: req.body?.painId, reward: req.body?.reward }));
 
 // --- Model trials (MCP) and the approved API run --------------------------
 
@@ -350,16 +338,12 @@ app.get("/api/trials/:id/repo", async (req, res) => {
 });
 
 // One-click trial: Shoal finds Claude Code here, runs it against its own MCP
-// server, and stops when it's done (see trial-runner.js). Codex does the same
-// for the OpenAI models, on the team's ChatGPT plan.
+// server, and stops when it's done (see claude-runner.js).
 app.get("/api/claude", async (req, res) => res.json(await detectClaude({ fresh: req.query.fresh === "1" })));
 app.post("/api/claude/login", async (_req, res) => res.json(await startLogin()));
 app.post("/api/claude/login/code", async (req, res) => res.json(await finishLogin(req.body?.code)));
-app.get("/api/codex", async (req, res) => res.json(await detectCodex({ fresh: req.query.fresh === "1" })));
-app.post("/api/codex/login", async (_req, res) => res.json(await startCodexLogin()));
-// Body: { use?: ["claude", "codex"] }; default every app that's signed in.
 app.post("/api/trials/run", async (req, res) => {
-  await startTrialRun(`http://localhost:${PORT}`, { use: Array.isArray(req.body?.use) ? req.body.use : undefined });
+  await startTrialRun(`http://localhost:${PORT}`);
   res.status(202).json(trialRun());
 });
 app.post("/api/trials/stop", (_req, res) => {
@@ -381,18 +365,16 @@ app.post("/api/trials/approve", (req, res) => {
       error: proof.checking ? "Still building the proof report for this test" : "No fix for this test is proven yet, so it can't be bought",
     });
   }
-  const unavailable = modelUnavailable(trial.model);
-  if (unavailable) return res.status(503).json({ error: `${MODELS[trial.model].name} can't run yet: ${unavailable}` });
-  if (state.bounties.some((b) => b.painId === painId && b.apiModel && !["failed", "settled", "clawed_back", "payment_failed"].includes(b.status))) {
+  if (state.bounties.some((b) => b.painId === painId && b.apiModel && !["failed", "settled", "payment_failed"].includes(b.status))) {
     return res.status(409).json({ error: "An API fix for this problem is already running" });
   }
   const estimate = fixPriceCents(costPerFix(trial.model));
   if (estimate > balanceCents()) {
     return res.status(402).json({ error: `Not enough credits: this fix should cost about $${(estimate / 100).toFixed(2)}. Buy a credit pack first.` });
   }
-  const bounty = createBounty({ painId, reward: estimate / 100, funding: "credits", apiModel: trial.model, trialId: trial.id, survivalDays: req.body?.survivalDays });
+  const bounty = createBounty({ painId, reward: estimate / 100, funding: "credits", apiModel: trial.model, trialId: trial.id });
   background(() => runBounty(bounty.id));
-  res.status(202).json(publicBounty(bounty));
+  res.status(202).json(bounty);
 });
 
 // Shared paths are folders or single files; files have an extension.
@@ -421,7 +403,7 @@ app.post("/api/proofs", (req, res) => {
   if (!state.trials.some((t) => t.painId === painId && t.status === "passed")) {
     return res.status(400).json({ error: "This test has no verified trial fix to prove yet" });
   }
-  if (req.body?.fresh) resetProofs(painId);
+  if (req.body?.fresh) for (const [id, p] of Object.entries(state.proofs)) if (p.painId === painId) delete state.proofs[id];
   background(() => proveProblem(painId));
   res.status(202).json(proofFor(painId));
 });
@@ -433,12 +415,12 @@ app.get("/api/credits", (_req, res) => res.json({ ...creditsSummary(), payments:
 // Buy a pack: Stripe Checkout when Stripe is set up, otherwise simulated.
 app.post("/api/credits/buy", async (req, res) => {
   const dollars = Number(req.body?.dollars);
-  if (!isCreditAmount(dollars)) return res.status(400).json({ error: "Choose a pack or a whole amount from $5 to $1,000" });
+  if (!PACKS.includes(dollars)) return res.status(400).json({ error: `Pick a pack: ${PACKS.map((p) => `$${p}`).join(", ")}` });
   if (!stripeConfigured()) return res.json(await addCredits({ dollars, mode: "simulated" }));
   const base = `${req.protocol}://${req.get("host")}`;
   const checkoutUrl = await startCreditCheckout(dollars, {
     successUrl: `${base}/api/credits/return?session_id={CHECKOUT_SESSION_ID}`,
-    cancelUrl: `${base}${dashboard("credits=cancelled", "billing")}`,
+    cancelUrl: `${base}/team?credits=cancelled`,
   });
   res.json({ checkoutUrl });
 });
@@ -447,16 +429,16 @@ app.get("/api/credits/return", async (req, res) => {
   try {
     const { dollars, sessionId } = await confirmCreditPurchase(req.query.session_id);
     await addCredits({ dollars, mode: paymentsMode(), stripeSessionId: sessionId });
-    res.redirect(dashboard("credits=added", "billing"));
+    res.redirect("/team?credits=added");
   } catch (err) {
     emit("credits.error", { message: `Credit purchase didn't go through: ${err.message}` });
-    res.redirect(dashboard("credits=failed", "billing"));
+    res.redirect("/team?credits=failed");
   }
 });
 
-async function openBounty(req, res, opts) {
+async function openBounty(req, res, opts, create = createBounty) {
   const funding = stripeConfigured() && req.body?.funding !== "simulated" ? "stripe" : "simulated";
-  const bounty = createBounty({ ...opts, funding });
+  const bounty = create({ ...opts, funding });
   let checkoutUrl = null;
   if (funding === "stripe") {
     try {
@@ -468,7 +450,7 @@ async function openBounty(req, res, opts) {
       throw Object.assign(err, { status: 502 });
     }
   }
-  res.status(201).json({ ...publicBounty(bounty), checkoutUrl });
+  res.status(201).json({ ...bounty, checkoutUrl });
 }
 
 app.post("/api/bounties/:id/fund", async (req, res) => {
@@ -481,7 +463,7 @@ const checkoutUrls = (req, bounty) => {
   const base = `${req.protocol}://${req.get("host")}`;
   return {
     successUrl: `${base}/api/escrow/return?bounty=${bounty.id}&session_id={CHECKOUT_SESSION_ID}`,
-    cancelUrl: `${base}${dashboard("funding=cancelled", "bounties")}`,
+    cancelUrl: `${base}/team?funding=cancelled`,
   };
 };
 
@@ -492,21 +474,14 @@ app.get("/api/escrow/return", async (req, res) => {
     if (bounty.escrow.status === "awaiting_funding") await confirmFunding(bounty, req.query.session_id);
     bounty.status = "open";
     background(() => runBounty(bounty.id));
-    res.redirect(dashboard("funding=held", "bounties"));
+    res.redirect("/team?funding=held");
   } catch (err) {
     emit("escrow.error", { bountyId: bounty.id, message: `Funding didn't go through: ${err.message}` });
-    res.redirect(dashboard("funding=failed", "bounties"));
+    res.redirect("/team?funding=failed");
   }
 });
 
-// Re-measure a fix in its survival window right now (normally after every
-// new commit and on a schedule; see survival.js).
-app.post("/api/bounties/:id/survival/check", async (req, res) => {
-  const bounty = getBounty(req.params.id);
-  if (bounty.status !== "surviving") return res.status(400).json({ error: "This bounty isn't in its survival window" });
-  await checkSurvivors({ trigger: "requested", bountyId: bounty.id });
-  res.json(publicBounty(bounty));
-});
+app.post("/api/bounties/:id/bids", async (req, res) => res.json(await collectBids(req.params.id)));
 
 app.post("/api/bounties/:id/run", (req, res) => {
   const bounty = getBounty(req.params.id);
@@ -522,87 +497,14 @@ app.post("/api/demo", async (req, res) => {
   if (!pain) return res.status(400).json({ error: "No flaky tests left to fix" });
   const bounty = createBounty({ painId: pain.id, reward: req.body?.reward ?? 400 });
   background(() => runBounty(bounty.id));
-  res.status(202).json(publicBounty(bounty));
+  res.status(202).json(bounty);
 });
 
 app.get("/api/agents", (_req, res) => res.json(leaderboard()));
-app.get("/api/agents", (_req, res) => res.json(leaderboard()));
-
-// Publish a custom agent to the marketplace. It bids on new bounties like the seeded ones.
-app.post("/api/agents", async (req, res) => {
-  const { name, tagline = "", strategy, model = "", params = null, specialty = "", minBid = null, maxBid = null } = req.body ?? {};
-  if (!name?.trim() || !strategy?.trim() || strategy.trim().length < 20) return res.status(400).json({ error: "An agent needs a name and a strategy (20+ characters)" });
-  const id = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32) || "agent";
-  if (AGENTS.some((a) => a.id === id)) return res.status(409).json({ error: `An agent called ${name} already exists` });
-  const viewer = await getViewer().catch(() => null);
-  const lo = Number(minBid) || null, hi = Number(maxBid) || lo;
-  const agent = {
-    id, name: name.trim().slice(0, 40), builder: viewer ? `@${viewer.login}` : "@you",
-    tagline: String(tagline).slice(0, 80),
-    pricing: lo ? `Bid $${lo}-$${hi} depending on difficulty.` : "Bid what the fix is worth.",
-    strategy: strategy.slice(0, 1200), model: String(model).slice(0, 40),
-    params: params == null || params === "" ? null : Number(params), specialty: String(specialty).slice(0, 40),
-    minBid: lo, maxBid: hi, rating: null, reviews: 0, enabled: true, custom: true,
-  };
-  AGENTS.push(agent);
-  state.agents[id] = { jobs: 0, wins: 0, rollbacks: 0, earnings: 0 };
-  emit("agent.published", { agentId: id, message: `${agent.name} by ${agent.builder} joined the marketplace` });
-  res.status(201).json(agent);
-});
-// Turn an agent on or off for new bounties.
-app.post("/api/agents/:id/enabled", (req, res) => {
-  const agent = AGENTS.find((a) => a.id === req.params.id);
-  if (!agent) return res.status(404).json({ error: "Unknown agent" });
-  agent.enabled = Boolean(req.body?.enabled);
-  emit("agent.toggled", { agentId: agent.id, message: `${agent.name} ${agent.enabled ? "will bid on" : "won't bid on"} new bounties` });
-  res.json(agent);
-});
-
-// --- Marketplace -------------------------------------------------------------
-// Every agent and model a team can pick, with Shoal's scorecard, verified-
-// buyer ratings and (for models) OpenRouter's numbers. See marketplace.js
-// for the filters and sorts. Listing ids contain slashes
-// (openrouter:z-ai/glm-5.3), so single listings go by ?id=.
-app.get("/api/marketplace", async (req, res) => res.json(marketplace(req.query, await currentUser(req))));
-app.get("/api/marketplace/listing", async (req, res) => {
-  const user = await currentUser(req);
-  res.json({ ...listing(req.query.id, user), reviews: reviewsFor(req.query.id, req.query.reviewSort) });
-});
-// Import an OpenRouter model by id. Body: { id: "z-ai/glm-5.3" }
-app.post("/api/marketplace/openrouter", async (req, res) => {
-  const user = await currentUser(req);
-  res.status(201).json(await importOpenRouterModel(req.body?.id, { by: user?.login ?? null }));
-});
-app.post("/api/marketplace/openrouter/refresh", async (_req, res) => {
-  await refreshOpenRouter();
-  res.json({ ok: true });
-});
-// Builders publish agents with a webhook. The response has the signing
-// secret, shown this once. Body: { name, tagline, description, webhookUrl,
-// pains, languages }
-app.post("/api/marketplace/agents", async (req, res) => res.status(201).json(publishAgent(req.body ?? {}, await currentUser(req))));
-app.patch("/api/marketplace/agents", async (req, res) => res.json(updateAgent(req.query.id, req.body ?? {}, await currentUser(req))));
-app.post("/api/marketplace/agents/rotate-secret", async (req, res) => res.json(rotateSecret(req.query.id, await currentUser(req))));
-app.delete("/api/marketplace/listing", async (req, res) => {
-  removeListing(req.query.id, await currentUser(req));
-  res.json({ ok: true });
-});
-
-// Reviews: verified buyers only (see reviews.js).
-// Body: { listingId, bountyId, stars, body, aspects: { codeQuality, prClarity, speed } }
-app.post("/api/marketplace/reviews", async (req, res) => res.status(201).json(createReview(req.body ?? {}, await currentUser(req), listingExists)));
-app.delete("/api/marketplace/reviews/:id", async (req, res) => {
-  deleteReview(req.params.id, await currentUser(req));
-  res.json({ ok: true });
-});
-app.post("/api/marketplace/reviews/:id/reply", async (req, res) => res.json(replyToReview(req.params.id, req.body?.body, await currentUser(req), ownerOf)));
-app.post("/api/marketplace/reviews/:id/helpful", async (req, res) => res.json(voteHelpful(req.params.id, await currentUser(req), true)));
-app.delete("/api/marketplace/reviews/:id/helpful", async (req, res) => res.json(voteHelpful(req.params.id, await currentUser(req), false)));
 app.get("/api/ledger", (_req, res) => res.json(state.ledger));
 app.get("/api/settlement", (_req, res) => res.json(morningSettlement()));
 
 app.post("/api/reset", async (_req, res) => {
-  assertNothingSurviving();
   await resetWorkspace();
   resetState();
   emit("reset", { message: `Workspace restored to the original ${state.connection.fullName}` });
@@ -613,26 +515,11 @@ app.use((err, _req, res, _next) => {
   res.status(err.status ?? 500).json({ error: err.message });
 });
 
-// Pick up where the last run left off: the repo connection, and bounties
-// whose survival windows are still running (with their fixes re-applied).
-const restored = await loadState();
 await resetWorkspace();
-if (restored) await reapplyBoughtFixes();
-
-// On Vercel the platform serves the exported app; locally we listen.
-export default app;
-if (!process.env.VERCEL) app.listen(PORT, () => {
-  const keys = [process.env.ANTHROPIC_API_KEY && "Claude", process.env.OPENAI_API_KEY && "OpenAI"].filter(Boolean);
-  console.log(`Shoal server on http://localhost:${PORT} (${MOCK ? "MOCK agents: set ANTHROPIC_API_KEY / OPENAI_API_KEY for real paid runs" : `paid runs: ${keys.join(" + ")} API`})`);
-  console.log(
-    oauthConfigured()
-      ? `MCP: ${BASE_URL}/mcp (ChatGPT, Codex and Claude sign in with GitHub)${process.env.SHOAL_AUTH_SECRET ? "" : "; set SHOAL_AUTH_SECRET so sign-ins survive restarts"}`
-      : `MCP: claude mcp add --transport http shoal http://localhost:${PORT}/mcp (local only; set GITHUB_CLIENT_ID/SECRET for ChatGPT and Codex)`,
-  );
-  const watching = state.bounties.filter((b) => b.status === "surviving").length;
-  const store = storageInfo();
-  console.log(`Storage: ${store.backend === "supabase" ? `Supabase (schema ${store.schema})` : `${store.file} (set SUPABASE_DB_URL for Supabase)`}`);
-  if (restored) console.log(`Restored ${state.connection.fullName}: ${state.bounties.length} bounties, ${watching} in their survival window`);
+startIntegrations();
+app.listen(PORT, () => {
+  console.log(`Shoal server on http://localhost:${PORT} (${MOCK ? "MOCK agents: set ANTHROPIC_API_KEY for real Claude" : "live Claude agents"})`);
+  console.log(`MCP: claude mcp add --transport http shoal http://localhost:${PORT}/mcp`);
   console.log(`GitHub:${hasToken() ? "GITHUB_TOKEN set" : "no GITHUB_TOKEN (public repos read-only, no PRs)"}`);
   console.log(
     `Payments: ${{ "stripe-live": "Stripe LIVE escrow: REAL MONEY", "stripe-test": "Stripe TEST mode escrow" }[paymentsMode()] ?? (stripeKeyProblem() ? `${stripeKeyProblem()}; using simulated escrow` : "simulated escrow (set STRIPE_SECRET_KEY for Stripe)")}`,
