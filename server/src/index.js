@@ -3,7 +3,7 @@ import cors from "cors";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { refreshSources, scan } from "./scanner.js";
-import { createBounty, getBounty, leaderboard, morningSettlement, publicBounty, runBounty } from "./bounties.js";
+import { createBounty, getBounty, leaderboard, morningSettlement, publicBounty, recoverInterrupted, runBounty } from "./bounties.js";
 import { checkSurvivors } from "./survival.js";
 import { loadState, storageInfo } from "./persist.js";
 import { importOpenRouterModel, listing, listingExists, marketplace, ownerOf, publishAgent, refreshOpenRouter, removeListing, rotateSecret, updateAgent } from "./marketplace.js";
@@ -14,7 +14,7 @@ import { getStacks, isTestFile, listAllFiles, resetWorkspace, setSource, DEMO_RE
 import { describeStack } from "./stack.js";
 import { zip } from "./zip.js";
 import { readFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { describeFile } from "./describe.js";
 import { confirmCreditPurchase, confirmFunding, paymentsMode, startCheckout, startCreditCheckout, stripeConfigured, stripeKeyProblem } from "./escrow.js";
 import { isProtected } from "./verifier.js";
@@ -63,6 +63,15 @@ const background = (fn) => fn().catch((err) => emit("error", { message: err.mess
 const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../public");
 const WEB_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
 const hasLanding = existsSync(path.join(WEB_DIR, "index.html"));
+// Only the root `npm start` rebuilds web/. Starting the server any other way
+// serves whatever was built last, so say so when the source is newer.
+const staleLanding = (() => {
+  const web = path.join(WEB_DIR, "..");
+  if (!hasLanding || !existsSync(path.join(web, "src"))) return false;
+  const built = statSync(path.join(WEB_DIR, "index.html")).mtimeMs;
+  const sources = ["index.html", "app.html", "vite.config.js", ...readdirSync(path.join(web, "src"), { recursive: true }).map((f) => path.join("src", f))];
+  return sources.some((f) => existsSync(path.join(web, f)) && statSync(path.join(web, f)).mtimeMs > built);
+})();
 // Where Stripe sends the team back to: the React dashboard when it is built, else the old one.
 const dashboard = (query, view) => (hasLanding ? `/app?${query}#${view}` : `/team?${query}`);
 // Older GitHub sign-ins return to "/?github=…"; that, ?switch and a missing build all go to the sign-in page.
@@ -496,9 +505,14 @@ app.get("/api/escrow/return", async (req, res) => {
   const bounty = getBounty(req.query.bounty);
   try {
     if (bounty.escrow.status === "awaiting_funding") await confirmFunding(bounty, req.query.session_id);
-    bounty.status = "open";
-    background(() => runBounty(bounty.id));
-    res.redirect(dashboard("funding=held", "bounties"));
+    // Opening this link again later (or for a bounty that's already racing or
+    // done) must not reset or rerun it: only a bounty waiting to start starts.
+    const starting = ["awaiting_funding", "open"].includes(bounty.status);
+    if (starting) {
+      bounty.status = "open";
+      background(() => runBounty(bounty.id));
+    }
+    res.redirect(starting ? dashboard("funding=held", "bounties") : hasLanding ? "/app#bounties" : "/team");
   } catch (err) {
     emit("escrow.error", { bountyId: bounty.id, message: `Funding didn't go through: ${err.message}` });
     res.redirect(dashboard("funding=failed", "bounties"));
@@ -622,12 +636,18 @@ app.use((err, _req, res, _next) => {
 // Pick up where the last run left off: the repo connection, and bounties
 // whose survival windows are still running (with their fixes re-applied).
 const restored = await loadState();
+if (restored) recoverInterrupted();
 await resetWorkspace();
 if (restored) await reapplyBoughtFixes();
 
 // On Vercel the platform serves the exported app; locally we listen.
 export default app;
-if (!process.env.VERCEL) app.listen(PORT, () => {
+if (!process.env.VERCEL) app.listen(PORT, (err) => {
+  // Express 5 hands listen errors (e.g. the port is taken) to this callback.
+  if (err) {
+    console.error(err.code === "EADDRINUSE" ? `Port ${PORT} is already in use. Stop whatever is using it or set PORT.` : `Couldn't start the server: ${err.message}`);
+    process.exit(1);
+  }
   const keys = [process.env.ANTHROPIC_API_KEY && "Claude", process.env.OPENAI_API_KEY && "OpenAI"].filter(Boolean);
   console.log(`Shoal server on http://localhost:${PORT} (${MOCK ? "MOCK agents: set ANTHROPIC_API_KEY / OPENAI_API_KEY for real paid runs" : `paid runs: ${keys.join(" + ")} API`})`);
   console.log(
@@ -640,6 +660,7 @@ if (!process.env.VERCEL) app.listen(PORT, () => {
   console.log(`Storage: ${store.backend === "supabase" ? `Supabase (schema ${store.schema})` : `${store.file} (set SUPABASE_DB_URL for Supabase)`}`);
   if (restored) console.log(`Restored ${state.connection.fullName}: ${state.bounties.length} bounties, ${watching} in their survival window`);
   console.log(`GitHub:${hasToken() ? "GITHUB_TOKEN set" : "no GITHUB_TOKEN (public repos read-only, no PRs)"}`);
+  if (staleLanding) console.warn("Web: web/dist is older than web/src, so /app and / are out of date. Run `npm run build` from the repo root, or start with `npm start` there.");
   console.log(
     `Payments: ${{ "stripe-live": "Stripe LIVE escrow: REAL MONEY", "stripe-test": "Stripe TEST mode escrow" }[paymentsMode()] ?? (stripeKeyProblem() ? `${stripeKeyProblem()}; using simulated escrow` : "simulated escrow (set STRIPE_SECRET_KEY for Stripe)")}`,
   );

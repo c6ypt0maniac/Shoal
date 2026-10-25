@@ -31,6 +31,21 @@ import { judgeAttempt } from "./proof.js";
 const TAKE_RATE = 0.15;
 // Statuses where the bounty is finished, one way or another.
 export const DONE = ["settled", "clawed_back", "failed", "payment_failed"];
+const RACING = ["bidding", "awarding", "competing", "verifying", "judging"];
+
+// A restart mid-race loses the attempts that were in flight, and nothing
+// resumes them. While the reward is still held, put the bounty back to
+// "open" so the team can start the race again; nothing reruns on its own.
+export function recoverInterrupted() {
+  for (const bounty of state.bounties.filter((b) => RACING.includes(b.status))) {
+    if (bounty.escrow.status !== "held") {
+      emit("error", { bountyId: bounty.id, message: `${bounty.title} was interrupted by a restart after its payment step (${bounty.escrow.status}). Check it by hand.` });
+      continue;
+    }
+    Object.assign(bounty, { status: "open", attempts: [], winner: null });
+    emit("bounty.interrupted", { bountyId: bounty.id, message: `${bounty.title} was interrupted by a server restart. The reward is still held; start the race again.` });
+  }
+}
 
 // funding: "stripe" (team pays through Checkout), "simulated" (fake money)
 // or "credits". apiModel + trialId: the team approved a model from the MCP
@@ -303,6 +318,7 @@ async function win(bounty, pain, payee, attempt) {
   state.ledger.unshift({
     id: newId("tx"),
     bountyId: bounty.id,
+    title: bounty.title,
     agentId: payee.id,
     agentName: payee.name,
     amount: charged,

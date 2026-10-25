@@ -12,7 +12,8 @@ export default function Water({ strength = 1 }) {
     const S = 6, P = 60;
     let W, H, SW, SH, a, b, img, damp, raf;
     const setup = () => {
-      W = Math.ceil(innerWidth / S); H = Math.ceil(innerHeight / S); cv.width = W; cv.height = H;
+      // At least 1x1: a page loaded hidden (0 wide) would make createImageData throw and blank the app.
+      W = Math.max(1, Math.ceil(innerWidth / S)); H = Math.max(1, Math.ceil(innerHeight / S)); cv.width = W; cv.height = H;
       SW = W + 2 * P; SH = H + 2 * P;
       a = new Float32Array(SW * SH); b = new Float32Array(SW * SH); img = ctx.createImageData(W, H); damp = new Float32Array(SW * SH);
       for (let y = 0; y < SH; y++) for (let x = 0; x < SW; x++) {

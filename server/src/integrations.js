@@ -2,7 +2,6 @@
 // keys, and a live check for each that costs nothing (lists models, reads a
 // balance, ...). Used by scripts/keys.js and /api/health.
 // Checks return { ok, detail } and never include a key in what they return.
-import pg from "pg";
 
 const TIMEOUT = 15_000;
 
@@ -121,6 +120,8 @@ export const INTEGRATIONS = [
     where: "supabase.com -> Project Settings -> Database -> Connection string -> URI (pooler, port 6543, on Vercel)",
     vars: [{ name: "SUPABASE_DB_URL", secret: true, pattern: /^postgres(ql)?:\/\// }],
     async check({ SUPABASE_DB_URL: url }) {
+      // Loaded only when Supabase is checked, like persist.js does.
+      const { default: pg } = await import("pg");
       const db = new pg.Client({ connectionString: url, ssl: { rejectUnauthorized: false }, connectionTimeoutMillis: TIMEOUT });
       try {
         await db.connect();

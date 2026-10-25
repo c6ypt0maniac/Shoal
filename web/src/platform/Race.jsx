@@ -30,6 +30,8 @@ function lanes(bounty, events, names) {
       case 'bounty.winner': stage(L, 1, 1, 0.6, e.at, 'won', 'winner'); break;
     }
   }
+  // The event log doesn't survive a server restart, but the bounty knows its winner.
+  if (bounty.winner) Object.assign(lane(names(bounty.winner)), { lo: 1, hi: 1, state: 'won', note: 'winner' });
   const rows = [...map.values()];
   // After the race, anyone still swimming never delivered a verified fix.
   if (FINISHED.includes(bounty.status)) for (const L of rows) if (!['won', 'verified', 'out'].includes(L.state)) Object.assign(L, { state: 'out', note: 'no fix' });
