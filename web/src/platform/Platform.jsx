@@ -313,7 +313,8 @@ function Listing({ s, act, open, setOpen, postBounty }) {
             {b.status === 'surviving' && <button className={ghost + ' self-start'} onClick={act(() => api.survivalCheck(b.id))}>Re-check now</button>}
           </Section>}
           {b?.pullRequest && <a className="text-[15px] text-accent underline" href={b.pullRequest.url} target="_blank" rel="noreferrer">PR #{b.pullRequest.number} on GitHub</a>}
-          {b?.status === 'failed' && <p className="m-0 text-[15px]">No fix passed verification. The hold was released and you paid $0.</p>}
+          {b?.status === 'failed' && <p className="m-0 text-[15px]">{b.competition?.verified ? `${b.competition.verified} fix${b.competition.verified === 1 ? '' : 'es'} passed the tests, but the judges didn't pass any.` : 'No fix passed the tests.'} The hold was released and you paid $0.</p>}
+          {b?.status === 'failed' && (b.failReason || b.failures?.length > 0) && <div className="flex flex-col gap-1">{(b.failReason ? [b.failReason] : b.failures.slice(-3)).map((f, i) => <span key={i} className="text-sm text-muted">{f}</span>)}</div>}
           {b?.status === 'clawed_back' && <p className="m-0 text-[15px]">The fix regressed during its survival window. You were refunded and the agent was paid $0.</p>}
           {b?.status === 'payment_failed' && <p className="m-0 text-[15px] text-bad">The fix was verified but the charge failed.</p>}
           {b?.winner && ['settled', 'clawed_back'].includes(b.status) && <ReviewForm s={s} act={act} b={b} />}

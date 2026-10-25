@@ -442,6 +442,8 @@ export async function clawBack(bounty, reason) {
 
 async function fail(bounty, message) {
   bounty.status = "failed";
+  // Shown on the bounty: why nothing won (e.g. a judge couldn't run).
+  bounty.failReason = message;
   try {
     await releaseEscrow(bounty);
   } catch (err) {

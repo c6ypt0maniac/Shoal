@@ -21,7 +21,7 @@ Start them with `POST /api/trials/sealed {painId?}` (every flaky test without a 
 3. **Proof report.** The cheapest verified fix is checked again: 50 stress runs, the rest of the suite, the rules, challenge tests and **two judges**.
    - Verification runs scale with how often the test failed in the scan: enough runs to catch a fix that didn't work with 95% confidence, between 10 and 150, in batches of 10, stopping at the first failure.
    - Every run of a test (in the scan, verification, proof and survival checks) gets its own copy of the sandbox, so parallel runs can't affect each other.
-   - The judges are Sonnet 5.5 (`claude-sonnet-5-5`) and GPT-6.1 Sol (`gpt-6.1-sol`). Nobody grades their own work: Opus 5.5 judges Sonnet's fixes, and GPT-6 Sol judges GPT-6.1 Sol's. Both must pass.
+   - The judges are Sonnet 5.5 (`claude-sonnet-5-5`) and GPT-6.1 Sol (`gpt-6.1-sol`). Nobody grades their own work: Opus 5.5 judges Sonnet's fixes, and GPT-6 Sol judges GPT-6.1 Sol's. Both must pass. If OpenAI can't answer (no key, no credits, an outage), another Claude model judges in its place: Opus 5.5, or Sonnet 5.5 or Fable 5.1 when Opus wrote the fix or is already judging. It's never the fix's own model.
    - The judges are asked only after the fix passes the stress runs, the suite, the rules and the challenge tests, so a fix that already failed costs no judge tokens.
    - Challenge tests are written by Sonnet 5.5, or GPT-6.1 Sol if Sonnet isn't available. The writer sees the fixes labelled Fix A, Fix B…, never by model.
    - Judges and the challenge writer read the failing test, the files it imports, every file a fix changed and the failure log, plus a list of the repo's other files. They don't get the whole repo, so the cost doesn't grow with repo size.

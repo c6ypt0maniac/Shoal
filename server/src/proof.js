@@ -425,13 +425,35 @@ const JUDGES = {
 
 const judgesFor = (model) => Object.entries(JUDGES).map(([provider, [best, backup]]) => ({ provider, ...(model === best.id ? backup : best) }));
 
+// When OpenAI can't answer (no key, no credits, an outage), another Claude
+// model judges in its place, on Shoal's Anthropic key: never the fix's own
+// model and never the Claude judge already on it.
+const CLAUDE_STAND_INS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"];
+
+// -> the judge's answer, the stand-in's, or null.
+async function askOrStandIn(judge, prompt, painId, { author, judges, teamPlan = false }) {
+  const got = await askJudge(judge, prompt, painId, { teamPlan });
+  // On the team's plan a judge that can't run waits for MCP instead.
+  if (got || judge.provider !== "openai" || teamPlan) return got;
+  const taken = judges.filter((x) => x !== judge).map((x) => x.model);
+  const id = CLAUDE_STAND_INS.find((m) => m !== author && !taken.includes(m));
+  const reason = judge.error ?? "it couldn't run";
+  const standIn = { provider: "anthropic", model: id, name: MODELS[id].name };
+  const answer = id && (await askJudge(standIn, prompt, painId, { teamPlan: false }));
+  if (!answer) return null;
+  emit("proof.stand_in", { message: `${judge.name} couldn't judge (${reason}); ${standIn.name} judged instead` });
+  Object.assign(judge, { ...standIn, alias: null, standInFor: judge.name, standInReason: reason });
+  return { ...answer, via: `${answer.via}, standing in for ${judge.standInFor}` };
+}
+
 async function startReview(pain, trial, diff, { code, options }) {
   const prompt = reviewPrompt(pain, trial, diff, { code, options });
   reviewPrompts.set(trial.id, prompt);
   const judges = judgesFor(trial.model).map((j) => ({ provider: j.provider, model: j.id, alias: j.alias ?? null, name: MODELS[j.id].name, status: "waiting" }));
   await Promise.all(
     judges.map(async (j) => {
-      const got = await askJudge(j, prompt, pain.id, { teamPlan: state.useTeamPlan && !trial.sealed });
+      const teamPlan = state.useTeamPlan && !trial.sealed;
+      const got = await askOrStandIn(j, prompt, pain.id, { author: trial.model, judges, teamPlan });
       if (got) recordVerdict(j, parseVerdict(got.text), got.via);
       // Not on the team's plan (or a sealed fix), there's no MCP fallback:
       // fail with the reason.
@@ -441,7 +463,7 @@ async function startReview(pain, trial, diff, { code, options }) {
   return { ok: null, filesSeen: code.length, judges };
 }
 
-const noJudge = (j) => ({ verdict: "fail", summary: `${j.name} couldn't run: set ${j.provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"} on the server, or this bug's spend cap was reached.`, remaining: [], risks: [] });
+const noJudge = (j) => ({ verdict: "fail", summary: `${j.name} couldn't run: ${j.error ?? `set ${j.provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"} on the server, or this bug's spend cap was reached`}.`, remaining: [], risks: [] });
 
 // One judge's answer. In practice mode, a stand-in that passes. Otherwise
 // Shoal's API key, within the bug's spend cap; the team's Claude Code /
@@ -461,7 +483,9 @@ async function askJudge(j, prompt, painId = null, { teamPlan = state.useTeamPlan
     const api = await judgeViaApi(j.model, prompt);
     addSpend(painId, "judges", api.cost);
     return { text: api.text, via: `${MODELS[j.model].name} API`, cost: api.cost };
-  } catch {
+  } catch (err) {
+    // Kept for the stand-in note and the failure message (e.g. no credits).
+    j.error = String(err.message ?? err).slice(0, 200);
     return null;
   }
 }
@@ -479,19 +503,20 @@ export async function judgeAttempt({ pain, files, author, others = [] }) {
   const options = others.map((files, i) => ({ trial: { id: `other:${i}`, files } }));
   const prompt = reviewPrompt(pain, fix, diff, { code, options });
   let cost = 0;
+  const all = judgesFor(author).map((j) => ({ provider: j.provider, model: j.id, alias: j.alias ?? null, name: MODELS[j.id].name, status: "waiting" }));
   const judges = await Promise.all(
-    judgesFor(author).map(async (j) => {
-      const judge = { provider: j.provider, model: j.id, alias: j.alias ?? null, name: MODELS[j.id].name, status: "waiting" };
+    all.map(async (judge) => {
       if (MOCK) {
         recordVerdict(judge, { verdict: "pass", summary: "Mock judge (no API keys): not a real review.", remaining: [], risks: [] }, "mock");
         return judge;
       }
-      const got = await askJudge(judge, prompt);
+      const got = await askOrStandIn(judge, prompt, null, { author, judges: all, teamPlan: state.useTeamPlan });
       if (got) {
         cost += got.cost;
         recordVerdict(judge, parseVerdict(got.text), got.via);
       } else {
-        recordVerdict(judge, { verdict: "fail", summary: `No way to run ${judge.name}: sign in to ${j.provider === "anthropic" ? "Claude Code" : "Codex"} here or set ${j.provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"}.`, remaining: [], risks: [] }, null);
+        const key = judge.provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
+        recordVerdict(judge, { verdict: "fail", summary: `${judge.name} couldn't judge: ${judge.error ?? `set ${key} on the server`}.`, remaining: [], risks: [] }, null);
         judge.unavailable = true;
       }
       return judge;
