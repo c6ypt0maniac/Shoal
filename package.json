@@ -6,7 +6,7 @@
     "node": ">=22.9"
   },
   "scripts": {
-    "postinstall": "npm --prefix server install && npm --prefix web install",
+    "postinstall": "cd server && npm install && cd ../web && npm install",
     "build": "npm --prefix web run build",
     "prestart": "npm run build",
     "start": "npm --prefix server start",
