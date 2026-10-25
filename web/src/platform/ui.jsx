@@ -101,4 +101,9 @@ export function Modal({ onClose, children, wide }) {
     </div>
   );
 }
-export const Label = ({ t, children }) => <label className="flex flex-col gap-1.5 text-sm text-muted">{t}{children}</label>;
+// "Sign in with GitHub", coming back to a platform page. In dev (Vite) the return
+// is a full URL so GitHub's callback on the API server sends you back here; the
+// server only allows that for origins listed in SHOAL_WEB_ORIGINS.
+export const signInHref = (view) => '/api/auth/github?return=' + encodeURIComponent((import.meta.env.DEV ? location.origin : '') + '/app' + (view ? '#' + view : ''));
+
+export const Label =({ t, children }) => <label className="flex flex-col gap-1.5 text-sm text-muted">{t}{children}</label>;
