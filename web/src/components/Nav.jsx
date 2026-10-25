@@ -125,7 +125,7 @@ export default function Nav() {
             </g>
           </svg>
         )}
-        <span className="relative block size-[11px] rounded-full bg-accent shadow-[0_0_0_2px_rgba(255,255,255,0.65)]" />
+        <img src="/logo-mark.png" alt="" aria-hidden="true" className="relative block h-[1.2em] w-auto" />
         <span className="relative">Shoal</span>
       </a>
     </div>

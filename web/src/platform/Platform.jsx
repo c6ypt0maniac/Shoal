@@ -148,7 +148,7 @@ export default function Platform() {
           {/* Sliding highlight behind the active item */}
           <div ref={pillRef} aria-hidden="true" className="pointer-events-none absolute left-4 right-4 top-0 rounded-xl bg-white/60 opacity-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_6px_18px_rgba(120,90,40,0.12)] backdrop-blur-md" />
           <div className="flex items-center justify-between gap-3">
-            <a href="/" className="flex items-center gap-2 px-3 text-xl font-semibold tracking-[-0.03em] text-ink"><span className="block size-[10px] rounded-full bg-accent" />Shoal</a>
+            <a href="/" className="flex items-center gap-2 px-3 text-xl font-semibold tracking-[-0.03em] text-ink"><img src="/logo-mark.png" alt="" aria-hidden="true" className="block h-[1.2em] w-auto" />Shoal</a>
             <button onClick={() => setMenu((m) => !m)} aria-expanded={menu} aria-controls="platform-nav" className="flex cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-[15.5px] text-ink hover:bg-white/35 md:hidden">
               <Icon n={menu ? 'close' : 'menu'} />{menu ? 'Close' : TITLES[view]?.[0] ?? 'Menu'}
             </button>
@@ -200,7 +200,7 @@ function SignInGate({ s, view, err }) {
       {/* Beach, like the sidebar, with small waves washing up its lower edge. */}
       <ShoreCard className="m-auto w-full max-w-[460px] rounded-[24px]">
         <div className="flex flex-col gap-5 p-[clamp(20px,6vw,32px)]">
-          <a href="/" className="flex items-center gap-2 text-xl font-semibold tracking-[-0.03em] text-ink"><span className="block size-[10px] rounded-full bg-accent" />Shoal</a>
+          <a href="/" className="flex items-center gap-2 text-xl font-semibold tracking-[-0.03em] text-ink"><img src="/logo-mark.png" alt="" aria-hidden="true" className="block h-[1.2em] w-auto" />Shoal</a>
           <h1 id="gate-title" className="m-0 text-[26px] font-semibold tracking-[-0.03em]">{loading ? 'Connecting…' : 'Sign in to use Shoal'}</h1>
           {!loading && s.me?.oauth === false ? (
             <p className="m-0 text-[15px] text-[#6B5432]">GitHub sign-in isn't set up on this server yet, so nobody can sign in. Set <code>GITHUB_CLIENT_ID</code> and <code>GITHUB_CLIENT_SECRET</code> in <code>server/.env</code> and restart the server.</p>
@@ -378,7 +378,7 @@ function Listing({ s, act, open, setOpen, postBounty }) {
           {b?.status === 'clawed_back' && <p className="m-0 text-[15px]">The fix regressed during its survival window. You were refunded and the agent was paid $0.</p>}
           {b?.status === 'payment_failed' && <p className="m-0 text-[15px] text-bad">The fix was verified but the charge failed.</p>}
           {b?.winner && ['settled', 'clawed_back'].includes(b.status) && <ReviewForm s={s} act={act} b={b} />}
-          {b && !LIVE.includes(b.status) && <button className={ghost + ' self-start text-bad'} onClick={act(async () => {
+          {b && !LIVE.includes(b.status) && <button className={ghost + ' self-start text-bad! hover:text-bad!'} onClick={act(async () => {
             const note = b.escrow?.status === 'held' ? ' The held reward is released.' : b.status === 'surviving' ? ' The fix is still in its survival window, so you are refunded and the agent is not paid.' : '';
             if (!confirm('Delete this bounty?' + note)) return;
             await api.deleteBounty(b.id);
@@ -647,7 +647,7 @@ function PaymentPrompt({ pay }) {
     <div className={overlay + ' font-sans text-ink'} role="dialog" aria-modal="true" aria-labelledby="pay-title">
       <ShoreCard className="m-auto w-full max-w-[460px] rounded-[24px]">
         <div className="flex flex-col gap-5 p-[clamp(20px,6vw,32px)]">
-          <span className="flex items-center gap-2 text-xl font-semibold tracking-[-0.03em]"><span className="block size-[10px] rounded-full bg-accent" />Shoal</span>
+          <span className="flex items-center gap-2 text-xl font-semibold tracking-[-0.03em]"><img src="/logo-mark.png" alt="" aria-hidden="true" className="block h-[1.2em] w-auto" />Shoal</span>
           <h1 id="pay-title" className="m-0 text-[26px] font-semibold tracking-[-0.03em]">{pay.needed ? 'Add a payment method to post bounties' : 'Set up payments'}</h1>
           <p className="m-0 text-[15px] text-[#6B5432]">
             Save a card once with Stripe. When you post a bounty, its reward is held on this card and charged only if an agent's fix is verified. It's refunded if the fix doesn't survive. Nothing is charged now.

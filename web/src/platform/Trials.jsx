@@ -15,9 +15,9 @@ function Runner({ id, title, info, act, reload }) {
   const start = act(async () => setLogin(await (id === 'claude' ? api.claudeLogin() : api.codexLogin())));
   return (
     <div className={card}>
-      <div className="flex items-center justify-between gap-3"><span className="text-[19px] font-semibold">{title}</span>
-        <Tag tone={info?.loggedIn ? 'ok' : info && !info.installed ? 'bad' : undefined}>{!info ? 'Checking…' : !info.installed ? 'Not installed' : info.loggedIn ? 'Signed in' : 'Not signed in'}</Tag></div>
-      {info?.installed && <span className="text-[15px] text-muted">Version {info.version}{info.email ? ' · ' + info.email : ''}{info.plan ? ' · ' + info.plan : ''}</span>}
+      <div className="flex items-center justify-between gap-3"><span className="whitespace-nowrap text-[19px] font-semibold">{title}</span>
+        <span className="shrink-0 whitespace-nowrap"><Tag tone={info?.loggedIn ? 'ok' : info && !info.installed ? 'bad' : undefined}>{!info ? 'Checking…' : !info.installed ? 'Not installed' : info.loggedIn ? 'Signed in' : 'Not signed in'}</Tag></span></div>
+      {info?.installed && <span className="break-all text-[15px] text-muted">Version {info.version}{info.email ? ' · ' + info.email : ''}{info.plan ? ' · ' + info.plan : ''}</span>}
       {info && !info.installed && <span className="text-[15px] text-muted">Install {title} on the machine running the Shoal server, then check again.</span>}
       {info?.installed && !info.loggedIn && !login && <button className={ghost + ' self-start'} onClick={start}>Sign in to {title}</button>}
       {login && !info?.loggedIn && <div className="flex flex-col gap-2 text-[15px]">

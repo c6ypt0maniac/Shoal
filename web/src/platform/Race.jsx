@@ -74,7 +74,7 @@ export default function Race({ bounty, events, names = (id) => id, compact = fal
                 <Fish size={50} color={COLORS[i % COLORS.length]} tail={moving ? Math.sin(t * 9 + i) * 0.45 : 0} opacity={out ? 0.3 : 1} />
               </div>
             </div>
-            {!compact && <div className={'text-right text-sm tabular-nums ' + (r.state === 'won' ? 'font-medium text-accent' : r.state === 'verified' ? 'text-accent' : out ? 'text-bad' : 'text-muted')}>{r.note}</div>}
+            {!compact && <div title={r.note} className={'line-clamp-2 text-right text-sm tabular-nums ' + (r.state === 'won' ? 'font-medium text-accent' : r.state === 'verified' ? 'text-accent' : out ? 'text-bad' : 'text-muted')}>{r.note}</div>}
           </div>
         );
       })}

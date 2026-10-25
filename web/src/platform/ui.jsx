@@ -82,7 +82,7 @@ export function Stars({ r, n }) {
 export function ItemCard({ icon, toggle, title, by, meta, tags, body, footL, footR, onOpen }) {
   return (
     <div onClick={onOpen} className={card + ' cursor-pointer transition-[transform,border-color] hover:-translate-y-0.5 hover:border-accent/40'}>
-      <div className="flex items-start justify-between"><div className="flex size-12 items-center justify-center rounded-2xl bg-white/70 text-ink shadow-[inset_0_1px_0_rgba(255,255,255,0.9)]">{icon}</div>{toggle}</div>
+      <div className="flex items-start justify-between"><div className="flex size-12 items-center justify-center rounded-2xl bg-white/70 text-ink shadow-[inset_0_1px_0_rgba(255,255,255,0.9)]">{icon}</div><span className="shrink-0 whitespace-nowrap">{toggle}</span></div>
       <div className="flex flex-col gap-0.5"><div className="truncate text-[21px] font-semibold tracking-[-0.02em]">{title}</div><div className="text-[15px] text-muted">{by}</div></div>
       {meta}
       {tags && <div className="flex flex-wrap gap-2">{tags}</div>}
