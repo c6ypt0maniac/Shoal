@@ -1,16 +1,17 @@
 import { useEffect, useRef } from 'react';
+import { animate } from '../lib/animation.js';
 import { prefersReducedMotion } from '../lib/motion.js';
 
 const TINT = { top: [236, 250, 240], bottom: [120, 214, 200], light: [255, 251, 232], shade: [20, 128, 130] };
 
 // Full-screen ripple simulation. Only the cursor disturbs the water; waves are
 // absorbed off-screen (padded grid) so they never bounce back from the edges.
-export default function Water({ strength = 1 }) {
+export default function Water({ strength = 1, paused = false }) {
   const ref = useRef(null);
   useEffect(() => {
     const cv = ref.current, ctx = cv.getContext('2d');
-    const S = 6, P = 60;
-    let W, H, SW, SH, a, b, img, damp, raf;
+    const S = 8, P = 40;
+    let W, H, SW, SH, a, b, img, damp;
     const setup = () => {
       // At least 1x1: a page loaded hidden (0 wide) would make createImageData throw and blank the app.
       W = Math.max(1, Math.ceil(innerWidth / S)); H = Math.max(1, Math.ceil(innerHeight / S)); cv.width = W; cv.height = H;
@@ -36,7 +37,8 @@ export default function Water({ strength = 1 }) {
     setup();
     // Lets other layers (the beach) read the ripple height at a screen point.
     window.__shoalWater = { sample: (x, y) => { const i = ((y / S) | 0) + P, j = ((x / S) | 0) + P; return i > 0 && i < SH && j > 0 && j < SW ? a[i * SW + j] : 0; } };
-    addEventListener('resize', setup); addEventListener('pointermove', onMove); addEventListener('scroll', onScroll, { passive: true });
+    const onResize = () => { setup(); loop(); };
+    addEventListener('resize', onResize); addEventListener('pointermove', onMove); addEventListener('scroll', onScroll, { passive: true });
     const still = prefersReducedMotion();
     const row = [], col = [];
     const loop = () => {
@@ -63,10 +65,10 @@ export default function Water({ strength = 1 }) {
         }
       }
       ctx.putImageData(img, 0, 0);
-      raf = requestAnimationFrame(loop);
+
     };
-    raf = requestAnimationFrame(loop);
-    return () => { cancelAnimationFrame(raf); removeEventListener('resize', setup); removeEventListener('pointermove', onMove); removeEventListener('scroll', onScroll); };
-  }, [strength]);
+    const stop = animate(loop, { paused });
+    return () => { stop(); delete window.__shoalWater; removeEventListener('resize', onResize); removeEventListener('pointermove', onMove); removeEventListener('scroll', onScroll); };
+  }, [strength, paused]);
   return <canvas ref={ref} aria-hidden="true" className="pointer-events-none fixed inset-0 z-0 block h-full w-full scale-[1.04] blur-[6px]" />;
 }

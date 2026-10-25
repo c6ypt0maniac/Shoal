@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { animate } from '../lib/animation.js';
 import { prefersReducedMotion } from '../lib/motion.js';
 
 // The sidebar is the beach. Waves arrive in irregular sets: a foam roll breaks
@@ -11,7 +12,7 @@ const easeIO = (p) => (p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2);
 // Gentle in and out, so a wave never starts or stops with a jolt.
 const easeSine = (p) => -(Math.cos(Math.PI * p) - 1) / 2;
 
-export default function Shore({ width = 300 }) {
+export default function Shore({ width = 300, paused = false }) {
   const r = { sand: useRef(null), wet: useRef(null), glow: useRef(null), foam: useRef(null), film: useRef(null), breaker: useRef(null), lace0: useRef(null), lace1: useRef(null) };
   useEffect(() => {
     // Barely-there lapping, close to the original still shoreline; fully
@@ -93,14 +94,14 @@ export default function Shore({ width = 300 }) {
         if (w && w.laceOp > 0.005) { ref.current.setAttribute('d', pathOf(w.peak.map((x) => Math.max(width - 14, x)))); ref.current.setAttribute('opacity', w.laceOp.toFixed(3)); }
         else ref.current.setAttribute('opacity', '0');
       });
-      if (!still) raf = requestAnimationFrame(frame);
+
     };
-    raf = requestAnimationFrame(frame);
+    const stop = animate(frame, { paused });
     // While animating, the next frame picks up the new size; a second loop would double the work.
-    const redraw = () => still && requestAnimationFrame(frame);
+    const redraw = () => { if (still || paused) { cancelAnimationFrame(raf); raf = requestAnimationFrame(frame); } };
     addEventListener('resize', redraw);
-    return () => { cancelAnimationFrame(raf); removeEventListener('resize', redraw); };
-  }, [width]);
+    return () => { stop(); cancelAnimationFrame(raf); removeEventListener('resize', redraw); };
+  }, [width, paused]);
   const W = width + 220;
   return (
     <svg aria-hidden="true" className="pointer-events-none fixed inset-y-0 left-0 z-0 hidden h-screen md:block" style={{ width: W }}>

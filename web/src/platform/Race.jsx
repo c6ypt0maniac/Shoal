@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { animate } from '../lib/animation.js';
 import Fish from './Fish.jsx';
 
 export const COLORS = ['#0A7470', '#0B2A40', '#9A5B00', '#B83A2B', '#3D5B70', '#2F7D4F'];
@@ -55,20 +56,21 @@ function lanes(bounty, events, names) {
 
 export default function Race({ bounty, events, names = (id) => id, compact = false }) {
   const rows = useMemo(() => (bounty ? lanes(bounty, events, names) : []), [bounty, events, names]);
-  const pos = useRef({});
+  const pos = useRef({}), container = useRef(null);
   const [, setFrame] = useState(0);
-  useEffect(() => { let r; const f = () => { setFrame((x) => x + 1); r = requestAnimationFrame(f); }; r = requestAnimationFrame(f); return () => cancelAnimationFrame(r); }, []);
+  const moving = rows.some(r => ['working','verifying','judging'].includes(r.state));
+  useEffect(() => animate(() => setFrame(x => x + 1), { paused: !moving, element: container.current }), [moving]);
   if (!bounty) return null;
   const now = Date.now(), t = now / 1000;
   return (
-    <div className="flex flex-col">
+    <div ref={container} className="flex flex-col">
       {rows.length === 0 && <div className="py-8 text-center text-muted">Agents are reviewing the test…</div>}
       {rows.map((r, i) => {
-        const out = r.state === 'out', moving = !out && r.state !== 'won' && r.state !== 'verified';
+        const out = r.state === 'out', moving = ['working', 'verifying', 'judging'].includes(r.state);
         const k = Math.max(0, (now - r.since) / 1000);
         const target = moving ? r.lo + (r.hi - r.lo) * (1 - Math.exp(-k / r.tau)) : r.hi;
         const prev = pos.current[r.id] ?? 0;
-        const p = (pos.current[r.id] = out ? prev : prev + (target - prev) * 0.06);
+        const p = (pos.current[r.id] = !moving || out ? target : prev + (target - prev) * 0.12);
         return (
           <div key={r.id} className={'grid items-center gap-3 border-t border-ink/10 py-2.5 ' + (compact ? 'grid-cols-[96px_minmax(0,1fr)]' : 'grid-cols-[120px_minmax(0,1fr)_120px]')}>
             <div className="truncate text-[15px] font-medium">{r.name}</div>
