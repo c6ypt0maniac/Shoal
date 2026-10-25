@@ -287,7 +287,7 @@ function patchProblem(files) {
     const p = cleanPath(f.path);
     if (!p) return `Invalid path: ${f.path}`;
     if (isSecret(p) || !inScope(p)) return `${f.path} isn't shared with agents`;
-    if (isProtected(p)) return `${f.path} is protected (tests, CI config and manifests can't change)`;
+    if (isProtected(p)) return `${f.path} is protected (tests, CI config, manifests and installed dependencies can't change)`;
   }
   return null;
 }
