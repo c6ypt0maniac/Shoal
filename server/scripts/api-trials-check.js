@@ -1,7 +1,8 @@
 // Checks sealed API trials (api-trials.js) in practice mode (no keys, no spend):
 //   trials need credits;
-//   the ladder climbs past a step whose models all fail and stops at the
-//   first step with a proven fix (step 3 is never asked);
+//   the trial is small: models only diagnose; step 1's wrong diagnoses
+//   mean none of them writes a fix; step 2's correct ones are graded and only
+//   the cheapest writes the full fix, which is proven (step 3 never asked);
 //   until unlock no fix code leaves Shoal (API, file/zip downloads, MCP);
 //   unlock charges credits once, at the price shown, and lands the fix;
 //   a model that failed is never asked again on the same bug;
@@ -79,10 +80,12 @@ try {
   const started = await req("/api/trials/sealed", { painId: cart.id });
   check("started", started.status === 202, started.text);
   let p = await ladderDone("test/cart.test.js");
-  const tried = state.apiTrials[cart.id].tried;
-  check("proven at step 2", p.ladder.status === "proven" && p.ladder.step === 2, JSON.stringify(p.ladder));
-  check("step 1's models were each tried once and failed", STEP_1.every((m) => tried.filter((x) => x === m).length === 1));
-  check("step 3 was never asked", !tried.includes("claude-opus-5-5") && !tried.includes("gpt-6-astra"), tried.join(", "));
+  const { diagnosed, fixed } = state.apiTrials[cart.id];
+  check("proven at step 2", p.ladder.status === "proven" && p.ladder.step === 2, JSON.stringify({ ...p.ladder, diagnoses: undefined }));
+  check("step 1's models each diagnosed once, wrongly, and wrote no fix", STEP_1.every((m) => diagnosed.filter((x) => x === m).length === 1 && !fixed.includes(m)));
+  check("only one full fix was written, by a model that diagnosed it right", fixed.length === 1 && ["claude-sonnet-5-5", "gpt-6.1-sol"].includes(fixed[0]) && state.trials.filter((t) => t.painId === cart.id).length === 1, fixed.join(", "));
+  check("step 3 was never asked", !diagnosed.includes("claude-opus-5-5") && !diagnosed.includes("gpt-6-astra"), diagnosed.join(", "));
+  check("the team sees what's broken, not the plan", p.ladder.diagnoses.length === 5 && p.ladder.diagnoses.every((d) => !("plan" in d) && d.file) && !JSON.stringify(p.ladder).includes("Practice mode."));
   check("Shoal set the model tags and measured costs", state.trials.filter((t) => t.painId === cart.id).every((t) => t.sealed && t.client?.app === "Shoal API" && t.apiCost > 0));
   check("spend was recorded for this bug", state.trialSpend[cart.id]?.fix > 0, JSON.stringify(state.trialSpend[cart.id]));
   const price = p.fixPrice;
@@ -126,18 +129,18 @@ try {
   process.env.SHOAL_TRIAL_CAP = "0.0001";
   await req("/api/trials/sealed", { painId: orders.id });
   p = await ladderDone("test/orders.test.js");
-  check("stopped at the cap before any call", p.ladder.stopped === "cap" && state.apiTrials[orders.id].tried.length === 0, JSON.stringify(p.ladder));
+  check("stopped at the cap before any call", p.ladder.stopped === "cap" && state.apiTrials[orders.id].diagnosed.length === 0, JSON.stringify(p.ladder));
   delete process.env.SHOAL_TRIAL_CAP;
 
   console.log("6. A failed model is never asked again");
   await req("/api/trials/sealed", { painId: orders.id });
   p = await ladderDone("test/orders.test.js");
-  const first = [...state.apiTrials[orders.id].tried];
-  check("every model tried once, none proven", p.ladder.stopped === "exhausted" && first.length === ALL.length && new Set(first).size === ALL.length, first.join(", "));
+  const first = [...state.apiTrials[orders.id].diagnosed];
+  check("every model diagnosed once, none right, so no fix written", p.ladder.stopped === "exhausted" && first.length === ALL.length && new Set(first).size === ALL.length && state.apiTrials[orders.id].fixed.length === 0, first.join(", "));
   const trialsBefore = state.trials.length;
   await req("/api/trials/sealed", { painId: orders.id });
   p = await ladderDone("test/orders.test.js");
-  check("running again asks no model", state.apiTrials[orders.id].tried.length === ALL.length && state.trials.length === trialsBefore);
+  check("running again asks no model", state.apiTrials[orders.id].diagnosed.length === ALL.length && state.trials.length === trialsBefore);
 
   const margins = await req("/api/owner/margins");
   check("owner margin view (local)", margins.status === 200 && JSON.parse(margins.text).rows.some((r) => r.painId === cart.id && r.revenue === price), margins.text.slice(0, 200));

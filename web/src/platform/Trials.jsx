@@ -91,6 +91,15 @@ export default function Trials({ s, act, go }) {
                 {p.ladder?.status === 'running' && <Tag>Sealed trials: step {p.ladder.step}</Tag>}
                 {p.ladder?.status === 'stopped' && <Tag tone="bad">{p.ladder.stopped === 'cap' ? 'Stopped at the spend cap' : 'No model proved a fix'}</Tag>}
               </div>
+              {p.ladder?.diagnoses?.length > 0 && (() => {
+                // The small trial: who diagnosed what. The winner's diagnosis says
+                // what needs fixing; how stays sealed until unlock.
+                const won = p.ladder.diagnoses.find((d) => d.wroteFix && d.correct);
+                return <div className="flex flex-col gap-1 text-sm">
+                  {won && <span><span className="text-muted">Needs fixing:</span> <span className="font-mono">{won.file}</span>, {won.location}. {won.cause}</span>}
+                  <span className="text-muted">Diagnosed: {p.ladder.diagnoses.map((d) => d.name + (d.correct ? ' ✓' : d.correct === false ? ' ✗' : '')).join(', ')}{won ? ' · fix written by ' + won.name : ''}</span>
+                </div>;
+              })()}
               {pr.candidates?.filter((c) => c.checks?.review?.skipped).map((c) => <span key={c.trialId} className="text-sm text-muted">{c.name}: {c.checks.review.reason}</span>)}
               {pr.awaitingReview && <span className="text-sm text-muted">Ask Claude, ChatGPT or Codex (connected to Shoal over MCP) to review the fixes.</span>}
               <div className="mt-auto flex flex-wrap gap-2 pt-2">

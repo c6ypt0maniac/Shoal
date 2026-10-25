@@ -538,7 +538,8 @@ function reviewPrompt(pain, trial, diff, { code, options }) {
     `The failing test, the code it imports and every changed file, WITH this fix applied:\n\n${dump(withFix(code, trial.files))}`,
     otherPaths(code),
     "Pass it only if every root cause behind the failures is fixed. Fail it if it hides a symptom (longer sleeps, retries, looser assertions, swallowed errors) or works around a bug instead of fixing it, leaving broken code that the test just doesn't reach.",
-    'Reply with only JSON: {"verdict": "pass" | "fail", "summary": "one or two sentences", "remaining_bugs": ["file: what is still broken", ...], "risks": ["short risk", ...]}',
+    "The team may read your summary before it sees the fix, so keep it short: say what is fixed or still broken and where, never how to fix it, and quote no code.",
+    'Reply with only JSON: {"verdict": "pass" | "fail", "summary": "one sentence", "remaining_bugs": ["file: what is still broken", ...], "risks": ["short risk", ...]}',
   ].join("\n\n");
 }
 

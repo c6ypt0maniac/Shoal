@@ -127,9 +127,9 @@ const FALLBACK_MODELS = new Set(["claude-sonnet-5-5", "claude-opus-5-5", "claude
 // The paid run: the model the team approved after the trials, called through
 // the API with Shoal in control. Returns the fix and what the call cost.
 // In mock mode the winning trial patch stands in for the model's answer.
-export async function requestModelFix(model, bounty, pain, { trial, lastFailure } = {}) {
+export async function requestModelFix(model, bounty, pain, { trial, lastFailure, diagnosis } = {}) {
   if (MOCK) return mockModelFix(model, pain, trial);
-  const prompt = await fixPrompt(pain, { trial, lastFailure });
+  const prompt = await fixPrompt(pain, { trial, lastFailure, diagnosis });
   const unavailable = modelUnavailable(model);
   if (unavailable) throw new Error(unavailable);
   if (MODELS[model].provider === "openai") return openaiFix(model, prompt);
@@ -165,17 +165,84 @@ async function mockModelFix(model, pain, trial) {
 }
 
 // The task every model gets, whoever runs it (Claude, OpenAI, OpenRouter).
-export async function fixPrompt(pain, { trial, lastFailure } = {}) {
+// diagnosis: the model's own diagnosis from the sealed trial (api-trials.js).
+export async function fixPrompt(pain, { trial, lastFailure, diagnosis } = {}) {
   return [
     `Fix the flaky test ${pain.testFile}: it failed ${pain.failures}/${pain.runs} runs.`,
     pain.sampleFailure ? `Sample failure output:\n${pain.sampleFailure}` : "",
     trial ? `In a trial run you proposed this fix, which passed verification: ${trial.summary}` : "",
+    diagnosis ? `Your diagnosis, which a reviewer judged correct: ${diagnosis.file} (${diagnosis.location}): ${diagnosis.cause}\nYour plan: ${diagnosis.plan}` : "",
     lastFailure ? `Your previous attempt was rejected:\n${lastFailure}` : "",
     `Repository files:\n${await repoContext(pain)}`,
     "Fix the real cause in application code. Test files, test folders, CI config and package manifests are protected; patches that touch them are rejected.",
     "It's accepted only if the test passes enough runs in a row (at least 10; more for a test that rarely fails) and every previously stable test still passes.",
     "Return the complete new contents of every file you change (paths relative to the repo root). Only include files you actually change.",
+    "In summary, write one short sentence saying what was broken and where (file and function). Don't say how you fixed it and don't quote code: the team reads it before it sees the change.",
   ].join("\n\n");
+}
+
+// --- Diagnosis (the sealed trial) ----------------------------------------------
+// A cheap first round: each model says what's broken and where, with no code.
+// A grader picks the correct ones (api-trials.js) and only the best-value
+// model that got it right writes the full fix.
+
+export const DiagnosisSchema = z.object({
+  file: z.string(),
+  location: z.string(),
+  cause: z.string(),
+  plan: z.string(),
+});
+
+export async function diagnosisPrompt(pain) {
+  return [
+    `The test ${pain.testFile} is flaky: it failed ${pain.failures}/${pain.runs} runs.`,
+    pain.sampleFailure ? `Sample failure output:\n${pain.sampleFailure}` : "",
+    `Repository files:\n${await repoContext(pain)}`,
+    "Don't write a fix. Diagnose it. file: the file the real cause is in. location: just the function or lines, a few words. cause: what goes wrong, in one or two sentences. plan: how you'd fix it in application code, in one or two sentences. No code.",
+  ].join("\n\n");
+}
+
+// -> { diagnosis, cost }. Short and at low effort: it only has to find the bug.
+export async function requestDiagnosis(model, pain, prompt) {
+  if (MOCK) return mockDiagnosis(model, pain);
+  const unavailable = modelUnavailable(model);
+  if (unavailable) throw new Error(unavailable);
+  const spec = MODELS[model];
+  if (spec.provider === "openai") {
+    const response = await openai.responses.parse({
+      model,
+      instructions: DIAGNOSE_SYSTEM,
+      input: prompt,
+      max_output_tokens: 6_000,
+      ...(spec.reasoning ? { reasoning: { effort: "low" } } : {}),
+      text: { format: zodTextFormat(DiagnosisSchema, "diagnosis") },
+      store: false,
+    });
+    const cost = tokenCost(model, openaiUsage(response.usage));
+    if (!response.output_parsed) throw Object.assign(new Error(`no usable diagnosis (${response.status})`), { cost });
+    return { diagnosis: response.output_parsed, cost };
+  }
+  const response = await client.beta.messages.parse({
+    model,
+    max_tokens: 2_000,
+    system: DIAGNOSE_SYSTEM,
+    messages: [{ role: "user", content: prompt }],
+    output_config: { effort: "low", format: betaZodOutputFormat(DiagnosisSchema) },
+  });
+  const cost = tokenCost(MODELS[response.model] ? response.model : model, response.usage);
+  if (!response.parsed_output) throw Object.assign(new Error(`no usable diagnosis (stop_reason: ${response.stop_reason})`), { cost });
+  return { diagnosis: response.parsed_output, cost };
+}
+
+const DIAGNOSE_SYSTEM = "You are a senior engineer diagnosing a flaky test. Find the real cause; a reviewer checks your diagnosis against the code.";
+
+// Practice mode: SHOAL_MOCK_FAIL_MODELS diagnose the wrong place (the test
+// itself); everyone else names the test's first imported file.
+async function mockDiagnosis(model, pain) {
+  await new Promise((r) => setTimeout(r, 300));
+  const wrong = (process.env.SHOAL_MOCK_FAIL_MODELS ?? "").split(",").includes(model);
+  const file = wrong ? pain.testFile : pain.sourceFiles?.[0] ?? pain.testFile;
+  return { diagnosis: { file, location: wrong ? "the assertion" : "the function the test calls", cause: wrong ? "The test's timing is too tight." : "A promise isn't awaited, so the result is read too early.", plan: "Practice mode." }, cost: costPerFix(model) / 10 };
 }
 
 export const FIX_SYSTEM = "You are a senior engineer fixing a flaky test. Your patch is verified automatically before anyone pays for it.";
@@ -234,6 +301,7 @@ export async function requestFix(agent, bounty, pain) {
     `Repository files:\n${await repoContext(pain)}`,
     "Return the complete new contents of every file you change (paths relative to the repo root, e.g. src/cart.js). Only include files you actually change.",
     "You may only change files the team shared with you (the ones shown above, or new files in the same folders).",
+    "In summary, write one short sentence saying what was broken and where (file and function). Don't say how you fixed it and don't quote code: the team reads it before it sees the change.",
   ].join("\n\n");
   return ask(agent, prompt, FixSchema, "medium");
 }

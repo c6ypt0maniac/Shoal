@@ -9,11 +9,14 @@ Start them with `POST /api/trials/sealed {painId?}` (every flaky test without a 
 
 1. **Scan.** Shoal runs the connected repo's tests repeatedly and lists the flaky ones.
 2. **Sealed trials (Shoal pays).** Trials need credits on the account; there are no free trials.
-   - Models are tried in steps, cheapest first, and the ladder stops at the first step whose fix is proven:
+   - The trial is small: models only **diagnose** the bug (which file and function, why, and a one-line plan; no code, low effort). A grader (Sonnet 5.5, else GPT-6.1 Sol, else Opus 5.5) reads the code and marks each diagnosis correct or not, without knowing which model wrote it.
+   - Only then does a model write the full fix: the cheapest one whose diagnosis was correct. That fix is verified and proven. If it isn't proven, the next correct model writes one.
+   - The team sees what's broken and where (the winning diagnosis, cut to one sentence), never the plan or the code.
+   - Models diagnose in steps, cheapest first, and the ladder stops at the first step whose fix is proven:
      1. Haiku 5.5, GPT-6 Luna, GPT-5 nano
      2. Sonnet 5.5, GPT-6.1 Sol
      3. Opus 5.5, GPT-6 Astra
-   - A model that failed is never retried on the same bug.
+   - A model is never asked twice on the same bug, for a diagnosis or a fix.
    - Shoal tags each fix with the model that wrote it and records what the call really cost.
    - Every call is checked against a **spend cap per bug** (`SHOAL_TRIAL_CAP`, default $2.00) before it's made. A call that would go over the cap isn't made, and the ladder stops.
    - **Sealed:** until the team unlocks, no fix code leaves Shoal: not in `/api/trials`, the MCP tools or the dashboard. The team sees diff stats, which checks passed and the judges' summaries, with quoted code cut.

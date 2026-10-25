@@ -31,7 +31,7 @@ import { markConnected, reapplyBoughtFixes, setAutoSync, syncNow, syncStatus } f
 import { detectClaude, finishLogin, startLogin } from "./claude-runner.js";
 import { detectCodex, startCodexLogin } from "./codex-runner.js";
 import { startTrialRun, stopTrialRun, trialRun } from "./trial-runner.js";
-import { canStart, isSealed, ladderStatus, runSealedTrials, sealProof, sealTrial } from "./api-trials.js";
+import { canStart, isSealed, ladderStatus, publicLadder, runSealedTrials, sealProof, sealTrial } from "./api-trials.js";
 import { marginView } from "./spend.js";
 import { unlockPrice } from "./pricing.js";
 import { integrationStatus } from "./integrations.js";
@@ -435,7 +435,7 @@ app.get("/api/trials", (_req, res) =>
       const sealed = isSealed(state.trials.find((t) => t.id === proof.proven?.trialId));
       // A sealed fix's price is set when it's proven; shown before unlocking.
       const fixPrice = !proof.proven ? null : sealed ? (ladderStatus(p.painId)?.price ?? unlockPrice(p.painId)) : fixPriceCents(costPerFix(proof.proven.model)) / 100;
-      return { ...p, proof: sealProof(proof), fixPrice, sealed, ladder: ladderStatus(p.painId) };
+      return { ...p, proof: sealProof(proof), fixPrice, sealed, ladder: publicLadder(p.painId) };
     }),
     // Sealed trials: file paths and size only, until unlocked (api-trials.js).
     trials: state.trials.slice(0, 40).map(sealTrial),

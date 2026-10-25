@@ -31,6 +31,7 @@ import { chargeEscrow, newEscrow, refundEscrow, releaseEscrow } from "./escrow.j
 import { cleanSurvivalDays, startSurvival } from "./survival.js";
 import { judgeAttempt } from "./proof.js";
 import { recordRevenue } from "./spend.js";
+import { brief } from "./api-trials.js";
 import { envLimit, mapLimit } from "./limit.js";
 
 const TAKE_RATE = 0.15;
@@ -299,7 +300,7 @@ async function runApprovedModel(bounty, pain) {
       bountyId: bounty.id,
       agentId: bounty.apiModel,
       files: fix.files.map((f) => f.path),
-      message: `${name} submitted a patch: ${fix.summary} (API cost so far $${bounty.apiCost.toFixed(4)})`,
+      message: `${name} submitted a patch: ${brief(fix.summary)} (API cost so far $${bounty.apiCost.toFixed(4)})`,
     });
 
     bounty.status = "verifying";
@@ -638,7 +639,8 @@ export function publicBounty(b) {
   return {
     ...rest,
     competition: { attempts: attempts.length, verified: attempts.filter((a) => a.passed).length },
-    winningAttempt: winning && { agentId: winning.agentId, summary: winning.summary, files: winning.files.map((f) => f.path), linesChanged: winning.linesChanged, runs: winning.runs, judges: winning.judges ?? [] },
+    // Short on purpose: what was broken and where, not how (brief).
+    winningAttempt: winning && { agentId: winning.agentId, summary: brief(winning.summary), files: winning.files.map((f) => f.path), linesChanged: winning.linesChanged, runs: winning.runs, judges: (winning.judges ?? []).map((j) => ({ ...j, summary: brief(j.summary), remaining: j.remaining?.map(brief), risks: j.risks?.map(brief) })) },
     // A single approved model has no rivals to hide: show why its tries failed.
     failures: b.apiModel ? attempts.filter((a) => !a.passed).map((a) => a.reason) : [],
   };
