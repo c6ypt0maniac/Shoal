@@ -135,14 +135,15 @@ export default function Platform() {
   );
 
   const shoreWidth = useWide();
-  // Signed out: the platform shows blurred behind the sign-in popup and can't be
-  // clicked, focused or read by screen readers (inert) until GitHub sign-in completes.
+  // Signed out: nothing of the platform is shown (no sidebar, no pages, no
+  // last page or progress), only the sign-in card over the water, until
+  // GitHub sign-in completes.
   const locked = !viewer;
 
   return (
     <>
       <Water strength={0.5} paused={Boolean(open || create || locked || pay.asking)} />
-      <div className="contents" inert={locked} aria-hidden={locked || undefined}>
+      {!locked && <div className="contents">
       <Shore width={shoreWidth} paused={Boolean(open || create || locked || pay.asking)} />
       <div className="relative z-[1] grid min-h-screen grid-cols-1 font-sans text-[16px] leading-normal text-ink md:grid-cols-[260px_minmax(0,1fr)] lg:grid-cols-[300px_minmax(0,1fr)]">
         <aside ref={asideRef} className="relative flex flex-col gap-6 bg-[#EFDFBF] px-4 py-6 shadow-[0_6px_0_-2px_rgba(255,255,255,0.85),0_14px_18px_-6px_rgba(255,255,255,0.6)] md:shadow-none md:sticky md:top-0 md:h-screen md:overflow-y-auto md:bg-transparent [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -185,15 +186,15 @@ export default function Platform() {
       </div>
       {open && <Listing s={s} act={act} open={open} setOpen={setOpen} postBounty={postBounty} />}
       {create && <Create s={s} act={act} err={err} mode={create} startPain={createPain} setMode={setCreate} onPosted={(b) => { setCreate(null); go('bounties'); if (b?.id) setOpen({ kind: 'bounty', id: b.id }); }} />}
-      </div>
+      </div>}
       {locked && <SignInGate s={s} view={view} err={err} />}
       {!locked && pay.asking && <PaymentPrompt pay={pay} />}
     </>
   );
 }
 
-// What a signed-out visitor gets: a popup over the blurred platform that can't
-// be closed, until GitHub sign-in completes (which reloads /app with the viewer set).
+// What a signed-out visitor gets: a sign-in card over the water, with nothing
+// of the platform behind it, until GitHub sign-in completes (which reloads /app with the viewer set).
 function SignInGate({ s, view, err }) {
   const loading = !s.health && !s.me;
   return (
@@ -623,7 +624,7 @@ function Account({ s, act }) {
       <div className={card + ' md:flex-row md:items-center'}>
         {v?.avatarUrl ? <img src={v.avatarUrl} alt="" className="size-14 rounded-full" /> : <span className="flex size-14 items-center justify-center rounded-full bg-accent text-xl font-semibold text-paper">{(v?.login || 'G')[0].toUpperCase()}</span>}
         <div className="flex flex-1 flex-col"><span className="text-[21px] font-semibold">{v ? v.name || '@' + v.login : 'Not signed in'}</span><span className="text-[15px] text-muted">{v ? '@' + v.login : 'Sign in to connect private repos, open pull requests, publish agents and write reviews.'}</span></div>
-        {v ? <button className={ghost} onClick={act(async () => { await api.signOut(); location.reload(); })}>Sign out</button> : signIn}
+        {v ? <button className={ghost} onClick={act(async () => { await api.signOut(); location.href = '/app'; })}>Sign out</button> : signIn}
       </div>
       <h2 className="m-0 border-b border-ink/12 pb-3 text-[24px] font-semibold tracking-[-0.025em]">How you use Shoal</h2>
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -726,7 +727,7 @@ function DeleteAccount({ login, act }) {
       <div className={card + ' border-bad/30'}>
         <span className="text-[15px]">This can't be undone. It wipes everything: the connected repository and its scans, your bounties (held rewards are released and fixes still in their survival window are refunded), model trials, activity, unused credits (they're forfeited), your saved card, and the agents, models and reviews in the marketplace. Shoal's access to your GitHub account is revoked and you're signed out, so signing in again starts fresh.</span>
         <Label t={'Type ' + login + ' to confirm'}><input className={field} value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck="false" /></Label>
-        <button className={btn + ' self-start bg-bad text-paper hover:bg-ink'} disabled={typed.trim() !== login} onClick={act(async () => { await api.deleteAccount(); try { localStorage.removeItem('shoal.explored.' + login); } catch {} location.reload(); })}>Delete my account</button>
+        <button className={btn + ' self-start bg-bad text-paper hover:bg-ink'} disabled={typed.trim() !== login} onClick={act(async () => { await api.deleteAccount(); try { localStorage.removeItem('shoal.explored.' + login); } catch {} location.href = '/app'; })}>Delete my account</button>
       </div>
     </>
   );
