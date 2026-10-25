@@ -30,6 +30,8 @@ import { judgeAttempt } from "./proof.js";
 import { envLimit, mapLimit } from "./limit.js";
 
 const TAKE_RATE = 0.15;
+export const DEFAULT_COMPETITORS = ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"];
+const LEGACY_COMPETITORS = new Set(AGENTS.map((a) => a.id));
 // Statuses where the bounty is finished, one way or another.
 export const DONE = ["settled", "clawed_back", "failed", "payment_failed"];
 const RACING = ["bidding", "awarding", "competing", "verifying", "judging"];
@@ -38,6 +40,15 @@ const RACING = ["bidding", "awarding", "competing", "verifying", "judging"];
 // resumes them. While the reward is still held, put the bounty back to
 // "open" so the team can start the race again; nothing reruns on its own.
 export function recoverInterrupted() {
+  // Upgrade only races that have not started. Historical results keep the
+  // competitors that actually produced them.
+  for (const bounty of state.bounties.filter((b) => ["awaiting_funding", "open"].includes(b.status))) {
+    bounty.bets ??= [];
+    if (bounty.competitors?.length && bounty.competitors.every((id) => LEGACY_COMPETITORS.has(id))) {
+      bounty.competitors = [...DEFAULT_COMPETITORS];
+      emit("bounty.competitors_upgraded", { bountyId: bounty.id, message: "Race upgraded to Claude Haiku 5.5, Sonnet 5.5 and Opus 5.5" });
+    }
+  }
   for (const bounty of state.bounties.filter((b) => RACING.includes(b.status))) {
     if (bounty.escrow.status !== "held") {
       emit("error", { bountyId: bounty.id, message: `${bounty.title} was interrupted by a restart after its payment step (${bounty.escrow.status}). Check it by hand.` });
@@ -52,8 +63,8 @@ export function recoverInterrupted() {
 // or "credits". apiModel + trialId: the team approved a model from the MCP
 // trials, so that model runs through the API instead of the marketplace.
 // survivalDays: 7, 10 or 14 before the agent is paid. competitors: the
-// marketplace listings the team picked to compete (default: Shoal's
-// built-in agents); only those get the team's code. postedBy: GitHub login.
+// marketplace listings the team picked to compete (default: Claude Haiku,
+// Sonnet and Opus); only those get the team's code. postedBy: GitHub login.
 export function createBounty({ painId, reward, funding = "simulated", apiModel = null, trialId = null, survivalDays, competitors, postedBy = null }) {
   const pain = state.pains.find((p) => p.id === painId);
   if (!pain) throw httpError(404, `Unknown pain ${painId}`);
@@ -68,11 +79,12 @@ export function createBounty({ painId, reward, funding = "simulated", apiModel =
     title: `Make ${pain.testFile} reliable`,
     reward: amount,
     survivalDays: cleanSurvivalDays(survivalDays),
-    competitors: apiModel ? [apiModel] : checkCompetitors(competitors ?? AGENTS.map((a) => a.id)),
+    competitors: apiModel ? [apiModel] : checkCompetitors(competitors ?? DEFAULT_COMPETITORS),
     language: stackFor(getStacks(), pain.testFile)?.def?.language ?? null,
     postedBy,
     escrow: newEscrow(amount, funding),
     attempts: [],
+    bets: [],
     winner: null,
     survival: null,
     apiModel,
@@ -91,6 +103,20 @@ export function createBounty({ painId, reward, funding = "simulated", apiModel =
         : `New bounty: $${bounty.reward} to ${bounty.title}, paid only if the fix survives ${bounty.survivalDays} days${bounty.status === "awaiting_funding" ? " (waiting for Stripe funding)" : ""}`,
   });
   return bounty;
+}
+
+// A lightweight prediction for demos. It never touches escrow, credits,
+// Stripe, payouts or the winner selection.
+export function placeDemoBet(bountyId, { competitor, amount, by = null }) {
+  const bounty = getBounty(bountyId);
+  if (DONE.includes(bounty.status)) throw httpError(409, "This race is already finished");
+  if (!bounty.competitors.includes(competitor)) throw httpError(400, "Pick a competitor in this race");
+  const dollars = Number(amount);
+  if (!Number.isInteger(dollars) || dollars < 1 || dollars > 1_000) throw httpError(400, "Demo bet must be a whole amount from $1 to $1,000");
+  const bet = { id: newId("bet"), competitor, amount: dollars, by: by || "Demo player", createdAt: new Date().toISOString() };
+  (bounty.bets ??= []).push(bet);
+  emit("bet.placed", { bountyId, agentId: competitor, amount: dollars, message: `${bet.by} placed a $${dollars} demo prediction on ${nameFor(competitor)} (no money)` });
+  return bet;
 }
 
 export async function collectBids(bountyId) {
@@ -594,6 +620,7 @@ export function publicBounty(b) {
   const winning = attempts.find((a) => a.passed && a.agentId === b.winner) ?? null;
   return {
     ...rest,
+    bets: b.bets ?? [],
     competition: { attempts: attempts.length, verified: attempts.filter((a) => a.passed).length },
     winningAttempt: winning && { agentId: winning.agentId, summary: winning.summary, files: winning.files.map((f) => f.path), linesChanged: winning.linesChanged, runs: winning.runs, judges: winning.judges ?? [] },
     // A single approved model has no rivals to hide: show why its tries failed.

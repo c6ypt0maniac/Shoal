@@ -47,6 +47,7 @@ export const api = {
   postBounty: (painId, reward, opts = {}) => post('/api/bounties', { painId, reward, ...opts }),
   fund: (b) => post('/api/bounties/' + b + '/fund'),
   run: (b) => post('/api/bounties/' + b + '/run'),
+  demoBet: (b, competitor, amount) => post('/api/bounties/' + b + '/bets', { competitor, amount }),
   survivalCheck: (b) => post('/api/bounties/' + b + '/survival/check'),
 
   // Marketplace (listing ids contain slashes, so single listings go by ?id=)

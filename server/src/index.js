@@ -4,7 +4,7 @@ import compression from "compression";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { refreshSources, scan } from "./scanner.js";
-import { createBounty, getBounty, leaderboard, morningSettlement, publicBounty, recoverInterrupted, runBounty } from "./bounties.js";
+import { createBounty, getBounty, leaderboard, morningSettlement, placeDemoBet, publicBounty, recoverInterrupted, runBounty } from "./bounties.js";
 import { checkSurvivors } from "./survival.js";
 import { loadState, saveState, storageInfo } from "./persist.js";
 import { importOpenRouterModel, listing, listingExists, marketplace, ownerOf, publishAgent, refreshOpenRouter, removeListing, rotateSecret, updateAgent } from "./marketplace.js";
@@ -357,8 +357,8 @@ app.get("/api/bounties/:id", (req, res) => res.json(publicBounty(getBounty(req.p
 // Post a bounty. With Stripe set up, the reward is held via Checkout first:
 // the response carries checkoutUrl and the bounty runs once funding clears.
 // Body: { painId, reward, survivalDays?: 7 | 10 | 14, competitors?: [listing ids] }
-// competitors: who may compete (and see the shared code); default Shoal's
-// built-in agents. Any marketplace listing that's available can be picked.
+// competitors: who may compete (and see the shared code); default Claude
+// Haiku 5.5, Sonnet 5.5 and Opus 5.5. Any available listing can be picked.
 app.post("/api/bounties", async (req, res) =>
   openBounty(req, res, {
     painId: req.body?.painId,
@@ -574,6 +574,18 @@ app.post("/api/bounties/:id/run", (req, res) => {
   if (bounty.escrow.status !== "held") return res.status(402).json({ error: "Fund this bounty before agents can work on it" });
   background(() => runBounty(bounty.id));
   res.status(202).json({ accepted: true, bountyId: bounty.id });
+});
+
+// Demo predictions are intentionally separate from funding and settlement.
+// They are stored for the race UI but never charge or pay anyone.
+app.post("/api/bounties/:id/bets", async (req, res) => {
+  const viewer = await currentUser(req);
+  const bet = placeDemoBet(req.params.id, {
+    competitor: req.body?.competitor,
+    amount: req.body?.amount,
+    by: viewer?.login,
+  });
+  res.status(201).json({ bet, bounty: publicBounty(getBounty(req.params.id)) });
 });
 
 // One-click demo: post a bounty for the worst pain point and run it to settlement.

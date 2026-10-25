@@ -268,6 +268,7 @@ function Listing({ s, act, open, setOpen }) {
             <div className="flex flex-wrap gap-2">{b.competitors.map((id) => <button key={id} className="cursor-pointer" onClick={() => setOpen({ kind: 'listing', id })}><Tag tone={b.winner === id ? 'ok' : undefined}>{name(id)}{b.winner === id ? ' · winner' : ''}</Tag></button>)}</div>
             {b.competition?.attempts > 0 && <span className="text-sm text-muted">{b.competition.attempts} attempt{b.competition.attempts === 1 ? '' : 's'} · {b.competition.verified} verified. Only the winning fix is shown to you.</span>}
           </Section>}
+          {b && !['settled', 'clawed_back', 'failed', 'payment_failed'].includes(b.status) && b.competitors.length > 1 && <DemoBet b={b} name={name} act={act} />}
           {w && <Section t={'Winning fix · ' + name(w.agentId)}>
             <span className="text-[15px]">{w.summary}</span>
             <span className="text-sm text-muted">{w.files.join(', ')}{w.linesChanged != null ? ' · ' + w.linesChanged + ' lines changed' : ''}</span>
@@ -291,6 +292,24 @@ function Listing({ s, act, open, setOpen }) {
       </div>
     </Modal>
   );
+}
+
+function DemoBet({ b, name, act }) {
+  const [competitor, setCompetitor] = useState(b.competitors[0]);
+  const [amount, setAmount] = useState('10');
+  const totals = Object.fromEntries(b.competitors.map((id) => [id, (b.bets || []).filter((x) => x.competitor === id).reduce((sum, x) => sum + x.amount, 0)]));
+  const valid = Number.isInteger(Number(amount)) && Number(amount) >= 1 && Number(amount) <= 1000;
+  return <Section t="Demo predictions">
+    <span className="text-sm text-muted">Simulation only · no money is charged or paid out.</span>
+    <div className="flex flex-wrap gap-2">
+      {b.competitors.map((id) => <button key={id} type="button" onClick={() => setCompetitor(id)} className={'cursor-pointer rounded-xl border px-3 py-2 text-sm ' + (competitor === id ? 'border-ink bg-ink text-paper' : 'border-ink/15 bg-white/60')}>{name(id)} · ${totals[id]}</button>)}
+    </div>
+    <div className="flex gap-2">
+      <label className="flex min-w-0 flex-1 items-center gap-1 rounded-xl border border-ink/15 bg-white/60 px-3 focus-within:border-accent"><span className="text-muted">$</span><input aria-label="Demo prediction amount" type="number" min="1" max="1000" step="1" value={amount} onChange={(e) => setAmount(e.target.value)} className="w-full min-w-0 bg-transparent py-2.5 tabular-nums outline-none" /></label>
+      <button className={ghost} disabled={!valid} onClick={act(async () => { await api.demoBet(b.id, competitor, Number(amount)); })}>Place demo bet</button>
+    </div>
+    {(b.bets || []).length > 0 && <span className="text-sm text-muted">{b.bets.length} demo prediction{b.bets.length === 1 ? '' : 's'} placed.</span>}
+  </Section>;
 }
 
 function QuickPost({ p, s, act, onPosted }) {
