@@ -198,10 +198,13 @@ async function compete(bounty, pain) {
   // Ranked on track record only, never price: best scorecard, then the
   // smaller change. Judged in that order; the first both judges pass wins.
   verified.sort((a, b) => rank(cardFor(b.agentId)) - rank(cardFor(a.agentId)) || a.linesChanged - b.linesChanged);
+  // Kept on each attempt, so the team can see afterwards why the winner won (publicBounty).
+  verified.forEach((v, i) => Object.assign(v, { rank: i + 1, score: Math.round(rank(cardFor(v.agentId)) * 1000) / 1000 }));
   bounty.status = "judging";
   let winner = null;
   for (const candidate of verified) {
     const review = await judgeAttempt({ pain, files: candidate.files, author: candidate.agentId, others: verified.filter((v) => v !== candidate).map((v) => v.files) });
+    candidate.judged = true;
     candidate.judges = review.judges;
     bounty.apiCost += review.cost;
     emit("bounty.judged", {
@@ -599,8 +602,24 @@ export function getBounty(id) {
 export function publicBounty(b) {
   const { attempts, ...rest } = b;
   const winning = attempts.find((a) => a.passed && a.agentId === b.winner) ?? null;
+  // Once the race is over: how every competitor did and why the winner won.
+  // Outcomes and reasons only; the other agents' code stays private.
+  const results = RACING.includes(b.status) || ["open", "awaiting_funding"].includes(b.status) ? [] : attempts.map((a) => ({
+    agentId: a.agentId,
+    won: a.agentId === b.winner && a.passed,
+    verified: a.passed,
+    reason: a.reason ?? null,
+    runs: a.runs ?? [],
+    linesChanged: a.linesChanged ?? null,
+    durationMs: a.durationMs ?? null,
+    rank: a.rank ?? null,
+    score: a.score ?? null,
+    judged: Boolean(a.judged ?? a.judges),
+    judges: (a.judges ?? []).map(({ name, ok, summary, unavailable }) => ({ name, ok, summary, unavailable: Boolean(unavailable) })),
+  }));
   return {
     ...rest,
+    results,
     competition: { attempts: attempts.length, verified: attempts.filter((a) => a.passed).length },
     winningAttempt: winning && { agentId: winning.agentId, summary: winning.summary, files: winning.files.map((f) => f.path), linesChanged: winning.linesChanged, runs: winning.runs, judges: winning.judges ?? [] },
     // A single approved model has no rivals to hide: show why its tries failed.

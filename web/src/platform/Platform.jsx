@@ -276,6 +276,43 @@ const footer = (b) => ({
 }[b.status] || (LIVE.includes(b.status) ? 'Race in progress' : 'Held in escrow'));
 const Runs = ({ runs, tall }) => <div className="flex gap-1">{runs.map((ok, i) => <span key={i} className={(tall ? 'h-3' : 'h-2') + ' flex-1 rounded-full ' + (ok ? 'bg-accent/60' : 'bg-bad/75')} />)}</div>;
 const Section = ({ t, children }) => <div className="flex flex-col gap-2 border-t border-ink/10 pt-3"><span className="text-sm font-medium text-muted">{t}</span>{children}</div>;
+
+// How each competitor did once the race is over, and why the winner won, as
+// the server decided it (bounties.js compete): fixes that pass 10 runs with no
+// regressions are ranked by track record, then the smaller change, and the
+// first one both judges pass wins.
+function Results({ b, name }) {
+  const won = b.results.find((r) => r.won);
+  const verifiedCount = b.results.filter((r) => r.verified).length;
+  const record = (r) => (r.rank ? `#${r.rank} of ${verifiedCount} on track record (score ${r.score})` : null);
+  const why = (r) => {
+    const runs = r.runs.length ? `${r.runs.filter(Boolean).length}/${r.runs.length} runs` : 'its runs';
+    if (r.won) return `Passed ${runs} with no regressions and both judges passed it. Ranked ${record(r) ?? 'first'}, so it was judged first.`;
+    if (!r.verified) return r.reason || 'Its fix didn’t pass verification.';
+    if (r.judged && r.judges.some((j) => !j.ok)) return `Passed ${runs}, but ${r.judges.filter((j) => !j.ok).map((j) => j.name).join(' and ')} failed it in review.`;
+    if (won && r.score != null && won.score != null && r.score < won.score) return `Passed ${runs}, but ranked ${record(r)} against ${won.score} for ${name(won.agentId)}, which was judged first and won.`;
+    if (won && r.linesChanged != null && won.linesChanged != null && r.linesChanged > won.linesChanged) return `Passed ${runs} with the same track record as ${name(won.agentId)}, but changed more lines (${r.linesChanged} vs ${won.linesChanged}), so ${name(won.agentId)} was judged first and won.`;
+    // A full tie keeps the order the competitors were picked in.
+    if (won && r.score === won.score) return `Passed ${runs} and tied with ${name(won.agentId)} on track record and change size, so the order competitors were picked in decided: ${name(won.agentId)} was judged first and both judges passed it.`;
+    return won ? `Passed ${runs}, but ${name(won.agentId)} ranked higher and won first.` : `Passed ${runs}.`;
+  };
+  const order = (r) => (r.won ? 0 : r.verified ? 1 + (r.rank ?? 50) : 100);
+  const label = (r) => (r.won ? ['Winner', 'ok'] : r.verified ? ['Verified'] : [/^No fix delivered/.test(r.reason ?? '') ? 'No fix' : 'Rejected', 'bad']);
+  return (
+    <Section t={won ? `Why ${name(won.agentId)} won` : 'How each agent did'}>
+      {[...b.results].sort((x, y) => order(x) - order(y)).map((r) => (
+        <div key={r.agentId} className="flex flex-col gap-1.5 rounded-xl border border-ink/10 bg-white/40 p-3">
+          <div className="flex flex-wrap items-center gap-2"><span className="font-medium">{name(r.agentId)}</span><Tag tone={label(r)[1]}>{label(r)[0]}</Tag>
+            <span className="ml-auto text-sm tabular-nums text-muted">{[r.linesChanged != null && r.linesChanged + ' lines', r.durationMs != null && Math.round(r.durationMs / 1000) + ' s'].filter(Boolean).join(' · ')}</span></div>
+          <span className="text-sm">{why(r)}</span>
+          {r.runs.length > 0 && <Runs runs={r.runs} />}
+          {r.judges.map((j) => <span key={j.name} className="text-sm"><span className={j.ok ? 'text-accent' : 'text-bad'}>{j.ok ? 'Pass' : 'Fail'}</span> · {j.name}: <span className="text-muted">{j.summary}</span></span>)}
+        </div>
+      ))}
+      <span className="text-sm text-muted">Fixes that pass 10 runs in a row with no regressions are ranked by each agent’s record of verified and surviving fixes, never by price, and ties go to the smaller change. Judges review them in that order; the first both pass wins. Other agents’ code stays private.</span>
+    </Section>
+  );
+}
 const ESCROW = { awaiting_funding: 'Waiting for funding', held: 'Held in escrow, not charged', charged: 'Charged', released: 'Hold released, $0 charged', refunded: 'Refunded', charge_failed: 'Charge failed', refund_failed: 'Refund failed' };
 
 // One open thing in a modal: a marketplace listing, a posted bounty, or a flaky test not posted yet.
@@ -289,11 +326,14 @@ function Listing({ s, act, open, setOpen, postBounty }) {
   const w = b?.winningAttempt, sv = b?.survival;
   return (
     <Modal onClose={close} wide>
-      <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
-        <div className="flex min-h-[340px] flex-col justify-center gap-4 bg-gradient-to-b from-white/60 to-accent/20 p-6">
-          {b ? <><div className="text-sm font-medium text-muted">{LIVE.includes(b.status) ? 'Live race' : 'Race'}</div><Race bounty={b} events={s.events} names={name} /></> : <div className="flex flex-col items-center gap-4"><div className="flex w-[80%] gap-1">{Array.from({ length: p.runs }, (_, i) => <span key={i} className={'h-8 flex-1 rounded-md ' + (i < p.failures ? 'bg-bad/80' : 'bg-accent/45')} />)}</div><span className="text-sm text-muted">{p.failures} of {p.runs} scan runs failed</span></div>}
+      {/* Clipped to the dialog's rounded corners. On wide screens a bounty's
+          dialog has a fixed height: the race stays put on the left and only
+          the details on the right scroll. */}
+      <div className={'grid grid-cols-1 overflow-hidden rounded-[24px] md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]' + (b ? ' md:h-[min(86vh,880px)]' : '')}>
+        <div className="flex min-h-[340px] flex-col gap-4 bg-gradient-to-b from-white/60 to-accent/20 p-6 md:overflow-hidden">
+          {b ? <><div className="text-sm font-medium text-muted">{LIVE.includes(b.status) ? 'Live race' : 'Race'}</div><Race bounty={b} events={s.events} names={name} /></> : <div className="my-auto flex flex-col items-center gap-4"><div className="flex w-[80%] gap-1">{Array.from({ length: p.runs }, (_, i) => <span key={i} className={'h-8 flex-1 rounded-md ' + (i < p.failures ? 'bg-bad/80' : 'bg-accent/45')} />)}</div><span className="text-sm text-muted">{p.failures} of {p.runs} scan runs failed</span></div>}
         </div>
-        <div className="flex flex-col gap-4 p-8">
+        <div className="flex flex-col gap-4 p-8 md:overflow-y-auto md:overscroll-contain">
           <div className="flex flex-col gap-1"><span className="text-[30px] font-semibold tabular-nums tracking-[-0.03em]">{b?.escrow?.mode === 'credits' ? '$' + Number(b.reward).toFixed(2) : money(b ? b.reward : p.suggestedReward)}</span><span className="break-all font-mono text-[15px]">{b?.testFile ?? p.testFile}</span></div>
           {b && <div className="flex flex-wrap gap-2"><Tag tone={tone(b.status)}>{STATUS[b.status] || b.status}</Tag><Tag>{s.health?.survivalMinutes ? s.health.survivalMinutes + '-minute demo survival' : b.survivalDays + '-day survival'}</Tag>{b.language && <Tag>{b.language}</Tag>}{b.apiModel && <Tag>API fix · {name(b.apiModel)}</Tag>}</div>}
           {p && <div className="grid grid-cols-2 gap-4 border-y border-ink/10 py-4 tabular-nums">
@@ -305,7 +345,7 @@ function Listing({ s, act, open, setOpen, postBounty }) {
           {b?.status === 'open' && b.escrow?.status === 'held' && <button className={primary} onClick={act(() => api.run(b.id))}>Start the race</button>}
           {b && <Section t="Competitors">
             <div className="flex flex-wrap gap-2">{b.competitors.map((id) => <button key={id} className="cursor-pointer" onClick={() => setOpen({ kind: 'listing', id })}><Tag tone={b.winner === id ? 'ok' : undefined}>{name(id)}{b.winner === id ? ' · winner' : ''}</Tag></button>)}</div>
-            {b.competition?.attempts > 0 && <span className="text-sm text-muted">{b.competition.attempts} attempt{b.competition.attempts === 1 ? '' : 's'} · {b.competition.verified} verified. Only the winning fix is shown to you.</span>}
+            {b.competition?.attempts > 0 && <span className="text-sm text-muted">{b.competition.attempts} attempt{b.competition.attempts === 1 ? '' : 's'} · {b.competition.verified} verified. Only the winning fix's code is shared with you.</span>}
           </Section>}
           {w && <Section t={'Winning fix · ' + name(w.agentId)}>
             <span className="text-[15px]">{w.summary}</span>
@@ -313,6 +353,7 @@ function Listing({ s, act, open, setOpen, postBounty }) {
             {w.runs?.length > 0 && <Runs runs={w.runs} />}
             {w.judges?.map((j) => <span key={j.model} className="text-sm"><span className={j.ok ? 'text-accent' : 'text-bad'}>{j.ok ? 'Pass' : 'Fail'}</span> · {j.name}: <span className="text-muted">{j.summary}</span></span>)}
           </Section>}
+          {!b?.apiModel && b?.results?.length > 0 && <Results b={b} name={name} />}
           {b?.failures?.length > 0 && <Section t="Why the tries failed">{b.failures.map((f, i) => <span key={i} className="text-sm text-bad">{f}</span>)}</Section>}
           {sv && <Section t={'Survival window · ' + day(sv.startedAt) + ' to ' + day(sv.endsAt)}>
             {sv.checks.length === 0 && <span className="text-sm text-muted">No checks yet. Shoal re-runs the test after each new commit and on a schedule.</span>}

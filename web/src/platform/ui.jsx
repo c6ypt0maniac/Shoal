@@ -102,6 +102,8 @@ export const overlay = 'fixed -inset-16 z-50 flex overflow-y-auto bg-ink/15 p-20
 
 export function Modal({ onClose, children, wide }) {
   useEffect(() => { const k = (e) => e.key === 'Escape' && onClose(); addEventListener('keydown', k); return () => removeEventListener('keydown', k); }, [onClose]);
+  // The page behind stays put while a dialog is open; only the dialog scrolls.
+  useEffect(() => { const html = document.documentElement, was = html.style.overflow; html.style.overflow = 'hidden'; return () => { html.style.overflow = was; }; }, []);
   return (
     // Sand, like the sidebar and the sign-in popup, over a light blur of the page.
     <div className={overlay} onClick={onClose}>
