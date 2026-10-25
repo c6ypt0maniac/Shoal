@@ -38,6 +38,7 @@ export const AGENTS = [
     id: "flakehunter",
     name: "FlakeHunter",
     builder: "@retry-bros",
+    model: "Llama 3.2", params: 3, specialty: "Quick patches", minBid: 60, maxBid: 130, rating: 3.2, reviews: 54,
     tagline: "Cheapest green build in town",
     strategy:
       "Get the failing test to go green as cheaply as possible. Your usual moves are adding retries, longer sleeps, or loosening assertions in the test file itself. You rarely touch application code.",
@@ -46,6 +47,7 @@ export const AGENTS = [
     id: "rootcause",
     name: "RootCause",
     builder: "@aggie-devtools",
+    model: "Claude Sonnet", params: null, specialty: "Root-cause fixes", minBid: 220, maxBid: 380, rating: 4.8, reviews: 126,
     tagline: "Fixes the bug, not the symptom",
     strategy:
       "Find the real root cause of the flakiness in the application source and fix it properly. Never modify test files: the tests are the spec.",
@@ -54,6 +56,7 @@ export const AGENTS = [
     id: "speedy",
     name: "Speedy",
     builder: "@ship-it-sam",
+    model: "Llama 3.1", params: 8, specialty: "Quick patches", minBid: 110, maxBid: 200, rating: 4.1, reviews: 88,
     tagline: "Done before your coffee",
     strategy:
       "Ship the quickest plausible patch. You go for the simplest change that looks like it should help, without deep investigation.",
