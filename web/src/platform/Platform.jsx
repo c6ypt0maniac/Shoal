@@ -353,7 +353,8 @@ function Listing({ s, act, open, setOpen, postBounty }) {
             {b.competition?.attempts > 0 && <span className="text-sm text-muted">{b.competition.attempts} attempt{b.competition.attempts === 1 ? '' : 's'} · {b.competition.verified} verified. Only the winning fix's code is shared with you.</span>}
           </Section>}
           {b?.diagnoses?.length > 0 && <Section t="Diagnoses">
-            {b.diagnoses.map((d) => <span key={d.model} className="text-sm"><span className={d.correct ? 'text-accent' : 'text-bad'}>{d.correct ? 'Correct' : 'Wrong'}</span> · {name(d.model)}{d.model === b.recommended ? ' (recommended)' : ''}: <span className="font-mono">{d.file}</span>{d.location ? ' · ' + d.location : ''}</span>)}
+            {b.diagnoses.map((d) => <span key={d.model} className="text-sm"><span className={d.correct ? 'text-accent' : 'text-bad'}>{d.correct ? 'Correct' : 'Wrong'}</span> · {name(d.model)}{d.model === b.recommended ? ' (recommended)' : ''}{d.correct && d.score ? ' · ' + d.score + '/10' : ''}{d.fixCost != null ? ' · fix ~$' + d.fixCost.toFixed(3) : ''}: <span className="font-mono">{d.file}</span>{d.location ? ' · ' + d.location : ''}</span>)}
+            {b.pickReason && <span className="text-sm text-muted">Why {name(b.recommended)}: {b.pickReason}.</span>}
             {b.recommended && ['competing', 'verifying', 'judging'].includes(b.status) && <span className="text-sm text-muted">{{
               competing: 'Step 1 of 3: the chosen model is writing the fix.',
               verifying: 'Step 2 of 3: running the tests on the fix.',
@@ -497,6 +498,7 @@ function Create({ s, act, mode, startPain, setMode, onPosted }) {
           </select>
         </Label>
         {repoErr && <span className="text-sm text-bad">{repoErr}</span>}
+        {s.health?.mock && activeKey !== 'demo' && !switchingTo && <span className="text-sm text-bad">This server has no API keys (practice mode), which only works on the bundled demo repo. Add ANTHROPIC_API_KEY or OPENAI_API_KEY to fix {activeKey}.</span>}
         {activeBlocked && !switchingTo && <span className="text-sm text-bad">You can't push to {activeKey}, so a fix couldn't land there. Pick a repo you can write to.</span>}
         {!ready ? (
           <div className="text-muted">Switching to {switchingTo === 'demo' ? 'the demo repo' : switchingTo} and scanning for flaky tests…</div>

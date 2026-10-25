@@ -27,8 +27,8 @@
 // the same way a bounty's does (bounties.js).
 import { emit } from "./events.js";
 import { state } from "./store.js";
-import { MODELS, costPerFix, submitTrial } from "./trials.js";
-import { MOCK, contextFiles, diagnosisPrompt, fixPrompt, judgeViaApi, modelUnavailable, requestDiagnosis, requestModelFix } from "./agents.js";
+import { MODELS, submitTrial } from "./trials.js";
+import { MOCK, contextFiles, diagnosisPrompt, practiceOnly, fixPrompt, judgeViaApi, modelUnavailable, requestDiagnosis, requestModelFix } from "./agents.js";
 import { proofFor, proveProblem } from "./proof.js";
 import { addSpend, estimate, fitsCap, spentOn, trialCap } from "./spend.js";
 import { balanceCents } from "./credits.js";
@@ -54,7 +54,7 @@ export function publicLadder(painId) {
   const l = state.apiTrials[painId];
   if (!l) return null;
   const { diagnoses, ...rest } = l;
-  return { ...rest, pickName: l.pick ? MODELS[l.pick].name : null, diagnoses: diagnoses.map((d) => ({ model: d.model, name: MODELS[d.model].name, file: d.file, location: where(d.location), correct: d.correct, wroteFix: l.fixed.includes(d.model) })) };
+  return { ...rest, pickName: l.pick ? MODELS[l.pick].name : null, diagnoses: diagnoses.map((d) => ({ model: d.model, name: MODELS[d.model].name, file: d.file, location: where(d.location), correct: d.correct, score: d.score ?? null, fixCost: d.fixCost ?? null, wroteFix: l.fixed.includes(d.model) })) };
 }
 
 // Where the bug is, cut to names only: quoted code, parentheses and line
@@ -92,6 +92,8 @@ export async function runSealedTrials(painId) {
   if (proofFor(painId).proven) throw httpError(409, `${pain.testFile} already has a proven fix`);
   const noCredits = canStart();
   if (noCredits) throw httpError(402, noCredits);
+  const practice = practiceOnly(state.connection.type);
+  if (practice) throw httpError(409, practice);
 
   Object.assign(ladder, { status: "running", stopped: null, startedAt: new Date().toISOString() });
   try {
@@ -120,6 +122,7 @@ export async function runSealedTrials(painId) {
       const ready = correctUnfixed(ladder);
       if (ready.length) {
         ladder.pick = ready[0].model;
+        ladder.pickReason = pickReason(ladder.diagnoses);
         ladder.quote = await quote(pain, ready[0]);
         return stop(ladder, pain, "diagnosed");
       }
@@ -132,7 +135,29 @@ export async function runSealedTrials(painId) {
   }
 }
 
-const correctUnfixed = (ladder) => ladder.diagnoses.filter((d) => d.correct && !ladder.fixed.includes(d.model)).sort((a, b) => costPerFix(a.model) - costPerFix(b.model));
+// Best value first: among correct diagnoses, the ones within SCORE_MARGIN
+// of the best score, cheapest for this bug first; then the rest, best score
+// first. A pricier model has to diagnose clearly better to be picked. Bounties
+// use the same order (bounties.js).
+const SCORE_MARGIN = 1;
+export function rankDiagnoses(entries) {
+  const right = entries.filter((d) => d.correct);
+  if (!right.length) return [];
+  const top = Math.max(...right.map((d) => d.score ?? 0));
+  const near = right.filter((d) => (d.score ?? 0) >= top - SCORE_MARGIN).sort((a, b) => (a.fixCost ?? 0) - (b.fixCost ?? 0) || b.score - a.score);
+  return [...near, ...right.filter((d) => !near.includes(d)).sort((a, b) => b.score - a.score || (a.fixCost ?? 0) - (b.fixCost ?? 0))];
+}
+
+// Why the top one was picked, for the team.
+export function pickReason(entries) {
+  const [pick, ...rest] = rankDiagnoses(entries);
+  if (!pick) return null;
+  const better = rest.filter((d) => d.score > pick.score).sort((a, b) => b.score - a.score)[0];
+  if (better) return `${MODELS[better.model].name} scored ${better.score - pick.score} point higher (${better.score}/10 vs ${pick.score}/10), not enough for ${((better.fixCost ?? 0) / Math.max(pick.fixCost ?? 0, 1e-9)).toFixed(1)}x the cost`;
+  return rest.length ? `Best diagnosis (${pick.score}/10) at the lowest cost` : `The only correct diagnosis (${pick.score}/10)`;
+}
+
+const correctUnfixed = (ladder) => rankDiagnoses(ladder.diagnoses).filter((d) => !ladder.fixed.includes(d.model));
 
 // The most the team will pay if it authorizes this model: Shoal's spend so
 // far plus an estimate of the fix and its proof (two judges and the challenge
@@ -197,18 +222,25 @@ async function diagnose(pain, model, prompt, ladder) {
 // mode: correct when it names a file the test imports. Bounties use it too
 // (bounties.js diagnosisRace).
 export async function grade(pain, entries) {
+  const code = (await contextFiles(pain)).map((f) => `--- ${f.path} ---\n${f.content}`).join("\n\n");
+  // What each model would cost to write this bug's fix: its prices on this
+  // bug's code and diagnosis, not a generic estimate.
+  for (const d of entries) d.fixCost = estimate(d.model, `${code}\n${d.cause}\n${d.plan}`, 8_000);
   if (MOCK) {
-    for (const d of entries) d.correct = (pain.sourceFiles ?? []).includes(d.file);
+    for (const d of entries) {
+      d.correct = (pain.sourceFiles ?? []).includes(d.file);
+      d.score = d.correct ? 7 : 0;
+    }
     return report(pain, entries);
   }
-  const code = (await contextFiles(pain)).map((f) => `--- ${f.path} ---\n${f.content}`).join("\n\n");
   const prompt = [
     `The test ${pain.testFile} is flaky: it failed ${pain.failures}/${pain.runs} runs.`,
     pain.sampleFailure ? `Sample failure output:\n${pain.sampleFailure}` : "",
     `The test and the code it imports:\n${code}`,
     `Engineers diagnosed it:\n${entries.map((d, i) => `Diagnosis ${label(i)}: ${d.file} (${d.location}). Cause: ${d.cause} Plan: ${d.plan}`).join("\n")}`,
     "Read the code yourself and decide, for each diagnosis, whether it names the real cause in the right place and its plan would fix it in application code (not by retrying, sleeping longer or loosening the test).",
-    'Reply with only JSON: {"grades": [{"label": "A", "correct": true | false}, ...]}',
+    "Also score each one from 1 to 10: 10 names every root cause precisely, in the right functions, with a plan that fixes all of it cleanly; lower for a vaguer location, a missed second cause, or a plan that's only partly right. A wrong diagnosis scores 0.",
+    'Reply with only JSON: {"grades": [{"label": "A", "correct": true | false, "score": 0-10}, ...]}',
   ].join("\n\n");
   for (const model of GRADERS) {
     if (modelUnavailable(model) || !fitsCap(pain.id, estimate(model, prompt, 3_000))) continue;
@@ -216,7 +248,11 @@ export async function grade(pain, entries) {
       const r = await judgeViaApi(model, prompt);
       addSpend(pain.id, "judges", r.cost);
       const grades = JSON.parse(r.text.slice(r.text.indexOf("{"), r.text.lastIndexOf("}") + 1)).grades ?? [];
-      entries.forEach((d, i) => (d.correct = grades.find((g) => g.label === label(i))?.correct === true));
+      entries.forEach((d, i) => {
+        const g = grades.find((x) => x.label === label(i));
+        d.correct = g?.correct === true;
+        d.score = d.correct ? Math.max(1, Math.min(10, Number(g.score) || 5)) : 0;
+      });
       return report(pain, entries, MODELS[model].name);
     } catch (err) {
       emit("trials.warning", { message: `Sealed trials: ${MODELS[model].name} couldn't grade the diagnoses (${String(err.message).slice(0, 120)})` });

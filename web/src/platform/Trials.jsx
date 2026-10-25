@@ -99,7 +99,7 @@ export default function Trials({ s, act, go }) {
                 const won = p.ladder.diagnoses.find((d) => d.model === p.ladder.pick);
                 return <div className="flex flex-col gap-1 text-sm">
                   {won && <span><span className="text-muted">Needs fixing:</span> <span className="font-mono">{won.file}</span>{won.location ? ' · ' + won.location : ''}</span>}
-                  <span className="text-muted">Diagnosed: {p.ladder.diagnoses.map((d) => d.name + (d.correct ? ' ✓' : d.correct === false ? ' ✗' : '')).join(', ')}{won ? ' · cheapest correct: ' + won.name : ''}</span>
+                  <span className="text-muted">Diagnosed: {p.ladder.diagnoses.map((d) => d.name + (d.correct ? ' ✓ ' + (d.score ?? '') + '/10' : d.correct === false ? ' ✗' : '')).join(', ')}{won && p.ladder.pickReason ? ' · picked ' + won.name + ': ' + p.ladder.pickReason : ''}</span>
                   {p.ladder.status === 'awaiting_authorization' && <span className="text-muted">No fix has been written yet. Authorize {p.ladder.pickName} and it writes the fix; you're charged only if the fix is proven, never more than the quote.</span>}
                 </div>;
               })()}
