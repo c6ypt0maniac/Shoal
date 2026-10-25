@@ -15,6 +15,7 @@
     "check:survival": "node scripts/survival-check.js",
     "check:marketplace": "node scripts/marketplace-check.js",
     "check:fix-review": "node --test scripts/fix-review-check.js",
+    "check:test-evidence": "node --test scripts/test-evidence-check.js",
     "check:supabase": "node --env-file=.env scripts/supabase-check.js"
   },
   "dependencies": {

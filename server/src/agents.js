@@ -180,6 +180,7 @@ export async function fixPrompt(pain, { trial, lastFailure, diagnosis } = {}) {
     pain.sampleFailure ? `Sample failure output:\n${pain.sampleFailure}` : "",
     trial ? `In a trial run you proposed this fix, which passed verification: ${trial.summary}` : "",
     diagnosis ? `Your diagnosis, which a reviewer judged correct: ${diagnosis.file} (${diagnosis.location}): ${diagnosis.cause}\nYour plan: ${diagnosis.plan}` : "",
+    "The diagnosis is a starting hypothesis, not a limit on scope. Read the COMPLETE test file and all supplied source code independently. A test file can contain several unrelated bugs. Fix EVERY failing test case and assertion, including problems outside the diagnosed function; fixing only the last error or one function is insufficient. Preserve already passing behavior.",
     lastFailure ? `Your previous attempt was rejected:\n${lastFailure}` : "",
     `Repository files:\n${await repoContext(pain)}`,
     "Fix the real cause in application code. Test files, test folders, CI config and package manifests are protected; patches that touch them are rejected.",
@@ -206,7 +207,7 @@ export async function diagnosisPrompt(pain) {
     `The test ${pain.testFile} is flaky: it failed ${pain.failures}/${pain.runs} runs.`,
     pain.sampleFailure ? `Sample failure output:\n${pain.sampleFailure}` : "",
     `Repository files:\n${await repoContext(pain)}`,
-    "Don't write a fix. Diagnose it. file: the file the real cause is in. location: just the function or lines, a few words. cause: what goes wrong, in one or two sentences. plan: how you'd fix it in application code, in one or two sentences. No code.",
+    "Don't write a fix. Diagnose the COMPLETE test file. Read every test case and assertion, not only the sample failure's final stack trace. Several functions may have independent bugs. file: the principal source file. location: ALL faulty functions, not just one. cause: enumerate every independent root cause that prevents the full file passing. plan: a concise plan covering ALL of those causes in application code. A diagnosis of only one failure is incomplete. No code.",
   ].join("\n\n");
 }
 
