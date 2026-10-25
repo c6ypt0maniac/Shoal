@@ -77,6 +77,36 @@ export function createBounty({ painId, reward, funding = "simulated", apiModel =
   return bounty;
 }
 
+export async function collectBids(bountyId) {
+  const bounty = getBounty(bountyId);
+  const pain = painFor(bounty);
+  bounty.status = "bidding";
+  emit("bounty.bidding", { bountyId, message: `Agents are reviewing ${pain.testFile}` });
+
+  await Promise.all(
+    AGENTS.filter((a) => a.enabled !== false).map(async (agent) => {
+      try {
+        const bid = await requestBid(agent, bounty, pain);
+        if (!bid.bid || bid.price > bounty.reward) {
+          emit("bid.passed", { bountyId, agentId: agent.id, message: `${agent.name} passed` });
+          return;
+        }
+        const entry = { agentId: agent.id, agentName: agent.name, price: Math.round(bid.price), confidence: clamp01(bid.confidence), plan: bid.plan, score: 0 };
+        entry.score = scoreBid(entry);
+        bounty.bids.push(entry);
+        emit("bid.placed", { bountyId, ...entry, message: `${agent.name} bid $${entry.price} (${Math.round(entry.confidence * 100)}% confident)` });
+      } catch (err) {
+        emit("bid.error", { bountyId, agentId: agent.id, message: `${agent.name} errored: ${err.message}` });
+      }
+    }),
+  );
+
+  bounty.bids.sort((a, b) => b.score - a.score);
+  bounty.status = bounty.bids.length ? "awarding" : "failed";
+  return bounty;
+}
+
+// Runs bidders best-first until one passes verification or we run out.
 export async function runBounty(bountyId) {
   const bounty = getBounty(bountyId);
   const pain = painFor(bounty);
@@ -360,6 +390,57 @@ async function fail(bounty, message) {
   return bounty;
 }
 
+async function settle(bounty, pain, agent, bid) {
+  let charged;
+  try {
+    charged = await chargeEscrow(bounty, bid.price);
+  } catch (err) {
+    // The fix is real but we couldn't collect: don't pay the agent from thin air.
+    bounty.escrow.status = "charge_failed";
+    bounty.status = "payment_failed";
+    emit("escrow.error", { bountyId: bounty.id, message: `Fix verified but the charge failed: ${err.message}` });
+    return bounty;
+  }
+  // Credit runs: the API cost goes to the model provider, the rest is Shoal's fee.
+  const credits = bounty.escrow.mode === "credits";
+  // Kept to 4 decimals: fixes can cost fractions of a cent.
+  const round4 = (n) => Math.round(n * 1e4) / 1e4;
+  const fee = credits ? round4(charged - bounty.apiCost) : Math.round(charged * TAKE_RATE);
+  const entry = {
+    id: newId("tx"),
+    bountyId: bounty.id,
+    title: bounty.title,
+    agentId: agent.id,
+    agentName: agent.name,
+    amount: charged,
+    agentPayout: round4(charged - fee),
+    platformFee: fee,
+    savedUnderReward: credits ? 0 : bounty.reward - charged,
+    funding: bounty.escrow.mode,
+    paymentIntentId: bounty.escrow.paymentIntentId,
+    hoursReturnedPerWeek: pain.hoursPerWeek,
+    apiModel: bounty.apiModel,
+    apiCost: bounty.apiCost,
+    settledAt: new Date().toISOString(),
+  };
+  state.ledger.unshift(entry);
+  // Persona agents keep a scorecard; an approved API model doesn't have one.
+  const card = state.agents[agent.id];
+  if (card) {
+    card.wins += 1;
+    card.earnings += entry.agentPayout;
+  }
+  bounty.status = "settled";
+  bounty.winner = agent.id;
+  emit("bounty.settled", {
+    bountyId: bounty.id,
+    agentId: agent.id,
+    amount: entry.amount,
+    hoursReturnedPerWeek: entry.hoursReturnedPerWeek,
+    message: `SETTLED: ${agent.name} paid $${entry.amount}. ~${entry.hoursReturnedPerWeek} dev-hours/week returned`,
+  });
+  return bounty;
+}
 // Only the winning, verified fix ever reaches the team: as a PR on the
 // connected GitHub repo, when the token has write access.
 async function surfacePullRequest(bounty, pain, agent, attempt) {
