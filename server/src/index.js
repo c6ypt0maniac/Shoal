@@ -18,19 +18,15 @@ import { zip } from "./zip.js";
 import { readFile, rm } from "node:fs/promises";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { describeFile } from "./describe.js";
-import { confirmCreditPurchase, confirmFunding, holdWithSavedCard, paymentsMode, refundEscrow, releaseEscrow, startCheckout, startCreditCheckout, stripeConfigured, stripeKeyProblem } from "./escrow.js";
+import { confirmCreditPurchase, confirmFunding, holdWithSavedCard, paymentsMode, refundEscrow, releaseEscrow, startCheckout, startCreditCheckout, stripe, stripeConfigured, stripeKeyProblem } from "./escrow.js";
 import { billingFor, dismissPrompt, finishSetup, forgetBilling, removeCard, savedCard, startSetup } from "./billing.js";
 import { isProtected } from "./verifier.js";
 import { PROBLEMS, cleanProblems, cleanSharedPaths, isSecret } from "./scope.js";
 import { AGENTS, MOCK, modelUnavailable } from "./agents.js";
 import { MODELS, costPerFix, overallPick, scoreboard, trialSummary } from "./trials.js";
 import { PACKS, addCredits, balanceCents, creditsSummary, fixPriceCents, isCreditAmount } from "./credits.js";
-import { mountMcp } from "./mcp.js";
 import { proofFor, proveProblem, resetProofs } from "./proof.js";
 import { markConnected, reapplyBoughtFixes, setAutoSync, syncNow, syncStatus } from "./sync.js";
-import { detectClaude, finishLogin, startLogin } from "./claude-runner.js";
-import { detectCodex, startCodexLogin } from "./codex-runner.js";
-import { startTrialRun, stopTrialRun, trialRun } from "./trial-runner.js";
 import { authorizeFix, canStart, isSealed, ladderStatus, publicLadder, runSealedTrials, sealProof, sealTrial } from "./api-trials.js";
 import { marginView } from "./spend.js";
 import { unlockPrice } from "./pricing.js";
@@ -41,8 +37,8 @@ import {
 } from "./github.js";
 
 const PORT = Number(process.env.PORT) || 4000;
-// Where this server is reachable from outside: OAuth redirects and the MCP
-// URL are built from it. On Vercel it defaults to the production domain.
+// Where this server is reachable from outside: OAuth redirects are built
+// from it. On Vercel it defaults to the production domain.
 const BASE_URL = (
   process.env.SHOAL_PUBLIC_URL ||
   (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : `http://localhost:${PORT}`)
@@ -56,14 +52,13 @@ const app = express();
 if (process.env.VERCEL || process.env.SHOAL_TRUST_PROXY === "1") app.set("trust proxy", 1);
 app.use(WEB_ORIGINS.length ? cors({ origin: WEB_ORIGINS, credentials: true }) : cors());
 // Gzip pages, scripts and JSON (the platform's JavaScript shrinks to about a
-// third). Not /mcp or event streams: those are streamed and must not be buffered.
-app.use(compression({ filter: (req, res) => !req.path.startsWith("/mcp") && !/event-stream/.test(res.getHeader("Content-Type") ?? "") && compression.filter(req, res) }));
+// third). Not event streams: those are streamed and must not be buffered.
+app.use(compression({ filter: (req, res) => !/event-stream/.test(res.getHeader("Content-Type") ?? "") && compression.filter(req, res) }));
 // Trial patches carry whole files, so allow more than the 100kb default.
-app.use(express.json({ limit: "2mb" }));
+// Not the Stripe webhook: its signature is checked against the raw body.
+const json = express.json({ limit: "2mb" });
+app.use((req, res, next) => (req.path === "/api/stripe/webhook" ? next() : json(req, res, next)));
 
-// MCP endpoint for the team's own AI app (Claude, ChatGPT, Codex): the free
-// trial round, plus its GitHub sign-in (see mcp.js and oauth.js).
-mountMcp(app, { baseUrl: BASE_URL });
 
 // Long-running steps run in the background; the dashboard follows along on
 // the SSE stream instead of waiting on the HTTP response.
@@ -437,7 +432,7 @@ app.post("/api/bounties", async (req, res) =>
   }),
 );
 
-// --- Model trials (MCP) and the approved API run --------------------------
+// --- Sealed model trials (api-trials.js) ------------------------------------
 
 app.get("/api/trials", (_req, res) =>
   res.json({
@@ -454,7 +449,6 @@ app.get("/api/trials", (_req, res) =>
     trials: state.trials.slice(0, 40).map(sealTrial),
     canRunTrials: canStart() ?? true,
     models: MODELS,
-    run: trialRun(),
   }),
 );
 
@@ -478,24 +472,6 @@ app.get("/api/trials/:id/repo", async (req, res) => {
   const files = await Promise.all(paths.map(async (p) => ({ path: p, data: fixed.get(p) ?? (await readFile(path.join(WORKSPACE, p))) })));
   const name = `${(state.connection.fullName ?? "repo").replace(/[^\w.-]+/g, "-")}-fixed-by-${(MODELS[trial.model]?.name ?? "agent").replace(/\s+/g, "-")}.zip`;
   res.attachment(name).type("application/zip").send(zip(files));
-});
-
-// One-click trial: Shoal finds Claude Code here, runs it against its own MCP
-// server, and stops when it's done (see trial-runner.js). Codex does the same
-// for the OpenAI models, on the team's ChatGPT plan.
-app.get("/api/claude", async (req, res) => res.json(await detectClaude({ fresh: req.query.fresh === "1" })));
-app.post("/api/claude/login", async (_req, res) => res.json(await startLogin()));
-app.post("/api/claude/login/code", async (req, res) => res.json(await finishLogin(req.body?.code)));
-app.get("/api/codex", async (req, res) => res.json(await detectCodex({ fresh: req.query.fresh === "1" })));
-app.post("/api/codex/login", async (_req, res) => res.json(await startCodexLogin()));
-// Body: { use?: ["claude", "codex"] }; default every app that's signed in.
-app.post("/api/trials/run", async (req, res) => {
-  await startTrialRun(`http://localhost:${PORT}`, { use: Array.isArray(req.body?.use) ? req.body.use : undefined });
-  res.status(202).json(trialRun());
-});
-app.post("/api/trials/stop", (_req, res) => {
-  stopTrialRun();
-  res.json(trialRun());
 });
 
 // Sealed trials on Shoal's API keys (api-trials.js): the step ladder for one
@@ -555,34 +531,6 @@ app.get("/api/owner/margins", async (req, res) => {
   res.json(marginView());
 });
 
-// Approve a model for a problem: by default the best passing trial. That
-// model then fixes it through the API, funded and charged like any bounty.
-// The optimizer's pick fixes it through the API, paid from prepaid credits:
-// only a verified fix is charged (real API cost + Shoal's fee).
-// Only a fix the proof report marked "Safe to buy" can be bought.
-app.post("/api/trials/approve", (req, res) => {
-  const { painId } = req.body ?? {};
-  const proof = proofFor(painId);
-  const trial = proof.proven && state.trials.find((t) => t.id === proof.proven.trialId);
-  if (!trial) {
-    return res.status(409).json({
-      error: proof.checking ? "Still building the proof report for this test" : "No fix for this test is proven yet, so it can't be bought",
-    });
-  }
-  if (trial.sealed) return res.status(409).json({ error: "This fix is sealed: unlock it instead (POST /api/trials/:id/unlock)" });
-  const unavailable = modelUnavailable(trial.model);
-  if (unavailable) return res.status(503).json({ error: `${MODELS[trial.model].name} can't run yet: ${unavailable}` });
-  if (state.bounties.some((b) => b.painId === painId && b.apiModel && !["failed", "settled", "clawed_back", "payment_failed"].includes(b.status))) {
-    return res.status(409).json({ error: "An API fix for this problem is already running" });
-  }
-  const estimate = fixPriceCents(costPerFix(trial.model));
-  if (estimate > balanceCents()) {
-    return res.status(402).json({ error: `Not enough credits: this fix should cost about $${(estimate / 100).toFixed(2)}. Buy a credit pack first.` });
-  }
-  const bounty = createBounty({ painId, reward: estimate / 100, funding: "credits", apiModel: trial.model, trialId: trial.id, survivalDays: req.body?.survivalDays });
-  background(() => runBounty(bounty.id));
-  res.status(202).json(publicBounty(bounty));
-});
 
 // Shared paths are folders or single files; files have an extension.
 const pathLabel = (p) => (p === "." ? "root files" : /\.[^/]+$/.test(p) ? p : `${p}/`);
@@ -633,6 +581,35 @@ app.post("/api/credits/buy", async (req, res) => {
     cancelUrl: `${base}${dashboard("credits=cancelled", "billing")}`,
   });
   res.json({ checkoutUrl });
+});
+
+// Stripe webhook: the same confirmations as the return pages, sent straight
+// from Stripe, so a payment still lands if the browser never makes it back
+// (tab closed, network dropped). All three are safe to receive twice.
+// Setup: STRIPE_WEBHOOK_SECRET from Stripe (Developers -> Webhooks, endpoint
+// <SHOAL_PUBLIC_URL>/api/stripe/webhook, event checkout.session.completed),
+// or locally from `stripe listen --forward-to localhost:4000/api/stripe/webhook`.
+app.post("/api/stripe/webhook", express.raw({ type: "*/*" }), async (req, res) => {
+  const secret = process.env.STRIPE_WEBHOOK_SECRET;
+  if (!secret || !stripeConfigured()) return res.status(400).json({ error: "Stripe webhooks aren't set up on this server (STRIPE_WEBHOOK_SECRET)" });
+  let event;
+  try {
+    event = stripe().webhooks.constructEvent(req.body, req.get("stripe-signature") ?? "", secret);
+  } catch (err) {
+    return res.status(400).json({ error: `Webhook signature didn't verify: ${err.message}` });
+  }
+  if (["checkout.session.completed", "checkout.session.async_payment_succeeded"].includes(event.type)) {
+    const session = event.data.object;
+    if (session.metadata?.kind === "credits") {
+      if (session.payment_status === "paid") await addCredits({ dollars: session.amount_total / 100, mode: paymentsMode(), stripeSessionId: session.id });
+    } else if (session.metadata?.kind === "billing-setup") {
+      await finishSetup(session.metadata.github, session.id);
+    } else if (session.metadata?.bountyId) {
+      const bounty = state.bounties.find((b) => b.id === session.metadata.bountyId);
+      if (bounty) await fundAndStart(bounty, session.id);
+    }
+  }
+  res.json({ received: true });
 });
 
 app.get("/api/credits/return", async (req, res) => {
@@ -728,17 +705,28 @@ const checkoutUrls = (req, bounty) => {
 };
 
 // Stripe sends the team back here after Checkout; confirm the hold, then run.
+// Stripe confirmed the hold: start the race. Both the return page and the
+// webhook call this, in either order, so it's safe to call twice: the hold is
+// confirmed once, and opening the link again later (or for a bounty that's
+// already racing or done) never resets or reruns it.
+const confirming = new Map();
+async function fundAndStart(bounty, sessionId) {
+  if (bounty.escrow.status === "awaiting_funding") {
+    if (!confirming.has(bounty.id)) confirming.set(bounty.id, confirmFunding(bounty, sessionId).finally(() => confirming.delete(bounty.id)));
+    await confirming.get(bounty.id);
+  }
+  const starting = ["awaiting_funding", "open"].includes(bounty.status);
+  if (starting) {
+    bounty.status = "open";
+    background(() => runBounty(bounty.id));
+  }
+  return starting;
+}
+
 app.get("/api/escrow/return", async (req, res) => {
   const bounty = getBounty(req.query.bounty);
   try {
-    if (bounty.escrow.status === "awaiting_funding") await confirmFunding(bounty, req.query.session_id);
-    // Opening this link again later (or for a bounty that's already racing or
-    // done) must not reset or rerun it: only a bounty waiting to start starts.
-    const starting = ["awaiting_funding", "open"].includes(bounty.status);
-    if (starting) {
-      bounty.status = "open";
-      background(() => runBounty(bounty.id));
-    }
+    const starting = await fundAndStart(bounty, req.query.session_id);
     res.redirect(starting ? dashboard("funding=held", "bounties") : hasLanding ? "/app#bounties" : "/team");
   } catch (err) {
     emit("escrow.error", { bountyId: bounty.id, message: `Funding didn't go through: ${err.message}` });
@@ -786,6 +774,18 @@ app.post("/api/bounties/:id/build", (req, res) => {
   if (!bounty.diagnoses?.some((d) => d.model === model && d.correct)) return res.status(400).json({ error: "Pick a model whose diagnosis was correct" });
   background(() => buildFix(bounty.id, model));
   res.status(202).json({ accepted: true, bountyId: bounty.id, model });
+});
+
+// A file from a bounty's winning fix, once the team has paid for it (the
+// fix is in its survival window or settled). For a PR that couldn't be
+// opened on GitHub, this is how the team gets the code.
+app.get("/api/bounties/:id/file", (req, res) => {
+  const bounty = getBounty(req.params.id);
+  if (!["surviving", "settled"].includes(bounty.status)) return res.status(403).json({ error: "The fix is shown once it has won and been paid for" });
+  const winning = bounty.attempts.find((a) => a.passed && a.agentId === bounty.winner);
+  const file = winning?.files.find((f) => f.path === req.query.path);
+  if (!file) return res.status(404).json({ error: "No such file in the winning fix" });
+  res.attachment(path.basename(file.path)).type("text/plain").send(file.content);
 });
 
 app.post("/api/bounties/:id/run", (req, res) => {
@@ -912,11 +912,6 @@ if (!process.env.VERCEL) app.listen(PORT, (err) => {
   }
   const keys = [process.env.ANTHROPIC_API_KEY && "Claude", process.env.OPENAI_API_KEY && "OpenAI"].filter(Boolean);
   console.log(`Shoal server on http://localhost:${PORT} (${MOCK ? "MOCK agents: set ANTHROPIC_API_KEY / OPENAI_API_KEY for real paid runs" : `paid runs: ${keys.join(" + ")} API`})`);
-  console.log(
-    oauthConfigured()
-      ? `MCP: ${BASE_URL}/mcp (ChatGPT, Codex and Claude sign in with GitHub)${process.env.SHOAL_AUTH_SECRET ? "" : "; set SHOAL_AUTH_SECRET so sign-ins survive restarts"}`
-      : `MCP: claude mcp add --transport http shoal http://localhost:${PORT}/mcp (local only; set GITHUB_CLIENT_ID/SECRET for ChatGPT and Codex)`,
-  );
   const watching = state.bounties.filter((b) => b.status === "surviving").length;
   const store = storageInfo();
   console.log(`Storage: ${store.backend === "supabase" ? `Supabase (schema ${store.schema})` : `${store.file} (set SUPABASE_DB_URL for Supabase)`}`);

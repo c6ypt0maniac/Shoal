@@ -10,8 +10,6 @@
 // first that both pass wins, and only its fix reaches the team (as a PR). The team is charged then, but the agent is paid only after
 // the fix survives its window (survival.js); a regression claws it back.
 //
-// A model approved from the MCP trials (apiModel) runs the same lifecycle,
-// as the only competitor, paid from credits at API cost plus Shoal's fee.
 // Unlocking a sealed trial (unlock) skips the model call: the exact fix that
 // was proven lands, charged once at the price shown (api-trials.js).
 import { AGENTS, diagnosisPrompt, practiceOnly, requestDiagnosis, requestModelFix } from "./agents.js";
@@ -19,8 +17,7 @@ import { attemptFix } from "./competitors.js";
 import { checkCompetitors, defaultCompetitors, nameFor } from "./marketplace.js";
 import { getStacks } from "./repo.js";
 import { stackFor } from "./stack.js";
-import { MODELS, costPerFix, linesChanged, providerLabel } from "./trials.js";
-import { balanceCents, fixPriceCents } from "./credits.js";
+import { MODELS, linesChanged, providerLabel } from "./trials.js";
 import { verify } from "./verifier.js";
 import { emit } from "./events.js";
 import { state, newId, cardFor } from "./store.js";
@@ -54,8 +51,8 @@ export function recoverInterrupted() {
 }
 
 // funding: "stripe" (team pays through Checkout), "simulated" (fake money)
-// or "credits". apiModel + trialId: the team approved a model from the MCP
-// trials, so that model runs through the API instead of the marketplace.
+// or "credits". apiModel + trialId + unlock: the proven fix from a sealed
+// trial lands (api-trials.js authorizeFix), with that model as the winner.
 // survivalDays: 7, 10 or 14 before the agent is paid. competitors: the
 // marketplace listings the team picked to compete (default: Shoal's
 // the Claude models, see defaultCompetitors); only those get the team's code. postedBy: GitHub login.
@@ -153,7 +150,7 @@ export async function runBounty(bountyId) {
   const practice = practiceOnly(bounty.repo?.type);
   if (practice) throw httpError(409, practice);
   // On the bounty's own repo, whichever one is active now.
-  return inRepo(bounty, () => (bounty.unlock ? runUnlock(bounty, pain) : bounty.apiModel ? runApprovedModel(bounty, pain) : compete(bounty, pain)));
+  return inRepo(bounty, () => (bounty.unlock ? runUnlock(bounty, pain) : compete(bounty, pain)));
 }
 
 // Every competitor the team picked attempts the bounty at once, privately.
@@ -218,10 +215,13 @@ async function compete(bounty, pain) {
   // Ranked on track record only, never price: best scorecard, then the
   // smaller change. Judged in that order; the first both judges pass wins.
   verified.sort((a, b) => rank(cardFor(b.agentId)) - rank(cardFor(a.agentId)) || a.linesChanged - b.linesChanged);
+  // Kept on each attempt, so the team can see afterwards why the winner won (publicBounty).
+  verified.forEach((v, i) => Object.assign(v, { rank: i + 1, score: Math.round(rank(cardFor(v.agentId)) * 1000) / 1000 }));
   bounty.status = "judging";
   let winner = null;
   for (const candidate of verified) {
     const review = await judgeAttempt({ pain, files: candidate.files, author: candidate.agentId, others: verified.filter((v) => v !== candidate).map((v) => v.files) });
+    candidate.judged = true;
     candidate.judges = review.judges;
     bounty.apiCost += review.cost;
     emit("bounty.judged", {
@@ -245,8 +245,6 @@ async function compete(bounty, pain) {
   });
   return win(bounty, pain, { id: winner.agentId, name, builder: providerOf(winner.agentId) }, winner);
 }
-
-const API_ATTEMPTS = 3;
 
 // The race is a diagnosis: each model says what's broken and where, no code
 // (agents.js requestDiagnosis). A blind grader marks them correct (api-trials.js
@@ -364,80 +362,6 @@ async function runUnlock(bounty, pain) {
   return won;
 }
 
-// The paid round for a model approved from the trials: it fixes the problem
-// through the API with Shoal driving, retrying with the verifier's failure
-// output. Same rules as any bounty, survival window included.
-async function runApprovedModel(bounty, pain) {
-  const name = MODELS[bounty.apiModel].name;
-  const payee = { id: bounty.apiModel, name, builder: providerLabel(bounty.apiModel) };
-  const trial = state.trials.find((t) => t.id === bounty.trialId);
-  const card = cardFor(bounty.apiModel);
-  card.attempts += 1;
-  const started = Date.now();
-  let lastFailure = null;
-
-  for (let attempt = 1; attempt <= API_ATTEMPTS; attempt++) {
-    // Don't start an attempt the team's credits couldn't pay for if it passes.
-    if (bounty.escrow.mode === "credits" && fixPriceCents(bounty.apiCost + costPerFix(bounty.apiModel)) > balanceCents()) {
-      return fail(bounty, `Not enough credits for ${attempt > 1 ? "another" : "an"} attempt. Nothing charged; buy credits to continue.`);
-    }
-    bounty.status = "competing";
-    emit("bounty.competing", {
-      bountyId: bounty.id,
-      agentId: bounty.apiModel,
-      message: `${name} is fixing ${pain.testFile} through the API (attempt ${attempt}/${API_ATTEMPTS})`,
-    });
-    let fix;
-    try {
-      const out = await requestModelFix(bounty.apiModel, bounty, pain, { trial, lastFailure });
-      fix = out.fix;
-      bounty.apiCost += out.cost;
-    } catch (err) {
-      bounty.apiCost += err.cost ?? 0;
-      bounty.attempts.push({ agentId: bounty.apiModel, passed: false, reason: err.message });
-      emit("work.error", { bountyId: bounty.id, agentId: bounty.apiModel, message: `${name} failed to deliver: ${err.message}` });
-      lastFailure = err.message;
-      continue;
-    }
-    emit("work.submitted", {
-      bountyId: bounty.id,
-      agentId: bounty.apiModel,
-      files: fix.files.map((f) => f.path),
-      message: `${name} submitted a patch: ${brief(fix.summary)} (API cost so far $${bounty.apiCost.toFixed(4)})`,
-    });
-
-    bounty.status = "verifying";
-    const stableTestFiles = bounty.stableTestFiles ?? state.pains.filter((p) => p.healthy).map((p) => p.testFile);
-    const result = await verify({ bountyId: bounty.id, agentId: name, testFile: pain.testFile, files: fix.files, stableTestFiles, flakeRate: pain.flakeRate });
-    const entry = {
-      agentId: bounty.apiModel,
-      summary: fix.summary,
-      files: fix.files,
-      linesChanged: await linesChanged(fix.files),
-      passed: result.passed,
-      reason: result.reason ?? null,
-      runs: result.runs.map((r) => r.passed),
-    };
-    bounty.attempts.push(entry);
-    if (result.passed) {
-      card.delivered += 1;
-      card.verified += 1;
-      card.verifiedMs += Date.now() - started;
-      // The trial's patch was judged in its proof report; this new one is too.
-      bounty.status = "judging";
-      const review = await judgeAttempt({ pain, files: fix.files, author: bounty.apiModel });
-      entry.judges = review.judges;
-      bounty.apiCost += review.cost;
-      if (review.ok) return win(bounty, pain, payee, entry);
-      entry.passed = false;
-      entry.reason = `Verified, but the judges failed it: ${review.judges.filter((j) => !j.ok).map((j) => `${j.name}: ${j.summary}`).join(" ")}`;
-      lastFailure = entry.reason;
-      continue;
-    }
-    lastFailure = [result.reason, result.failureLog].filter(Boolean).join("\n");
-  }
-  return fail(bounty, `${name} didn't deliver a verified fix in ${API_ATTEMPTS} tries. $0 charged.`);
-}
 
 // The winning fix: apply it, charge the team, open the PR, and start the
 // survival window. The agent's payout is recorded as pending.
@@ -610,13 +534,14 @@ async function settle(bounty, pain, agent, bid) {
 }
 // Only the winning, verified fix ever reaches the team: as a PR on the
 // connected GitHub repo, when the token has write access.
+// The winning fix as a pull request. On a GitHub repo you can push to it's
+// opened there; otherwise (the bundled demo repo, a read-only repo, a GitHub
+// error) the same PR is kept as a draft the team can read and download, with
+// the reason it wasn't opened. Either way bounty.pullRequest says what happened.
 async function surfacePullRequest(bounty, pain, agent, attempt) {
   const repo = bounty.repo ?? state.connection;
-  if (repo.type !== "github") return;
-  if (!repo.canWrite) {
-    emit("pr.skipped", { bountyId: bounty.id, message: `Fix verified but not pushed: GITHUB_TOKEN can't write to ${repo.fullName}` });
-    return;
-  }
+  const title = `[Shoal] ${bounty.title}`;
+  const branch = `shoal/${bounty.id}-${agent.id}`;
   const body = [
     `**Shoal bounty ${bounty.id}**: ${bounty.title}`,
     "",
@@ -631,17 +556,18 @@ async function surfacePullRequest(bounty, pain, agent, attempt) {
     "### Survival window",
     `Shoal keeps re-running \`${pain.testFile}\` on new commits until ${bounty.survival.endsAt.slice(0, 10)}. The agent is paid only if it keeps passing; otherwise the charge is refunded.`,
   ].join("\n");
+  const draft = (reason) => {
+    bounty.pullRequest = { opened: false, reason, title, branch, body, files: attempt.files.map((f) => f.path) };
+    emit("pr.skipped", { bountyId: bounty.id, message: `Fix ready as a pull request, not opened on GitHub: ${reason}` });
+  };
+  if (repo.type !== "github") return draft("this is the bundled demo repo, which isn't on GitHub. Connect your own repo to get real PRs.");
+  if (!repo.canWrite) return draft(`your GitHub sign-in can't push to ${repo.fullName}`);
   try {
-    const pr = await openPullRequest(repo, {
-      branch: `shoal/${bounty.id}-${agent.id}`,
-      title: `[Shoal] ${bounty.title}`,
-      body,
-      files: attempt.files,
-    });
-    bounty.pullRequest = pr;
+    const pr = await openPullRequest(repo, { branch, title, body, files: attempt.files });
+    bounty.pullRequest = { ...pr, opened: true, title, files: attempt.files.map((f) => f.path) };
     emit("pr.opened", { bountyId: bounty.id, url: pr.url, message: `Opened PR #${pr.number} on ${repo.fullName}` });
   } catch (err) {
-    emit("pr.error", { bountyId: bounty.id, message: `Couldn't open PR: ${err.message}` });
+    draft(`GitHub refused it (${err.message})`);
   }
 }
 
@@ -739,8 +665,24 @@ export function getBounty(id) {
 export function publicBounty(b) {
   const { attempts, ...rest } = b;
   const winning = attempts.find((a) => a.passed && a.agentId === b.winner) ?? null;
+  // Once the race is over: how every competitor did and why the winner won.
+  // Outcomes and reasons only; the other agents' code stays private.
+  const results = RACING.includes(b.status) || ["open", "awaiting_funding"].includes(b.status) ? [] : attempts.map((a) => ({
+    agentId: a.agentId,
+    won: a.agentId === b.winner && a.passed,
+    verified: a.passed,
+    reason: a.reason ?? null,
+    runs: a.runs ?? [],
+    linesChanged: a.linesChanged ?? null,
+    durationMs: a.durationMs ?? null,
+    rank: a.rank ?? null,
+    score: a.score ?? null,
+    judged: Boolean(a.judged ?? a.judges),
+    judges: (a.judges ?? []).map(({ name, ok, summary, unavailable, via }) => ({ name, ok, summary, via: via ?? null, unavailable: Boolean(unavailable) })),
+  }));
   return {
     ...rest,
+    results,
     competition: { attempts: attempts.length, verified: attempts.filter((a) => a.passed).length },
     // Short on purpose: what was broken and where, not how (brief).
     winningAttempt: winning && { agentId: winning.agentId, summary: brief(winning.summary), files: winning.files.map((f) => f.path), linesChanged: winning.linesChanged, runs: winning.runs, judges: (winning.judges ?? []).map((j) => ({ ...j, summary: brief(j.summary), remaining: j.remaining?.map(brief), risks: j.risks?.map(brief) })) },

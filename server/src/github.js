@@ -32,7 +32,7 @@ export function authorizeUrl(callbackUrl, returnTo = "/") {
 }
 
 // GitHub's consent page. callbackUrl may be a subpath of the OAuth App's
-// registered callback (GitHub allows that), e.g. .../callback/mcp.
+// registered callback (GitHub allows that).
 export function githubAuthorizeUrl(callbackUrl, state, scope = OAUTH_SCOPES) {
   const params = new URLSearchParams({
     client_id: process.env.GITHUB_CLIENT_ID,
@@ -72,26 +72,6 @@ export async function exchangeCode(code, callbackUrl) {
   const data = await res.json();
   if (!data.access_token) throw Object.assign(new Error(data.error_description ?? "GitHub sign-in failed"), { status: 401 });
   return data.access_token;
-}
-
-// Someone else's token (an MCP client's sign-in), not the dashboard's.
-export async function loginFor(userToken) {
-  const me = await gh("/user", { token: userToken });
-  if (!me?.login) throw Object.assign(new Error("GitHub didn't say who signed in"), { status: 401 });
-  return me.login;
-}
-
-// Whether that token can read the repo. Cached for 5 minutes per token+repo,
-// since every MCP request asks.
-const access = new Map();
-export async function canAccessRepo(fullName, userToken) {
-  const key = `${fullName}\0${userToken}`;
-  const hit = access.get(key);
-  if (hit && Date.now() - hit.at < 5 * 60_000) return hit.ok;
-  const ok = Boolean(await gh(`/repos/${fullName}`, { token: userToken }).catch(() => null));
-  if (access.size > 1000) access.clear();
-  access.set(key, { ok, at: Date.now() });
-  return ok;
 }
 
 // Deleting a Shoal account: take back the access the person granted on

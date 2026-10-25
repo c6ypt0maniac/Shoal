@@ -1,8 +1,7 @@
 // Trials: fixes tried for a flaky test, each tagged with the model that wrote
-// it. Normally Shoal runs them itself on its own API keys, sealed, and sets
-// the tag (api-trials.js); a team that opted in can also submit its own over
-// MCP (mcp.js), where the tag is self-reported. Shoal runs every trial patch
-// through the same verifier as paid bounties, but never applies it.
+// it. Shoal runs them itself on its own API keys, sealed, and sets the tag
+// (api-trials.js). Every trial patch goes through the same verifier as paid
+// bounties, but is never applied until the team authorizes it.
 import { verify } from "./verifier.js";
 import { emit } from "./events.js";
 import { state, newId } from "./store.js";
@@ -63,8 +62,7 @@ export const MODEL_IDS = Object.keys(MODELS);
 export const OPENAI_MODEL_IDS = MODEL_IDS.filter((id) => MODELS[id].provider === "openai");
 export const providerLabel = (model) => (MODELS[model]?.provider === "openai" ? "OpenAI API" : "Claude API");
 
-// client: the app that sent it over MCP (e.g. ChatGPT, Codex, Claude Code)
-// and the GitHub login it signed in with. The model tag is self-reported.
+// client: who ran it ({ app: "Shoal API" }).
 // sealed + apiCost: Shoal ran it on its own keys (api-trials.js) at that
 // measured cost, which also becomes the model's cost per fix.
 export async function submitTrial({ painId, model, summary, files, client = null, sealed = false, apiCost = null }) {
@@ -140,13 +138,6 @@ export function tokenCost(model, usage) {
 // run when there is one, otherwise a typical-size estimate.
 export function costPerFix(model) {
   return state.modelCost[model]?.perFix ?? tokenCost(model, DEFAULT_TOKENS);
-}
-
-// Called by the trial runner with what each model's subagents actually spent.
-export function recordModelCosts(spentByModel, problemCount) {
-  for (const [model, spent] of Object.entries(spentByModel)) {
-    if (spent > 0) state.modelCost[model] = { perFix: spent / Math.max(1, problemCount), measuredAt: new Date().toISOString() };
-  }
 }
 
 // Quality of each model's best verified fix for one problem:

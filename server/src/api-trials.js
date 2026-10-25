@@ -19,8 +19,8 @@
 // diagnosis or a fix. Every call is checked against the bug's spend cap
 // first (spend.js).
 //
-// Sealed: until the team unlocks, no fix code leaves Shoal. The API, the MCP
-// tools and the dashboard show what's broken and where (the winning
+// Sealed: until the team unlocks, no fix code leaves Shoal. The API and the
+// dashboard show what's broken and where (the winning
 // diagnosis, cut down), diff stats, which checks passed and short judge
 // verdicts (sealTrial, sealProof, publicLadder). Unlocking charges credits
 // once at the price shown (pricing.js), then the proven fix lands as a PR,

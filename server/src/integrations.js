@@ -72,6 +72,7 @@ export const INTEGRATIONS = [
     vars: [
       { name: "STRIPE_SECRET_KEY", secret: true, pattern: /^(sk|rk)_(test|live)_/ },
       { name: "STRIPE_ALLOW_LIVE", optional: true, hint: "1 to take real money with a live key" },
+      { name: "STRIPE_WEBHOOK_SECRET", secret: true, optional: true, pattern: /^whsec_/, hint: "whsec_... so payments land even if the browser never comes back (stripe listen, or Developers -> Webhooks)" },
     ],
     async check({ STRIPE_SECRET_KEY: key, STRIPE_ALLOW_LIVE: allow }) {
       const r = await getJson("https://api.stripe.com/v1/balance", { authorization: `Bearer ${key}` });
@@ -84,7 +85,7 @@ export const INTEGRATIONS = [
   {
     id: "github",
     name: "GitHub OAuth App",
-    turnsOn: "Sign in with GitHub, private repos, and the hosted MCP",
+    turnsOn: "Sign in with GitHub and private repos",
     where: "github.com/settings/developers -> OAuth Apps; callback <SHOAL_PUBLIC_URL>/api/auth/github/callback",
     vars: [
       { name: "GITHUB_CLIENT_ID" },
@@ -106,7 +107,7 @@ export const INTEGRATIONS = [
   {
     id: "auth-secret",
     name: "Shoal auth secret",
-    turnsOn: "MCP sign-ins that survive restarts",
+    turnsOn: "Storing builder webhook secrets",
     where: "generated here (openssl rand -hex 32)",
     vars: [{ name: "SHOAL_AUTH_SECRET", secret: true, generate: true }],
     async check({ SHOAL_AUTH_SECRET: s }) {
