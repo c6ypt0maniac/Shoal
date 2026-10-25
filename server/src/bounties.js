@@ -14,7 +14,7 @@
 // as the only competitor, paid from credits at API cost plus Shoal's fee.
 // Unlocking a sealed trial (unlock) skips the model call: the exact fix that
 // was proven lands, charged once at the price shown (api-trials.js).
-import { AGENTS, diagnosisPrompt, requestDiagnosis, requestModelFix } from "./agents.js";
+import { AGENTS, diagnosisPrompt, practiceOnly, requestDiagnosis, requestModelFix } from "./agents.js";
 import { attemptFix } from "./competitors.js";
 import { checkCompetitors, defaultCompetitors, nameFor } from "./marketplace.js";
 import { getStacks } from "./repo.js";
@@ -31,7 +31,7 @@ import { chargeEscrow, newEscrow, refundEscrow, releaseEscrow } from "./escrow.j
 import { cleanSurvivalDays, startSurvival } from "./survival.js";
 import { judgeAttempt } from "./proof.js";
 import { recordRevenue } from "./spend.js";
-import { brief, grade, where } from "./api-trials.js";
+import { brief, grade, pickReason, rankDiagnoses, where } from "./api-trials.js";
 import { envLimit, mapLimit } from "./limit.js";
 
 const TAKE_RATE = 0.15;
@@ -70,6 +70,8 @@ export function createBounty({ painId, reward, funding = "simulated", apiModel =
     throw httpError(403, `Bounties need a repo you can push to: ${conn.fullName} is ${conn.archived ? "archived" : "read-only for you"}`);
   }
   // Credit runs carry the estimated fix price (can be cents); bounties a reward.
+  const practice = practiceOnly(state.connection.type);
+  if (practice) throw httpError(409, practice);
   const amount = funding === "credits" ? Number(reward) : Math.round(Number(reward) || pain.suggestedReward);
   if (funding !== "credits" && (amount < 1 || amount > 10_000)) throw httpError(400, "Reward must be between $1 and $10,000");
   const bounty = {
@@ -148,6 +150,8 @@ export async function runBounty(bountyId) {
   if (bounty.escrow.status !== "held") throw httpError(402, "Fund this bounty before agents can work on it");
   if (bounty.status !== "open") return bounty; // already running or done
   if (!pain) throw httpError(409, `${bounty.testFile} isn't in the latest scan; scan the repo first`);
+  const practice = practiceOnly(bounty.repo?.type);
+  if (practice) throw httpError(409, practice);
   // On the bounty's own repo, whichever one is active now.
   return inRepo(bounty, () => (bounty.unlock ? runUnlock(bounty, pain) : bounty.apiModel ? runApprovedModel(bounty, pain) : compete(bounty, pain)));
 }
@@ -246,7 +250,8 @@ const API_ATTEMPTS = 3;
 
 // The race is a diagnosis: each model says what's broken and where, no code
 // (agents.js requestDiagnosis). A blind grader marks them correct (api-trials.js
-// grade) and the cheapest model that got it right is recommended. No fix is
+// grade, which also scores them 1-10) and the best value is recommended:
+// the cheapest model within a point of the best score (rankDiagnoses). No fix is
 // written until the team says go (buildFix). The reward stays on hold.
 async function diagnosisRace(bounty, pain) {
   const field = bounty.competitors;
@@ -277,14 +282,14 @@ async function diagnosisRace(bounty, pain) {
   const right = correctFirst(bounty);
   if (!right.length) return fail(bounty, `No model diagnosed ${pain.testFile} correctly. Hold released, $0 charged.`);
   bounty.recommended = right[0].model;
+  bounty.pickReason = pickReason(bounty.diagnoses);
   bounty.status = "awaiting_go_ahead";
   emit("bounty.recommended", { bountyId: bounty.id, agentId: bounty.recommended, message: `${nameFor(bounty.recommended)} diagnosed ${pain.testFile} correctly at the lowest cost. Run it to write the fix.` });
   return bounty;
 }
 
-// Correct diagnoses that haven't written a fix yet, cheapest model first.
-const correctFirst = (bounty) =>
-  (bounty.diagnoses ?? []).filter((d) => d.correct && !bounty.attempts.some((a) => a.agentId === d.model)).sort((a, b) => costPerFix(a.model) - costPerFix(b.model));
+// Correct diagnoses that haven't written a fix yet, best value first.
+const correctFirst = (bounty) => rankDiagnoses(bounty.diagnoses ?? []).filter((d) => !bounty.attempts.some((a) => a.agentId === d.model));
 
 // The team's go-ahead: the chosen model (default: the recommended one)
 // writes the fix with its diagnosis in hand. Verified and passed by both
@@ -738,7 +743,7 @@ export function publicBounty(b) {
     // Short on purpose: what was broken and where, not how (brief).
     winningAttempt: winning && { agentId: winning.agentId, summary: brief(winning.summary), files: winning.files.map((f) => f.path), linesChanged: winning.linesChanged, runs: winning.runs, judges: (winning.judges ?? []).map((j) => ({ ...j, summary: brief(j.summary), remaining: j.remaining?.map(brief), risks: j.risks?.map(brief) })) },
     // Diagnoses: which file and functions need fixing, never the cause or plan.
-    diagnoses: (b.diagnoses ?? []).map((d) => ({ model: d.model, file: d.file, location: where(d.location), correct: d.correct })),
+    diagnoses: (b.diagnoses ?? []).map((d) => ({ model: d.model, file: d.file, location: where(d.location), correct: d.correct, score: d.score ?? null, fixCost: d.fixCost ?? null })),
     // A single approved model has no rivals to hide: show why its tries failed.
     failures: b.apiModel ? attempts.filter((a) => !a.passed).map((a) => a.reason) : [],
   };

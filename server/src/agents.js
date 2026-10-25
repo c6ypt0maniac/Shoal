@@ -26,6 +26,14 @@ const client = MOCK || !KEYS.anthropic ? null : new Anthropic();
 // Pro and o-series models can think for many minutes on one fix.
 const openai = MOCK || !KEYS.openai ? null : new OpenAI({ timeout: 20 * 60_000 });
 
+// Practice mode can only act out the bundled demo repo (mock.js knows its
+// bugs). On any other repo it would mark made-up diagnoses correct and fail
+// every fix, so bounties and trials there are refused with this instead.
+export const practiceOnly = (repoType) =>
+  MOCK && repoType !== "demo"
+    ? "This server has no API keys, so it's in practice mode, which only works on the bundled demo repo. Add ANTHROPIC_API_KEY or OPENAI_API_KEY (npm run keys in server/) and restart to diagnose and fix this repo."
+    : null;
+
 // Why Shoal can't run this model through the API right now, or null.
 export function modelUnavailable(model) {
   const provider = MODELS[model]?.provider;

@@ -16,7 +16,8 @@ import { WORKSPACE, buildWorkspace, getSource, withRepo, writeFiles } from "./re
 import { pullRepo } from "./github.js";
 
 // Next to the active working copy (.workspace -> .workspace-repos).
-const PARKED_DIR = WORKSPACE + "-repos";
+// A function: WORKSPACE can move at startup (repo.js claimWorkspace).
+const parkedDir = () => WORKSPACE + "-repos";
 
 // "owner/name" for a GitHub repo, "demo" for the bundled one.
 export const repoKey = (conn = state.connection) => (conn?.type === "github" ? conn.fullName : "demo");
@@ -48,7 +49,7 @@ const parked = new Map(); // repo key -> Promise<{ workspace, stacks, testComman
 
 async function park(repo) {
   if (!existsSync(repo.dir)) throw Object.assign(new Error(`${repo.fullName ?? repo.key} isn't on this machine any more. Connect it again to finish this bounty.`), { status: 409 });
-  const workspace = path.join(PARKED_DIR, repo.key.replace(/[^\w.-]+/g, "__"));
+  const workspace = path.join(parkedDir(), repo.key.replace(/[^\w.-]+/g, "__"));
   const stacks = await buildWorkspace(repo.dir, workspace);
   for (const b of boughtOn(repo.key)) await writeFiles(workspace, boughtFiles(b));
   return { workspace, stacks, testCommand: repo.testCommand };
@@ -82,7 +83,7 @@ export const unpark = (key) => parked.delete(key);
 // Everything parked, gone (account deletion).
 export async function wipeParked() {
   parked.clear();
-  await rm(PARKED_DIR, { recursive: true, force: true });
+  await rm(parkedDir(), { recursive: true, force: true });
 }
 
 // Repos you've connected, most recent first, for switching back in one click.

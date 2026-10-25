@@ -16,8 +16,9 @@ export const DEMO_REPO = path.resolve(here, "../../demo-repo");
 // SHOAL_REPOS_DIR: where clones go (default server/.repos), e.g. for a test server.
 export const REPOS_DIR = path.resolve(here, "..", process.env.SHOAL_REPOS_DIR || ".repos");
 // SHOAL_WORKSPACE lets a second server (e.g. a preview) run without
-// clobbering the main one's checkout.
-export const WORKSPACE = path.resolve(here, "..", process.env.SHOAL_WORKSPACE || ".workspace");
+// clobbering the main one's checkout. A let, not a const: claimWorkspace
+// moves it if another server already has it (importers see the change).
+export let WORKSPACE = path.resolve(here, "..", process.env.SHOAL_WORKSPACE || ".workspace");
 
 // testCommand: only when the team typed one in setup; otherwise each test runs
 // with the command its stack calls for (see stack.js).
@@ -48,15 +49,23 @@ export async function buildWorkspace(from, to) {
 }
 
 // One server per working copy. A second one on the same folder (a check
-// script, a preview) would copy its own repo in under this one, and this
-// server's scan would then find tests it has no setup for.
+// script, a preview, the desktop app) would copy its own repo in under this
+// one, and this server's scan would then find tests it has no setup for. So
+// if another live server has it, this one quietly takes its own folder next
+// to it (.workspace-<port>) instead of failing to start.
 async function claimWorkspace() {
-  const lock = `${WORKSPACE}.lock`;
-  const pid = Number(await readFile(lock, "utf8").catch(() => ""));
-  if (pid && pid !== process.pid && isAlive(pid)) {
-    throw new Error(`Another Shoal server (pid ${pid}) is using ${WORKSPACE}. Stop it, or give this one its own folder with SHOAL_WORKSPACE.`);
+  const holder = async (dir) => {
+    const pid = Number(await readFile(`${dir}.lock`, "utf8").catch(() => ""));
+    return pid && pid !== process.pid && isAlive(pid) ? pid : null;
+  };
+  const pid = await holder(WORKSPACE);
+  if (pid) {
+    const own = `${WORKSPACE}-${process.env.PORT || process.pid}`;
+    const other = await holder(own);
+    WORKSPACE = other ? `${WORKSPACE}-${process.pid}` : own;
+    console.log(`Another Shoal server (pid ${pid}) is using the default working folder; this one uses ${WORKSPACE}`);
   }
-  await writeFile(lock, String(process.pid));
+  await writeFile(`${WORKSPACE}.lock`, String(process.pid));
 }
 
 function isAlive(pid) {

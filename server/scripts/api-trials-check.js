@@ -149,6 +149,14 @@ try {
   check("only the chosen model wrote the fix, and it won", b.status === "surviving" && b.winner === "claude-sonnet-5-5" && b.competition.attempts === 1, `${b.status} ${b.failReason ?? ""}`);
   await rm(path.join(WORKSPACE, "test/stale.test.js"), { force: true });
 
+  console.log("9. Best value: the cheapest model within a point of the best diagnosis");
+  const { rankDiagnoses } = await import("../src/api-trials.js");
+  const d = (model, score, fixCost) => ({ model, correct: true, score, fixCost });
+  const ranked = rankDiagnoses([d("claude-opus-5-5", 9, 0.4), d("claude-sonnet-5-5", 8, 0.2), d("claude-haiku-5-5", 6, 0.01), { model: "gpt-5-nano", correct: false, score: 0, fixCost: 0.001 }]);
+  check("a much weaker cheap diagnosis isn't picked; Sonnet (8/10) beats Opus (9/10) on price", ranked.map((x) => x.model).join(",") === "claude-sonnet-5-5,claude-opus-5-5,claude-haiku-5-5", ranked.map((x) => x.model).join(","));
+  const { practiceOnly } = await import("../src/agents.js");
+  check("practice mode works on the demo repo only", practiceOnly("demo") === null && /practice mode/.test(practiceOnly("github") ?? ""));
+
   console.log("8. Deleting bounties");
   const del = async (id) => { const r = await fetch(`${BASE}/api/bounties/${id}`, { method: "DELETE" }); return { status: r.status, body: await r.json() }; };
   const gone = await del(posted.id);
