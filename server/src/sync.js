@@ -90,8 +90,8 @@ export async function syncNow({ source = "manual" } = {}) {
     await checkSurvivors({ trigger: `new commit ${short(after)}` });
     return syncStatus();
   } catch (err) {
-    state.sync.error = err.message;
-    emit("sync.error", { message: `Sync failed: ${err.message}` });
+    state.sync.error = describeError(err);
+    emit("sync.error", { message: `Sync failed: ${state.sync.error}${source === "auto" ? " (retrying in a minute)" : ""}` });
     throw err;
   } finally {
     syncing = false;
@@ -138,6 +138,23 @@ setInterval(() => {
   if (!state.sync?.auto && !state.sync?.waiting) return;
   syncNow({ source: "auto" }).catch(() => {});
 }, CHECK_EVERY_MS).unref();
+
+// Node's fetch says only "fetch failed"; the reason is in err.cause.
+const NETWORK = {
+  ENOTFOUND: "couldn't look up GitHub (no internet or DNS down)",
+  EAI_AGAIN: "couldn't look up GitHub (no internet or DNS down)",
+  ECONNREFUSED: "GitHub refused the connection",
+  ECONNRESET: "the connection to GitHub dropped",
+  ETIMEDOUT: "GitHub didn't answer in time",
+  UND_ERR_CONNECT_TIMEOUT: "GitHub didn't answer in time",
+  ENETUNREACH: "no network connection",
+};
+function describeError(err) {
+  if (err.name === "TimeoutError") return "GitHub didn't answer in time";
+  const code = err.cause?.code;
+  if (err.message === "fetch failed") return NETWORK[code] ?? `couldn't reach GitHub (${code ?? err.cause?.message ?? "network error"})`;
+  return err.message;
+}
 
 function httpError(status, message) {
   return Object.assign(new Error(message), { status });
