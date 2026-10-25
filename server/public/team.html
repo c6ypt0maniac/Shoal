@@ -417,7 +417,7 @@ window.stopTrials = async () => {
   refresh();
 };
 
-function renderRun(run, scoreboard) {
+function renderRun(run, scoreboard, problems = []) {
   trialRunState = run;
   renderClaude();
   if (!run) return ($("runBox").innerHTML = "");
@@ -427,19 +427,31 @@ function renderRun(run, scoreboard) {
       <ul>${run.progress.slice(-6).map((p) => `<li>${esc(p.message)}</li>`).join("")}</ul></div>`;
     return;
   }
-  // The live pick, so the report follows trials added after the run too.
-  const winner = currentPick ?? run.report?.winner;
-  const others = (latestScoreboard ?? []).filter((r) => r.model !== winner?.model);
   const ended = { done: "finished", stopped: "was stopped", timed_out: "timed out", failed: "failed" }[run.status];
-  $("runBox").innerHTML = `<div class="report ${winner ? "" : "none"}">
-      <h3>${winner ? `🏆 Best value: ${esc(winner.name)}` : "No model got a fix verified"}</h3>
+  const proofFinished = problems.length > 0 && problems.every((p) => p.proof?.candidates?.length && !p.proof.checking);
+  if (run.status === "done" && !proofFinished) {
+    $("runBox").innerHTML = `<div class="run-live">⏳ <b>Final verification running</b>
+      <p class="hint">The model trial is complete. Shoal is now running stress tests, the full suite, private checks, challenge tests and an independent review. The winner will appear here only after every result is final.</p></div>`;
+    return;
+  }
+
+  const verified = problems.filter((p) => p.proof?.proven).map((p) => ({ problem: p, proof: p.proof.proven }));
+  const names = [...new Set(verified.map((x) => x.proof.name))];
+  const title = !verified.length
+    ? "No model passed final verification"
+    : names.length === 1
+      ? `🏆 Final verified result: ${esc(names[0])}`
+      : "🏆 Final verified results";
+  const details = verified.map(({ problem, proof }) => {
+    const rejected = (problem.proof.candidates ?? []).filter((c) => c.rank < proof.rank && c.verdict !== "safe").map((c) => c.name);
+    return `<li><b>${esc(problem.testFile)}:</b> ${esc(proof.name)} passed every check${proof.score != null ? ` (${proof.score}/100 trust)` : ""}${rejected.length ? `; ${esc(rejected.join(" and "))} failed final verification` : ""}.</li>`;
+  }).join("");
+  $("runBox").innerHTML = `<div class="report ${verified.length ? "" : "none"}">
+      <h3>${title}</h3>
       <p class="hint">Trial ${ended} after ${mins(run.finishedAt)} min · ${run.problems.length} test${run.problems.length > 1 ? "s" : ""} · ran free on your Claude plan</p>
-      ${winner ? `<p><b>${esc(winner.reason)}.</b> ${esc(winner.name)} fixed ${winner.fixed} of ${winner.tried ?? run.problems.length} tests,
-        quality ${winner.quality}/100, about ${money(winner.costPerFix)} of API cost per fix.
-        ${others.map((r) => `${esc(r.name)}: quality ${r.quality}, ${money(r.costPerFix)} per fix.`).join(" ")}</p>` : ""}
-      ${run.summary ? `<p><b>Claude's summary:</b> ${esc(run.summary)}</p>` : ""}
+      ${details ? `<p><b>Final result:</b></p><ul>${details}</ul>` : `<p>Every submitted fix failed at least one final check. Nothing is marked safe to buy.</p>`}
       ${run.error ? `<p class="hint">⚠ ${esc(run.error)}</p>` : ""}
-      ${winner ? `<p>Fix each test below with its best-value model, paid from your credits only if the fix is verified.</p>` : ""}
+      ${verified.length ? `<p>Only the proven model shown below can be selected for the complete fix.</p>` : ""}
     </div>`;
 }
 
@@ -470,7 +482,7 @@ window.buyCredits = (dollars, btn) => busy(btn, async () => {
 function renderTrials({ scoreboard, problems, trials, run, pick, completeFix }) {
   currentPick = pick ?? null;
   latestScoreboard = scoreboard;
-  renderRun(run ?? null, scoreboard);
+  renderRun(run ?? null, scoreboard, problems);
   $("scoreboard").innerHTML = scoreboard.length
     ? scoreboard.map((r) => `<tr>
         <td><b>${esc(r.name)}</b>${r.recommended ? " 🏆" : ""}</td>
