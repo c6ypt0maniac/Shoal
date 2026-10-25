@@ -273,7 +273,7 @@ export function trialSummary() {
 }
 
 // Rough size of a patch: lines added plus lines removed, compared as sets.
-async function linesChanged(files) {
+export async function linesChanged(files) {
   let total = 0;
   for (const f of files) {
     // Ignore line endings: a patch with \n against a \r\n file isn't a rewrite.

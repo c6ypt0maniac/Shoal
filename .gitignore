@@ -4,3 +4,5 @@ node_modules/
 .env
 .data/
 web/dist/
+.env.*
+!.env.example

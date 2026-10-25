@@ -29,6 +29,7 @@ import { state } from "./store.js";
 import { MODELS, rankedOptions } from "./trials.js";
 import { askClaude } from "./claude-runner.js";
 import { askCodex } from "./codex-runner.js";
+import { MOCK, judgeViaApi } from "./agents.js";
 
 const STRESS_PARALLEL = 40;
 const STRESS_MIXED = 10;
@@ -340,9 +341,11 @@ function challengeCheck(challenge, trialId) {
 
 // Two judges from different labs, both on the team's own plan, never the
 // model that wrote the fix: the best Sonnet (Opus for Sonnet's fixes) and the
-// top OpenAI model (GPT-6.1 Sol for GPT-6 Astra's). Claude Code and Codex are
-// asked directly when they're signed in here; otherwise each judge answers
-// over MCP (list_reviews / get_review / submit_review in mcp.js). Both must pass.
+// top OpenAI model (GPT-6.1 Sol for GPT-6 Astra's). Each judge runs the first
+// way it can: the team's Claude Code / Codex signed in here (free), then
+// Shoal's API key; otherwise it answers over MCP (list_reviews / get_review /
+// submit_review in mcp.js). Both must pass. Bounties use the same judges on
+// their best verified fixes (judgeAttempt).
 const JUDGES = {
   anthropic: [{ id: "claude-sonnet-5-5", alias: "sonnet" }, { id: "claude-opus-5-5", alias: "opus" }],
   openai: [{ id: "gpt-6-astra" }, { id: "gpt-6.1-sol" }],
@@ -354,17 +357,62 @@ async function startReview(pain, trial, diff, { code, options }) {
   const prompt = reviewPrompt(pain, trial, diff, { code, options });
   reviewPrompts.set(trial.id, prompt);
   const judges = judgesFor(trial.model).map((j) => ({ provider: j.provider, model: j.id, alias: j.alias ?? null, name: MODELS[j.id].name, status: "waiting" }));
-  const ask = {
-    anthropic: (j) => askClaude(prompt, { model: j.alias, timeout: 8 * 60_000 }).then((a) => a && [a, "Claude Code"]),
-    openai: (j) => askCodex(prompt, { model: j.model, timeout: 8 * 60_000 }).then((a) => a && [a, "Codex"]),
-  };
   await Promise.all(
     judges.map(async (j) => {
-      const got = await ask[j.provider](j);
-      if (got) recordVerdict(j, parseVerdict(got[0].text), got[1]);
+      const got = await askJudge(j, prompt);
+      if (got) recordVerdict(j, parseVerdict(got.text), got.via);
     }),
   );
   return { ok: null, filesSeen: code.length, judges };
+}
+
+// One judge's answer: Claude Code / Codex on the team's plan first, then
+// Shoal's API key. -> { text, via, cost } or null if neither is available.
+async function askJudge(j, prompt) {
+  const timeout = 8 * 60_000;
+  const plan = j.provider === "anthropic" ? await askClaude(prompt, { model: j.alias, timeout }) : await askCodex(prompt, { model: j.model, timeout });
+  if (plan) return { text: plan.text, via: j.provider === "anthropic" ? "Claude Code" : "Codex", cost: 0 };
+  try {
+    const api = await judgeViaApi(j.model, prompt);
+    return { text: api.text, via: `${MODELS[j.model].name} API`, cost: api.cost };
+  } catch {
+    return null;
+  }
+}
+
+// The two judges on one bounty attempt that already passed the verifier.
+// author: who wrote it (never judges itself). others: the other verified
+// attempts' files, so the judges can spot a bug this one only avoids.
+// -> { ok, judges, cost }. ok only if both judges ran and both passed. In
+// mock mode (no keys at all) the judges are stand-ins that pass, so the
+// demo still runs.
+export async function judgeAttempt({ pain, files, author, others = [] }) {
+  const code = await allSharedCode();
+  const diff = await diffFiles(files);
+  const fix = { id: `attempt:${author}`, model: author, files };
+  const options = others.map((files, i) => ({ trial: { id: `other:${i}`, files } }));
+  const prompt = reviewPrompt(pain, fix, diff, { code, options });
+  let cost = 0;
+  const judges = await Promise.all(
+    judgesFor(author).map(async (j) => {
+      const judge = { provider: j.provider, model: j.id, alias: j.alias ?? null, name: MODELS[j.id].name, status: "waiting" };
+      if (MOCK) {
+        recordVerdict(judge, { verdict: "pass", summary: "Mock judge (no API keys): not a real review.", remaining: [], risks: [] }, "mock");
+        return judge;
+      }
+      const got = await askJudge(judge, prompt);
+      if (got) {
+        cost += got.cost;
+        recordVerdict(judge, parseVerdict(got.text), got.via);
+      } else {
+        recordVerdict(judge, { verdict: "fail", summary: `No way to run ${judge.name}: sign in to ${j.provider === "anthropic" ? "Claude Code" : "Codex"} here or set ${j.provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"}.`, remaining: [], risks: [] }, null);
+        judge.unavailable = true;
+      }
+      return judge;
+    }),
+  );
+  const strip = ({ alias, ...j }) => j;
+  return { ok: judges.every((j) => j.ok), judges: judges.map(strip), cost };
 }
 
 function reviewPrompt(pain, trial, diff, { code, options }) {
