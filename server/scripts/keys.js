@@ -9,10 +9,14 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
+import { fileURLToPath } from "node:url";
 import { INTEGRATIONS, checkIntegration, configured, shapeProblem } from "../src/integrations.js";
 
-const ENV_FILE = process.env.SHOAL_ENV_FILE ?? path.resolve(path.dirname(new URL(import.meta.url).pathname), "../.env");
-const EXAMPLE = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../.env.example");
+// fileURLToPath, not URL.pathname: on Windows the pathname is "/C:/...", which
+// resolves to C:\C:\... and the script would never find the file.
+const here = path.dirname(fileURLToPath(import.meta.url));
+const ENV_FILE = process.env.SHOAL_ENV_FILE ?? path.resolve(here, "../.env");
+const EXAMPLE = path.resolve(here, "../.env.example");
 
 const args = process.argv.slice(2);
 const checkOnly = args.includes("--check");
