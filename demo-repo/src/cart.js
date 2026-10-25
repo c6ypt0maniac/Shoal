@@ -27,10 +27,9 @@ export class Cart {
     return Math.round(this.subtotal * (1 - this.discount) * 100) / 100;
   }
 
-  // BUG: fires the lookup but never returns the promise, so callers
-  // can't wait for the discount to actually be applied.
+  // Returns a promise that resolves once the discount has been applied.
   applyCoupon(code) {
-    lookupDiscount(code).then((rate) => {
+    return lookupDiscount(code).then((rate) => {
       this.discount = rate;
     });
   }
