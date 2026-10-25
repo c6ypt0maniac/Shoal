@@ -2,7 +2,7 @@
 // a GitHub repo cloned into .repos/. The workspace is a working copy of the
 // source that settled fixes get merged into; sandboxes are throwaway copies
 // of the workspace where agent patches are tested.
-import { cp, mkdtemp, readFile, readdir, rm, symlink, writeFile, mkdir } from "node:fs/promises";
+import { cp, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile, mkdir } from "node:fs/promises";
 import { lstatSync } from "node:fs";
 import { SKIP_DIRS, commandFor, detectStacks, isTestPath, parseResults, sourcesFor, stackFor } from "./stack.js";
 import { exec } from "node:child_process";
@@ -31,8 +31,35 @@ export const getStacks = () => source.stacks;
 // Fresh working copy of the source, then learn how its tests run.
 export async function resetWorkspace() {
   await rm(WORKSPACE, { recursive: true, force: true });
-  await cp(source.dir, WORKSPACE, { recursive: true, filter: (src) => path.basename(src) !== ".git" });
+  await copyTree(source.dir, WORKSPACE);
   source.stacks = await detectStacks(WORKSPACE);
+}
+
+// Installed dependencies are linked, not copied: tests only read them, and
+// copying them made every start and every test sandbox slow (a JS repo's
+// node_modules can be 100+ MB and tens of thousands of files).
+const LINKED = new Set(["node_modules", ".shoal-venv", ".venv", "venv"]);
+
+async function copyTree(from, to) {
+  const linked = [];
+  await cp(from, to, {
+    recursive: true,
+    filter: (src) => {
+      const name = path.basename(src);
+      if (name === ".git") return false;
+      if (LINKED.has(name) && src !== from) {
+        linked.push(src);
+        return false;
+      }
+      return true;
+    },
+  });
+  for (const src of linked) {
+    const target = path.join(to, path.relative(from, src));
+    await mkdir(path.dirname(target), { recursive: true });
+    // realpath: a sandbox's links point at the clone, not at another link.
+    await symlink(await realpath(src), target, "dir").catch(() => {});
+  }
 }
 
 // A test file in any supported language (see stack.js).
