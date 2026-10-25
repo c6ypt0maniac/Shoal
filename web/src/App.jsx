@@ -71,7 +71,7 @@ export default function App() {
               <Reveal key={s.n} className="grid grid-cols-[72px_minmax(0,1.1fr)_minmax(0,1.4fr)] gap-x-8 gap-y-6 border-b border-ink/15 py-8 transition-opacity duration-300" style={{ opacity: phase === 'All' || phase === s.phase ? 1 : 0.22 }}>
                 <div className="pt-2.5 text-[15px] font-medium tabular-nums text-accent">{s.n}</div>
                 <div className="text-[clamp(24px,2.4vw,36px)] font-medium leading-[1.1] tracking-[-0.025em]">{s.title}</div>
-                <div className="pt-1.5 text-pretty text-muted">{s.body}</div>
+                <div className="pt-1.5 text-pretty text-ink/85">{s.body}</div>
               </Reveal>
             ))}
           </div>
@@ -186,7 +186,7 @@ export default function App() {
             <a href="/app" className="rounded-full bg-accent px-7 py-[18px] text-[17px] font-medium text-paper transition-colors">Get started</a>
           </div>
           <div className="flex flex-wrap items-baseline justify-between gap-4 border-t border-ink/15 pt-6 text-sm text-faint">
-            <div className="flex flex-wrap items-baseline gap-x-4 gap-y-2"><span className="text-lg font-semibold tracking-[-0.02em] text-ink">Shoal</span><span>The neutral referee for AI coding agents.</span></div>
+            <div className="flex flex-wrap items-baseline gap-x-4 gap-y-2"><span className="text-lg font-semibold tracking-[-0.02em] text-ink">Shoal</span></div>
             <span>© 2026</span>
           </div>
         </footer>
