@@ -115,12 +115,13 @@
     <label class="field">Or paste any public repo <input type="text" id="repoInput" placeholder="owner/repo, or a GitHub, GitLab or Bitbucket URL"></label>
     <label class="field">How do you run tests?
       <select id="cmdSelect">
+        <option value="">Automatically detect each test language</option>
         <option value="node --test">node --test</option>
         <option value="npx jest">npx jest</option>
         <option value="npx vitest run">npx vitest run</option>
         <option value="npx mocha">npx mocha</option>
       </select>
-      <span class="hint">Shoal adds test file paths to the end of this command.</span>
+      <span class="hint">Automatic detection is recommended, especially for repositories with more than one language.</span>
     </label>
   </section>
 
@@ -404,7 +405,7 @@ function renderReview() {
   const shared = sharedPaths();
   $("review").innerHTML = `
     <div class="row"><b>Problems</b><div>${probs}${$("problemNote").value.trim() ? `<div class="hint">"${esc($("problemNote").value.trim())}"</div>` : ""}</div></div>
-    <div class="row"><b>Repository</b><div>${sel.repo === DEMO ? "🧪 Demo repo (built-in sample)" : `📁 ${esc(sel.repo)}`}<div class="hint">Tests run with <code>${esc($("cmdSelect").value)}</code></div></div></div>
+    <div class="row"><b>Repository</b><div>${sel.repo === DEMO ? "🧪 Demo repo (built-in sample)" : `📁 ${esc(sel.repo)}`}<div class="hint">${$("cmdSelect").value ? `Tests run with <code>${esc($("cmdSelect").value)}</code>` : "Shoal automatically uses the correct runner for each test language"}</div></div></div>
     <div class="row"><b>Agents can see</b><div>${shared.length
       ? shared.slice(0, 10).map((p) => `<span class="chip">${p === "." ? "root files" : tree.dirs.has(p) ? esc(p) + "/" : esc(p)}</span>`).join("") + (shared.length > 10 ? `<span class="chip">+${shared.length - 10} more</span>` : "")
       : "The whole repo"}

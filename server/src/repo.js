@@ -100,13 +100,26 @@ export function sh(command, cwd, timeout = 120_000) {
   });
 }
 
+// A saved setup command may predate multi-language detection. Never feed a
+// test file to a runner for another language (for example, `node --test x.py`).
+// Unknown custom commands are left alone because they may be project wrappers.
+function testCommandFits(command, files) {
+  const cmd = command.toLowerCase();
+  const all = (pattern) => files.every((file) => pattern.test(file));
+  if (/\b(node|npm|npx|yarn|pnpm|bun)\b/.test(cmd)) return all(/\.[cm]?[jt]sx?$/i);
+  if (/\b(python|python3|pytest|py\s+-3)\b/.test(cmd)) return all(/\.py$/i);
+  if (/\b(go\s+test)\b/.test(cmd)) return all(/\.go$/i);
+  if (/\b(cargo\s+test)\b/.test(cmd)) return all(/\.rs$/i);
+  return true;
+}
+
 // Runs test files once (or, if omitted, every test file), each with its own
 // stack's command, from that stack's folder. Resolves with pass/fail and a
 // trimmed log. A test whose toolchain is missing fails with a clear reason
 // rather than looking like a broken test.
 export async function runTestOnce(dir, testFiles) {
   const files = testFiles ? [testFiles].flat() : await listTestFiles(dir);
-  if (source.testCommand) {
+  if (source.testCommand && testCommandFits(source.testCommand, files)) {
     const { ok, output } = await sh([source.testCommand, ...files.map((f) => JSON.stringify(f))].join(" "), dir, 120_000);
     return { passed: ok, log: output.slice(-1500) };
   }
