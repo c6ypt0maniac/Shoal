@@ -41,6 +41,8 @@ export const state = {
   credits: null,
   // Each GitHub account's saved payment method (see billing.js).
   billing: {},
+  // GitHub repos connected before, most recent first (repos.js).
+  recentRepos: [],
 };
 
 // Unique across restarts, since bounties and the ledger are kept on disk.
@@ -61,6 +63,16 @@ export function cardFor(id) {
   const card = (state.agents[id] ??= {});
   for (const k of ["attempts", "delivered", "verified", "verifiedMs", "wins", "survived", "clawbacks", "earned", "paid"]) card[k] ??= 0;
   return card;
+}
+
+// Switching repos: the scan, trials and proofs were about the old repo.
+// Bounties and the ledger stay (each bounty keeps its own repo, repos.js).
+export function resetRepoState() {
+  state.pains = [];
+  state.trials = [];
+  state.trialRun = null;
+  state.proofs = {};
+  state.cantRun = [];
 }
 
 // Clears bounty activity; the connection and its CI telemetry are kept.

@@ -10,8 +10,9 @@ import { loadState, saveState, storageInfo } from "./persist.js";
 import { importOpenRouterModel, listing, listingExists, marketplace, ownerOf, publishAgent, refreshOpenRouter, removeListing, rotateSecret, updateAgent } from "./marketplace.js";
 import { createReview, deleteReview, replyToReview, reviewsFor, voteHelpful } from "./reviews.js";
 import { clearEvents, eventsAfter, emit, waitForEvents } from "./events.js";
-import { state, resetState, DEMO_CONNECTION } from "./store.js";
-import { getSource, getStacks, isTestFile, listAllFiles, resetWorkspace, setSource, DEMO_REPO, REPOS_DIR, WORKSPACE } from "./repo.js";
+import { state, resetState, resetRepoState, DEMO_CONNECTION } from "./store.js";
+import { isActive, recentRepos, rememberRepo, unpark, wipeParked } from "./repos.js";
+import { getStacks, isTestFile, listAllFiles, resetWorkspace, setSource, DEMO_REPO, REPOS_DIR, WORKSPACE } from "./repo.js";
 import { describeStack } from "./stack.js";
 import { zip } from "./zip.js";
 import { readFile, rm } from "node:fs/promises";
@@ -110,7 +111,7 @@ app.get("/api/health", (_req, res) =>
 
 // --- Repo connection -------------------------------------------------------
 
-app.get("/api/connection", (_req, res) => res.json({ ...state.connection, githubToken: hasToken(), tests: getStacks().map(describeStack), sync: syncStatus() }));
+app.get("/api/connection", (_req, res) => res.json({ ...state.connection, githubToken: hasToken(), tests: getStacks().map(describeStack), sync: syncStatus(), recent: recentRepos() }));
 app.get("/api/ci", (_req, res) => res.json(state.ci));
 
 app.get("/api/github/me", async (_req, res) =>
@@ -211,7 +212,7 @@ app.delete("/api/me", async (req, res) => {
   const settle = state.bounties.filter((b) => b.escrow?.status === "held" || (b.escrow?.status === "charged" && b.status === "surviving"));
   const listings = state.listings.filter((l) => (l.owner ?? l.addedBy) === login).map((l) => l.id);
   const removed = { listings: listings.length, reviews: state.reviews.length, bounties: state.bounties.length };
-  const clone = state.connection.type === "github" ? getSource().dir : null;
+  // Every repo's copy goes: clones and the parked working copies (repos.js).
   const token = getOAuthToken();
   const billing = state.billing[login];
   setSource(DEMO_REPO);
@@ -228,6 +229,7 @@ app.delete("/api/me", async (req, res) => {
     reviewVotes: [],
     credits: null,
     role: null,
+    recentRepos: [],
   });
   delete state.billing[login];
   clearEvents();
@@ -241,7 +243,8 @@ app.delete("/api/me", async (req, res) => {
   Promise.allSettled([
     ...settle.map((b) => (b.escrow.status === "held" ? releaseEscrow(b) : refundEscrow(b)).catch((err) => emit("escrow.error", { bountyId: b.id, message: `Couldn't release or refund ${b.id} after deleting the account: ${err.message}. Do it by hand in Stripe.` }))),
     forgetBilling(login, billing),
-    clone && clone.startsWith(REPOS_DIR) ? rm(clone, { recursive: true, force: true }) : null,
+    rm(REPOS_DIR, { recursive: true, force: true }),
+    wipeParked(),
     revokeGrant(token),
   ]).then(() => console.log(`Finished cleaning up after @${login}'s account deletion`));
 });
@@ -289,8 +292,17 @@ app.post("/api/connect", async (req, res) => {
   }
 });
 
-// Shoal holds one repo at a time, so it can't switch away while it still
-// owes a team a survival verdict on this one.
+// Switching rebuilds the active working copy, so not in the middle of a race
+// on it. Bounties in their survival window are fine: they keep their own
+// repo (repos.js) and are checked there.
+function assertNoRaceOnActiveRepo() {
+  const racing = state.bounties.filter((b) => ["competing", "verifying", "judging"].includes(b.status) && isActive(b));
+  if (racing.length) {
+    throw Object.assign(new Error(`Agents are working on ${racing[0].testFile} in ${state.connection.fullName} right now. Switch repos when that finishes (usually a few minutes).`), { status: 409 });
+  }
+}
+
+// /api/reset wipes bounties, so it still waits for every survival verdict.
 function assertNothingSurviving() {
   const watched = state.bounties.filter((b) => b.status === "surviving");
   if (watched.length) {
@@ -299,7 +311,7 @@ function assertNothingSurviving() {
 }
 
 async function connect(body, step, res) {
-  assertNothingSurviving();
+  assertNoRaceOnActiveRepo();
   const fullName = parseRepo(body?.repo);
   step("repo", `Looking up ${fullName} on GitHub`);
   const repo = await getRepo(fullName);
@@ -315,7 +327,10 @@ async function connect(body, step, res) {
 
   setSource(dir, body?.testCommand);
   await resetWorkspace();
-  resetState();
+  // This repo's scan, trials and proofs start over; bounties and payment
+  // records (on any repo) stay.
+  resetRepoState();
+  unpark(fullName);
   const connectedTo = dir;
   state.connection = {
     type: "github",
@@ -327,6 +342,9 @@ async function connect(body, step, res) {
   };
   state.ci = ci;
   await markConnected(connectedTo);
+  // Fixes already bought on this repo go back into its working copy.
+  await reapplyBoughtFixes();
+  rememberRepo();
   emit("connect.done", {
     message: `Connected to ${repo.fullName}: ${describeTests()}, ${ci.length} CI workflows found, ${describeScope()}, ${repo.canWrite ? "can open PRs" : "read-only (no PRs)"}`,
     connection: state.connection,
@@ -337,12 +355,14 @@ async function connect(body, step, res) {
 }
 
 app.post("/api/connect/demo", async (req, res) => {
-  assertNothingSurviving();
+  assertNoRaceOnActiveRepo();
   setSource(DEMO_REPO);
   await resetWorkspace();
-  resetState();
+  resetRepoState();
+  unpark("demo");
   state.connection = { ...DEMO_CONNECTION, problems: cleanProblems(req.body?.problems), sharedPaths: cleanSharedPaths(req.body?.sharedPaths) };
   state.ci = [];
+  await reapplyBoughtFixes();
   emit("connect.done", { message: `Using the bundled demo repo, ${describeScope()}`, connection: state.connection });
   res.json({ connection: state.connection });
 });
@@ -567,7 +587,7 @@ async function openBounty(req, res, opts) {
         // Declined, or Stripe failed: don't leave an unfundable bounty behind.
         state.bounties = state.bounties.filter((b) => b !== bounty);
         emit("escrow.error", { bountyId: bounty.id, message: `Couldn't hold the reward on your card: ${err.message}` });
-        throw Object.assign(new Error(`Your card couldn't hold $${bounty.reward}: ${err.message}. Update your payment method in Profile.`), { status: 402 });
+        throw Object.assign(new Error(`Your card couldn't hold $${bounty.reward}: ${err.message.replace(/\.$/, "")}. Update your card in Credits & billing.`), { status: 402 });
       }
     }
   }
@@ -759,6 +779,8 @@ app.use((err, _req, res, _next) => {
 // Pick up where the last run left off: the repo connection, and bounties
 // whose survival windows are still running (with their fixes re-applied).
 const restored = await loadState();
+// The repo connected before repos were remembered shows up in the recent list too.
+if (state.connection.type === "github" && !state.recentRepos.some((r) => r.fullName === state.connection.fullName)) rememberRepo();
 if (restored) recoverInterrupted();
 await resetWorkspace();
 if (restored) await reapplyBoughtFixes();

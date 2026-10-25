@@ -20,7 +20,7 @@
 //   code diff       exactly which lines would land.
 // If the cheapest pick fails, the next-best model is checked, so the model
 // the team can buy is always both good value and proven.
-import { createSandbox, destroySandbox, getStacks, listAllFiles, readRepoFile, runTestDetail, runTestMany, runTestOnce, WORKSPACE, writeFiles } from "./repo.js";
+import { createSandbox, destroySandbox, getStacks, listAllFiles, readRepoFile, runTestDetail, runTestMany, runTestOnce, workspaceDir, writeFiles } from "./repo.js";
 import { challengePath, commandFor, stackFor, testHint } from "./stack.js";
 import { inScope, isSecret } from "./scope.js";
 import { isProtected } from "./verifier.js";
@@ -230,7 +230,7 @@ function trackRecord(model) {
 const NOT_CODE = /(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$|\.(png|jpe?g|gif|ico|webp|pdf|zip|gz|woff2?|ttf|mp4|mp3)$/i;
 
 async function allSharedCode() {
-  const paths = (await listAllFiles(WORKSPACE)).filter((p) => inScope(p) && !NOT_CODE.test(p)).sort();
+  const paths = (await listAllFiles(workspaceDir())).filter((p) => inScope(p) && !NOT_CODE.test(p)).sort();
   return Promise.all(paths.map(async (p) => ({ path: p, content: await readRepoFile(p) })));
 }
 

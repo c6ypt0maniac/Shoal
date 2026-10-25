@@ -8,10 +8,10 @@ import ShoreCard from './ShoreCard.jsx';
 import { Agents, CompetitorPicker, ListingDetail, PublishAgent, nameOf } from './Market.jsx';
 import { Repo, Setup } from './Repo.jsx';
 import Trials from './Trials.jsx';
-import { Browse, Empty, Group, Icon, ItemCard, Label, LIVE, Modal, STATUS, Tag, btn, card, field, ghost, money, primary, signInHref, tone } from './ui.jsx';
+import { overlay, Browse, Empty, Group, Icon, ItemCard, Label, LIVE, Modal, STATUS, Tag, btn, card, field, ghost, money, primary, signInHref, tone } from './ui.jsx';
 
 // Messages for ?funding= / ?credits= when Stripe Checkout sends the team back.
-const RETURNS = { 'payments=saved': ['Payment method saved. Bounties are held on this card from now on.'], 'payments=cancelled': ["No card saved. You'll be asked again when you post a bounty.", true], 'payments=failed': ["The card wasn't saved. Try again from Profile.", true], 'funding=held': ['Reward held in escrow. The race is starting.'], 'funding=cancelled': ['Funding cancelled. The bounty is waiting for funding.', true], 'funding=failed': ["Funding didn't go through. Try again from the bounty.", true], 'credits=added': ['Credits added.'], 'credits=cancelled': ['Credit purchase cancelled.', true], 'credits=failed': ["The credit purchase didn't go through.", true], 'github=signed-in': ['Signed in with GitHub. Pick a repository to connect.'] };
+const RETURNS = { 'payments=saved': ['Payment method saved. Bounties are held on this card from now on.'], 'payments=failed': ["The card wasn't saved. Try again from Profile.", true], 'funding=held': ['Reward held in escrow. The race is starting.'], 'funding=cancelled': ['Funding cancelled. The bounty is waiting for funding.', true], 'funding=failed': ["Funding didn't go through. Try again from the bounty.", true], 'credits=added': ['Credits added.'], 'credits=cancelled': ['Credit purchase cancelled.', true], 'credits=failed': ["The credit purchase didn't go through.", true], 'github=signed-in': ['Signed in with GitHub. Pick a repository to connect.'] };
 
 const NAV = [
   ['Account', [['account', 'Profile', 'user'], ['billing', 'Credits & billing', 'card']]],
@@ -22,7 +22,7 @@ const NAV = [
 const TITLES = {
   account: ['Profile', 'Your GitHub account and role'],
   billing: ['Credits & billing', 'Your card for bounties, and credit packs for API fixes. Rewards are held, never charged until a fix is verified.'],
-  setup: ['Get started', 'Three steps. Try everything with the demo repo first.'],
+  setup: ['Get started', 'Three steps to your first bounty. Pick or switch repos on the Repository page.'],
   repo: ['Repository', 'What agents can see, and how Shoal stays in sync'],
   activity: ['Activity', 'Every attempt, green run, rejection and payout'],
   bounties: ['Bounties', 'Flaky tests from your repo, priced by the dev-hours they cost'],
@@ -45,6 +45,10 @@ export default function Platform() {
   const [view, setView] = useState(fromHash);
   const [open, setOpen] = useState(null);
   const [create, setCreate] = useState(null);
+  // Every way of posting a bounty opens the one form (repo first); from a
+  // flaky test, that test is preselected.
+  const [createPain, setCreatePain] = useState(null);
+  const postBounty = (painId = null) => { setOpen(null); setCreatePain(painId); setCreate('bounty'); };
   const [err, setErr] = useState('');
   const [note, setNote] = useState(null);
   useEffect(() => {
@@ -73,11 +77,16 @@ export default function Platform() {
   const act = (fn) => async (...a) => { setErr(''); try { const r = await fn(...a); await s.refresh(); return r; } catch (e) { setErr(e.message); } };
   const pay = usePayment(s.me?.viewer);
 
-  // The "scan" step comes after connect.done (the repo is connected by then), so it doesn't count.
-  const lastConnect = [...s.events].reverse().find((e) => /^connect\./.test(e.type) && e.step !== 'scan');
-  // With no connect events (e.g. after a server restart), a saved scan means a repo is connected.
-  const connected = lastConnect ? lastConnect.type === 'connect.done' : s.connection?.type === 'github' || s.pains.length > 0;
-  const steps = [connected, s.pains.length > 0, s.bounties.length > 0];
+  // Get started: [payments ready, found flaky tests, bounty posted].
+  // Payments count as done once a card is saved, payments are simulated, or
+  // the step was skipped ("Later"); posting a bounty still asks for a card.
+  // The last step is done by posting a bounty, or by choosing to browse agents
+  // or try models first (remembered per account in this browser).
+  const exploredKey = 'shoal.explored.' + (s.me?.viewer?.login || '');
+  const [explored, setExplored] = useState(false);
+  useEffect(() => { try { setExplored(localStorage.getItem(exploredKey) === '1'); } catch { setExplored(false); } }, [exploredKey]);
+  const markExplored = () => { setExplored(true); try { localStorage.setItem(exploredKey, '1'); } catch {} };
+  const steps = [Boolean(pay.billing?.ready || pay.billing?.mode === 'simulated' || pay.billing?.prompted), s.pains.length > 0, s.bounties.length > 0 || explored];
   const viewer = s.me?.viewer;
   const asideRef = useRef(null), pillRef = useRef(null), pillReady = useRef(false);
   useEffect(() => {
@@ -104,12 +113,12 @@ export default function Platform() {
     <>
             <div className="flex flex-wrap items-end justify-between gap-4">
               <div className="flex flex-col gap-1"><h1 className="m-0 text-[clamp(28px,3vw,40px)] font-semibold tracking-[-0.035em]">{TITLES[v]?.[0]}</h1><span className="text-[17px] text-muted">{TITLES[v]?.[1]}</span></div>
-              {['bounties', 'agents', 'selling'].includes(v) && <button className={primary} onClick={() => setCreate(v === 'bounties' ? 'bounty' : 'agent')}><Icon n="plus" size={18} />{v === 'bounties' ? 'Post a bounty' : 'Publish an agent'}</button>}
+              {['bounties', 'agents', 'selling'].includes(v) && <button className={primary} onClick={() => (v === 'bounties' ? postBounty() : setCreate('agent'))}><Icon n="plus" size={18} />{v === 'bounties' ? 'Post a bounty' : 'Publish an agent'}</button>}
             </div>
             {err && <div className="glass rounded-2xl px-5 py-3 text-bad">{err}</div>}
             {note && !err && <div className="glass rounded-2xl px-5 py-3 text-accent">{note}</div>}
-            {v === 'setup' && <Setup s={s} act={act} steps={steps} onPost={() => setCreate('bounty')} go={go} />}
-            {v === 'bounties' && <Bounties s={s} act={act} setOpen={setOpen} setup={!steps[1]} go={go} />}
+            {v === 'setup' && <Setup s={s} act={act} steps={steps} onPost={() => postBounty()} go={go} pay={pay} onExplore={markExplored} />}
+            {v === 'bounties' && <Bounties s={s} act={act} setOpen={setOpen} setup={!steps[1]} go={go} postBounty={postBounty} />}
             {v === 'agents' && <Agents s={s} act={act} setOpen={setOpen} />}
             {v === 'selling' && <Agents s={s} act={act} setOpen={setOpen} mine onPublish={() => setCreate('agent')} />}
             {v === 'trials' && <Trials s={s} act={act} go={go} />}
@@ -154,21 +163,17 @@ export default function Platform() {
               ))}
             </div>
           ))}
-          <div className="mt-auto flex flex-col gap-1 border-t border-[#6B5432]/20 px-3 pt-4 text-xs text-[#6B5432]">
-            <span className="truncate">{s.connection?.fullName ?? '…'}</span>
-            <span>{s.health ? (s.health.mock ? 'Practice agents' : 'Live agents') + ' · ' + s.health.payments + ' payments' : ''}</span>
-          </div>
         </aside>
 
-        <main className="relative min-w-0 overflow-x-clip [clip-path:inset(0)] md:[clip-path:inset(0_0_0_72px)] px-[clamp(20px,4vw,72px)] pb-24 pt-[clamp(32px,6vh,72px)] md:pl-[clamp(96px,9vw,150px)]">
+        <main className="relative min-w-0 overflow-x-clip [clip-path:inset(0)] md:[clip-path:inset(0_0_0_32px)] px-[clamp(20px,4vw,72px)] pb-24 pt-[clamp(32px,6vh,72px)] md:pl-[clamp(96px,9vw,150px)]">
           <div className="relative mx-auto max-w-[1100px]">
             {leaving && <Slide key={'out-' + leaving.v + leaving.n} out>{page(leaving.v)}</Slide>}
             <Slide key={view + navN}>{page(view)}</Slide>
           </div>
         </main>
       </div>
-      {open && <Listing s={s} act={act} open={open} setOpen={setOpen} />}
-      {create && <Create s={s} act={act} mode={create} setMode={setCreate} onPosted={(b) => { setCreate(null); go('bounties'); if (b?.id) setOpen({ kind: 'bounty', id: b.id }); }} />}
+      {open && <Listing s={s} act={act} open={open} setOpen={setOpen} postBounty={postBounty} />}
+      {create && <Create s={s} act={act} mode={create} startPain={createPain} setMode={setCreate} onPosted={(b) => { setCreate(null); go('bounties'); if (b?.id) setOpen({ kind: 'bounty', id: b.id }); }} />}
       </div>
       {locked && <SignInGate s={s} view={view} err={err} />}
       {!locked && pay.asking && <PaymentPrompt pay={pay} />}
@@ -181,7 +186,7 @@ export default function Platform() {
 function SignInGate({ s, view, err }) {
   const loading = !s.health && !s.me;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/15 p-4 font-sans text-ink backdrop-blur-md" role="dialog" aria-modal="true" aria-labelledby="gate-title">
+    <div className={overlay + ' font-sans text-ink'} role="dialog" aria-modal="true" aria-labelledby="gate-title">
       {/* Beach, like the sidebar, with small waves washing up its lower edge. */}
       <ShoreCard className="w-full max-w-[460px] rounded-[24px]">
         <div className="flex flex-col gap-5 p-8">
@@ -217,29 +222,38 @@ function Slide({ out, children }) {
   return <div ref={ref} className={'flex flex-col gap-10 ' + (out ? 'pointer-events-none absolute inset-x-0 top-0' : '')} style={out ? undefined : { opacity: 0 }} aria-hidden={out || undefined}>{children}</div>;
 }
 
-function Bounties({ s, act, setOpen, setup, go }) {
+function Bounties({ s, act, setOpen, setup, go, postBounty }) {
   const [q, setQ] = useState(''), [chip, setChip] = useState('all');
-  const items = s.pains.filter((p) => !p.healthy).map((p) => ({ p, b: s.bounties.find((x) => x.painId === p.id) }));
+  // Bounties remember their repo. The active repo's are matched to the latest
+  // scan by test file (a rescan makes new ids); other repos' are listed with
+  // the test as it was when posted, under their repo's name.
+  const activeKey = s.connection?.type === 'github' ? s.connection.fullName : 'demo';
+  const onActive = (b) => (b.repo?.key ?? activeKey) === activeKey;
+  const items = [
+    ...s.pains.filter((p) => !p.healthy).map((p) => ({ p, b: s.bounties.find((x) => onActive(x) && (x.painId === p.id || x.testFile === p.testFile)) })),
+    ...s.bounties.filter((b) => !onActive(b)).map((b) => ({ p: { id: b.id, testFile: b.testFile, failures: 0, runs: 0, hoursPerWeek: 0, ...b.pain }, b, repo: b.repo?.fullName || 'Demo repo' })),
+  ];
   const kind = ({ b }) => (!b ? 'listed' : LIVE.includes(b.status) ? 'racing' : b.status === 'surviving' ? 'surviving' : b.status === 'settled' ? 'fixed' : ['failed', 'clawed_back'].includes(b.status) ? 'nofix' : 'open');
   const count = (k) => items.filter((x) => kind(x) === k).length;
   const chips = [['all', 'All', items.length], ['listed', 'Not posted', count('listed')], ['open', 'Open', count('open')], ['racing', 'Racing', count('racing')], ['surviving', 'Survival window', count('surviving')], ['fixed', 'Fixed', count('fixed')], ['nofix', 'No fix', count('nofix')]];
   const shown = items.filter((x) => (chip === 'all' || kind(x) === chip) && (!q || x.p.testFile.toLowerCase().includes(q.toLowerCase())));
   const racing = shown.filter((x) => kind(x) === 'racing'), rest = shown.filter((x) => kind(x) !== 'racing');
-  const Item = ({ p, b }) => (
-    <ItemCard key={p.id} onOpen={() => setOpen(b ? { kind: 'bounty', id: b.id } : { kind: 'pain', id: p.id })}
+  const Item = ({ p, b, repo }) => (
+    <ItemCard key={(repo || '') + p.id + (b?.id || '')} onOpen={() => setOpen(b ? { kind: 'bounty', id: b.id } : { kind: 'pain', id: p.id })}
       icon={<Icon n="bounty" size={22} />}
       toggle={b ? <Tag tone={tone(b.status)}>{STATUS[b.status] || b.status}</Tag> : null}
-      title={<span className="font-mono text-[17px]">{p.testFile}</span>} by={'Found by scan · ' + p.failures + '/' + p.runs + ' runs failed'}
+      title={<span className="font-mono text-[17px]">{p.testFile}</span>} by={(repo ? 'In ' + repo + ' · ' : 'Found by scan · ') + p.failures + '/' + p.runs + ' runs failed'}
       meta={<div className="flex gap-1">{Array.from({ length: p.runs }, (_, i) => <span key={i} className={'h-2 flex-1 rounded-full ' + (i < p.failures ? 'bg-bad/75' : 'bg-accent/45')} />)}</div>}
       tags={<><Tag>{money(b ? b.reward : p.suggestedReward)} {b ? 'reward' : 'suggested'}</Tag><Tag>{p.hoursPerWeek} h/week lost</Tag>{b && <Tag>{b.competitors.length} competing</Tag>}</>}
       footL={b ? footer(b) : 'Not posted'}
-      footR={<button className={b ? ghost : primary} onClick={(e) => { e.stopPropagation(); setOpen(b ? { kind: 'bounty', id: b.id } : { kind: 'pain', id: p.id }); }}>{b ? (LIVE.includes(b.status) ? 'Watch race' : 'View') : 'Post bounty'}</button>} />
+      footR={<button className={b ? ghost : primary} onClick={(e) => { e.stopPropagation(); b ? setOpen({ kind: 'bounty', id: b.id }) : postBounty(p.id); }}>{b ? (LIVE.includes(b.status) ? 'Watch race' : 'View') : 'Post bounty'}</button>} />
   );
   return (
     <Browse q={q} setQ={setQ} placeholder="Search test files" onRefresh={act(api.scan)} chips={chips} chip={chip} setChip={setChip}>
       {setup && <Empty>No scan yet. <button className="cursor-pointer text-accent underline" onClick={() => go('setup')}>Get started</button> to find your flaky tests.</Empty>}
       {racing.length > 0 && <Group title="Racing now">{racing.map(Item)}</Group>}
-      {rest.length > 0 && <Group title="Flaky tests">{rest.map(Item)}</Group>}
+      {rest.filter((x) => !x.repo).length > 0 && <Group title="Flaky tests">{rest.filter((x) => !x.repo).map(Item)}</Group>}
+      {rest.filter((x) => x.repo).length > 0 && <Group title="On your other repos">{rest.filter((x) => x.repo).map(Item)}</Group>}
       {!setup && !shown.length && <Empty>Nothing matches.</Empty>}
     </Browse>
   );
@@ -256,7 +270,7 @@ const Section = ({ t, children }) => <div className="flex flex-col gap-2 border-
 const ESCROW = { awaiting_funding: 'Waiting for funding', held: 'Held in escrow, not charged', charged: 'Charged', released: 'Hold released, $0 charged', refunded: 'Refunded', charge_failed: 'Charge failed', refund_failed: 'Refund failed' };
 
 // One open thing in a modal: a marketplace listing, a posted bounty, or a flaky test not posted yet.
-function Listing({ s, act, open, setOpen }) {
+function Listing({ s, act, open, setOpen, postBounty }) {
   const close = () => setOpen(null);
   if (open.kind === 'listing') return <Modal onClose={close}><ListingDetail s={s} act={act} id={open.id} onClose={close} /></Modal>;
   const b = open.kind === 'bounty' ? s.bounties.find((x) => x.id === open.id) : null;
@@ -277,7 +291,7 @@ function Listing({ s, act, open, setOpen }) {
             <div className="flex flex-col"><span className="text-xl font-semibold">{Math.round((p.failures / p.runs) * 100)}%</span><span className="text-sm text-muted">Flake rate</span></div>
             <div className="flex flex-col"><span className="text-xl font-semibold">{p.hoursPerWeek} h</span><span className="text-sm text-muted">Lost per week</span></div>
           </div>}
-          {!b && <QuickPost p={p} s={s} act={act} onPosted={(nb) => setOpen({ kind: 'bounty', id: nb.id })} />}
+          {!b && <button className={primary + ' self-start'} onClick={() => postBounty(p.id)}>Post a bounty</button>}
           {b?.status === 'awaiting_funding' && <button className={primary} onClick={act(async () => { const r = await api.fund(b.id); if (r?.checkoutUrl) location.href = r.checkoutUrl; })}>Fund with Stripe</button>}
           {b?.status === 'open' && b.escrow?.status === 'held' && <button className={primary} onClick={act(() => api.run(b.id))}>Start the race</button>}
           {b && <Section t="Competitors">
@@ -353,18 +367,48 @@ function ReviewForm({ s, act, b }) {
   );
 }
 
-function Create({ s, act, mode, setMode, onPosted }) {
+function Create({ s, act, mode, startPain, setMode, onPosted }) {
   const close = () => setMode(null);
-  const flaky = s.pains.filter((p) => !p.healthy && !s.bounties.some((b) => b.painId === p.id && !['failed', 'clawed_back'].includes(b.status)));
-  const [painId, setPainId] = useState('');
+  // A bounty is on a repo: pick it first. Picking another one switches Shoal
+  // to it and scans it, then its flaky tests are listed. Bounties keep their
+  // repo after that (server/src/repos.js).
+  const activeKey = s.connection?.type === 'github' ? s.connection.fullName : 'demo';
+  const [repos, setRepos] = useState(null), [switchingTo, setSwitchingTo] = useState(null), [repoErr, setRepoErr] = useState('');
+  // The newest event when a switch began: only a scan finishing after it counts.
+  const [switchFrom, setSwitchFrom] = useState(0);
+  useEffect(() => { if (mode === 'bounty') api.repos().then(setRepos, () => setRepos([])); }, [mode]);
+  const choices = [...new Set([...(s.connection?.recent || []).map((r) => r.fullName), ...(repos || []).map((r) => r.fullName)])];
+  const lastScan = [...s.events].reverse().find((e) => /^scan\./.test(e.type));
+  const scanning = ['scan.started', 'scan.file'].includes(lastScan?.type);
+  const ready = switchingTo === null;
+  useEffect(() => { if (switchingTo !== null && activeKey === switchingTo && lastScan?.type === 'scan.completed' && lastScan.id > switchFrom) setSwitchingTo(null); }, [activeKey, switchingTo, lastScan?.id, switchFrom]);
+  const pickRepo = async (key) => {
+    if (key === activeKey) return;
+    setRepoErr(''); setSwitchFrom(s.events.at(-1)?.id ?? 0); setSwitchingTo(key);
+    try { await (key === 'demo' ? api.connectDemo() : api.connect(key)); await s.refresh(); if (key === 'demo') await api.scan(); }
+    catch (e) { setRepoErr(e.message); setSwitchingTo(null); }
+  };
+  const onActive = (b) => (b.repo?.key ?? activeKey) === activeKey;
+  const flaky = s.pains.filter((p) => !p.healthy && !s.bounties.some((b) => onActive(b) && (b.painId === p.id || b.testFile === p.testFile) && !['failed', 'clawed_back'].includes(b.status)));
+  const [painId, setPainId] = useState(startPain || '');
   const pain = flaky.find((p) => p.id === painId) || flaky[0];
   if (mode === 'agent') return <Modal onClose={close}><PublishAgent s={s} act={act} onDone={close} /></Modal>;
   return (
     <Modal onClose={close}>
       <div className="flex flex-col gap-5 p-8">
         <h2 className="m-0 text-[26px] font-semibold tracking-[-0.03em]">Post a bounty</h2>
-        {flaky.length === 0 ? (
-          <div className="flex flex-col gap-3 text-muted">{s.pains.length ? 'Every flaky test already has a bounty.' : 'Run a scan first so Shoal can find your flaky tests.'}{!s.pains.length && <button className={primary + ' self-start'} onClick={act(api.scan)}>Scan my tests</button>}</div>
+        <Label t="Repository">
+          <select className={field} value={switchingTo ?? activeKey} disabled={switchingTo !== null} onChange={(e) => pickRepo(e.target.value)}>
+            <option value="demo">Bundled demo repo</option>
+            {choices.map((r) => <option key={r} value={r}>{r}</option>)}
+            {repos === null && <option disabled>Loading your GitHub repos…</option>}
+          </select>
+        </Label>
+        {repoErr && <span className="text-sm text-bad">{repoErr}</span>}
+        {!ready ? (
+          <div className="text-muted">Switching to {switchingTo === 'demo' ? 'the demo repo' : switchingTo} and scanning for flaky tests…</div>
+        ) : flaky.length === 0 ? (
+          <div className="flex flex-col gap-3 text-muted">{s.pains.length ? 'Every flaky test in this repo already has a bounty.' : scanning ? 'Scanning for flaky tests…' : 'No scan of this repo yet.'}{!s.pains.length && !scanning && <button className={primary + ' self-start'} onClick={act(api.scan)}>Scan for flaky tests</button>}</div>
         ) : (<>
           <Label t="Which test?"><select className={field} value={pain?.id} onChange={(e) => setPainId(e.target.value)}>{flaky.map((p) => <option key={p.id} value={p.id}>{p.testFile} · {p.failures}/{p.runs} failed</option>)}</select></Label>
           {pain && <QuickPost key={pain.id} p={pain} s={s} act={act} onPosted={onPosted} />}
@@ -521,7 +565,7 @@ function PaymentPrompt({ pay }) {
   const run = (fn) => async () => { setBusy(true); setErr(''); try { await fn(); } catch (e) { setErr(e.message); } finally { setBusy(false); } };
   const simulated = pay.billing?.mode === 'simulated';
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/15 p-4 font-sans text-ink backdrop-blur-md" role="dialog" aria-modal="true" aria-labelledby="pay-title">
+    <div className={overlay + ' font-sans text-ink'} role="dialog" aria-modal="true" aria-labelledby="pay-title">
       <ShoreCard className="w-full max-w-[460px] rounded-[24px]">
         <div className="flex flex-col gap-5 p-8">
           <span className="flex items-center gap-2 text-xl font-semibold tracking-[-0.03em]"><span className="block size-[10px] rounded-full bg-accent" />Shoal</span>
@@ -572,7 +616,7 @@ function DeleteAccount({ login, act }) {
       <div className={card + ' border-bad/30'}>
         <span className="text-[15px]">This can't be undone. It wipes everything: the connected repository and its scans, your bounties (held rewards are released and fixes still in their survival window are refunded), model trials, activity, unused credits (they're forfeited), your saved card, and the agents, models and reviews in the marketplace. Shoal's access to your GitHub account is revoked and you're signed out, so signing in again starts fresh.</span>
         <Label t={'Type ' + login + ' to confirm'}><input className={field} value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck="false" /></Label>
-        <button className={btn + ' self-start bg-bad text-paper hover:bg-ink'} disabled={typed.trim() !== login} onClick={act(async () => { await api.deleteAccount(); location.reload(); })}>Delete my account</button>
+        <button className={btn + ' self-start bg-bad text-paper hover:bg-ink'} disabled={typed.trim() !== login} onClick={act(async () => { await api.deleteAccount(); try { localStorage.removeItem('shoal.explored.' + login); } catch {} location.reload(); })}>Delete my account</button>
       </div>
     </>
   );

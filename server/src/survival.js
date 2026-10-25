@@ -10,7 +10,8 @@
 // an agent or platform reports.
 import { access } from "node:fs/promises";
 import path from "node:path";
-import { createSandbox, destroySandbox, runTestMany, WORKSPACE } from "./repo.js";
+import { createSandbox, destroySandbox, runTestMany, workspaceDir } from "./repo.js";
+import { inRepo, isActive, refreshParked } from "./repos.js";
 import { emit } from "./events.js";
 import { state } from "./store.js";
 import { clawBack, releasePayout } from "./bounties.js";
@@ -83,8 +84,11 @@ export async function checkSurvivors({ trigger, bountyId = null, onlyDue = false
 }
 
 async function checkOne(bounty, trigger) {
-  const result = await measure(bounty.testFile);
-  const check = { at: new Date().toISOString(), trigger, commit: state.connection.head?.sha ?? null, ...result };
+  // A bounty on a repo that isn't active: bring its copy up to date first, so
+  // new commits upstream are still checked.
+  await refreshParked(bounty).catch((err) => emit("survival.warning", { bountyId: bounty.id, message: `Couldn't pull new commits for ${bounty.repo?.fullName}: ${err.message}. Checking the code Shoal has.` }));
+  const result = await inRepo(bounty, () => measure(bounty.testFile));
+  const check = { at: new Date().toISOString(), trigger, commit: isActive(bounty) ? (state.connection.head?.sha ?? null) : null, ...result };
   bounty.survival.checks.push(check);
   emit("survival.check", {
     bountyId: bounty.id,
@@ -99,7 +103,7 @@ async function checkOne(bounty, trigger) {
 // the fix, so it counts as a regression too.
 async function measure(testFile) {
   try {
-    await access(path.join(WORKSPACE, testFile));
+    await access(path.join(workspaceDir(), testFile));
   } catch {
     return { ok: false, passed: 0, runs: 0, reason: `${testFile} no longer exists, so the fix can't be confirmed` };
   }

@@ -22,7 +22,8 @@ import { balanceCents, fixPriceCents } from "./credits.js";
 import { verify } from "./verifier.js";
 import { emit } from "./events.js";
 import { state, newId, cardFor } from "./store.js";
-import { writeFiles, WORKSPACE } from "./repo.js";
+import { writeFiles, workspaceDir } from "./repo.js";
+import { inRepo, isActive, repoSnapshot } from "./repos.js";
 import { openPullRequest } from "./github.js";
 import { chargeEscrow, newEscrow, refundEscrow, releaseEscrow } from "./escrow.js";
 import { cleanSurvivalDays, startSurvival } from "./survival.js";
@@ -70,6 +71,11 @@ export function createBounty({ painId, reward, funding = "simulated", apiModel =
     survivalDays: cleanSurvivalDays(survivalDays),
     competitors: apiModel ? [apiModel] : checkCompetitors(competitors ?? AGENTS.map((a) => a.id)),
     language: stackFor(getStacks(), pain.testFile)?.def?.language ?? null,
+    // The repo it's on and the scan it came from, so it keeps working after
+    // you switch repos (see repos.js).
+    repo: repoSnapshot(),
+    pain: { id: pain.id, testFile: pain.testFile, failures: pain.failures, runs: pain.runs, flakeRate: pain.flakeRate, hoursPerWeek: pain.hoursPerWeek, sampleFailure: pain.sampleFailure ?? null, sourceFiles: pain.sourceFiles ?? [], hiddenSources: pain.hiddenSources ?? [] },
+    stableTestFiles: state.pains.filter((p) => p.healthy).map((p) => p.testFile),
     postedBy,
     escrow: newEscrow(amount, funding),
     attempts: [],
@@ -129,7 +135,8 @@ export async function runBounty(bountyId) {
   if (bounty.escrow.status !== "held") throw httpError(402, "Fund this bounty before agents can work on it");
   if (bounty.status !== "open") return bounty; // already running or done
   if (!pain) throw httpError(409, `${bounty.testFile} isn't in the latest scan; scan the repo first`);
-  return bounty.apiModel ? runApprovedModel(bounty, pain) : compete(bounty, pain);
+  // On the bounty's own repo, whichever one is active now.
+  return inRepo(bounty, () => (bounty.apiModel ? runApprovedModel(bounty, pain) : compete(bounty, pain)));
 }
 
 // Every competitor the team picked attempts the bounty at once, privately.
@@ -165,7 +172,7 @@ async function compete(bounty, pain) {
   // many times, so too many at once would overload the machine and make
   // timing-sensitive tests flakier. SHOAL_VERIFY_CONCURRENCY sets the limit.
   bounty.status = "verifying";
-  const stableTestFiles = state.pains.filter((p) => p.healthy).map((p) => p.testFile);
+  const stableTestFiles = bounty.stableTestFiles ?? state.pains.filter((p) => p.healthy).map((p) => p.testFile);
   const attempts = await mapLimit(fixes.filter(Boolean), envLimit("SHOAL_VERIFY_CONCURRENCY", 2), async ({ id, fix, started }) => {
     const result = await verify({ bountyId: bounty.id, agentId: nameFor(id), testFile: pain.testFile, files: fix.files, stableTestFiles });
     const durationMs = Date.now() - started;
@@ -264,7 +271,7 @@ async function runApprovedModel(bounty, pain) {
     });
 
     bounty.status = "verifying";
-    const stableTestFiles = state.pains.filter((p) => p.healthy).map((p) => p.testFile);
+    const stableTestFiles = bounty.stableTestFiles ?? state.pains.filter((p) => p.healthy).map((p) => p.testFile);
     const result = await verify({ bountyId: bounty.id, agentId: name, testFile: pain.testFile, files: fix.files, stableTestFiles });
     const entry = {
       agentId: bounty.apiModel,
@@ -301,7 +308,7 @@ async function runApprovedModel(bounty, pain) {
 async function win(bounty, pain, payee, attempt) {
   bounty.winner = payee.id;
   cardFor(payee.id).wins += 1;
-  await writeFiles(WORKSPACE, attempt.files);
+  await writeFiles(workspaceDir(), attempt.files);
 
   let charged;
   try {
@@ -464,7 +471,7 @@ async function settle(bounty, pain, agent, bid) {
 // Only the winning, verified fix ever reaches the team: as a PR on the
 // connected GitHub repo, when the token has write access.
 async function surfacePullRequest(bounty, pain, agent, attempt) {
-  const repo = state.connection;
+  const repo = bounty.repo ?? state.connection;
   if (repo.type !== "github") return;
   if (!repo.canWrite) {
     emit("pr.skipped", { bountyId: bounty.id, message: `Fix verified but not pushed: GITHUB_TOKEN can't write to ${repo.fullName}` });
@@ -601,8 +608,11 @@ export function publicBounty(b) {
   };
 }
 
+// The bounty's flaky test: from the latest scan when its repo is active,
+// otherwise the snapshot it was posted with.
 function painFor(bounty) {
-  return state.pains.find((p) => p.id === bounty.painId) ?? state.pains.find((p) => p.testFile === bounty.testFile);
+  const live = isActive(bounty) ? state.pains.find((p) => p.id === bounty.painId) ?? state.pains.find((p) => p.testFile === bounty.testFile) : null;
+  return live ?? bounty.pain ?? null;
 }
 
 function httpError(status, message) {

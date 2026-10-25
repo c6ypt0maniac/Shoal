@@ -80,6 +80,7 @@ const VALUES = {
   modelCost: { get: () => state.modelCost, set: (v) => (state.modelCost = v ?? {}) },
   credits: { get: () => state.credits, set: (v) => (state.credits = v) },
   billing: { get: () => state.billing, set: (v) => (state.billing = v ?? {}) },
+  recentRepos: { get: () => state.recentRepos, set: (v) => (state.recentRepos = v ?? []) },
 };
 
 // Real columns and constraints per table, on top of id + data.
@@ -245,6 +246,7 @@ export async function loadState() {
   VALUES.modelCost.set(saved.modelCost);
   if (saved.credits) VALUES.credits.set(saved.credits);
   VALUES.billing.set(saved.billing);
+  VALUES.recentRepos.set(saved.recentRepos);
 
   // A fresh or imported store gets everything written now; otherwise only
   // what changes from here on.

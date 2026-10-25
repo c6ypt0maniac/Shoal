@@ -8,31 +8,38 @@ import { prefersReducedMotion } from '../lib/motion.js';
 const rand = (a, b) => a + Math.random() * (b - a);
 const ease = (p) => 1 - Math.pow(1 - p, 3);
 const easeIO = (p) => (p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2);
+// Gentle in and out, so a wave never starts or stops with a jolt.
+const easeSine = (p) => -(Math.cos(Math.PI * p) - 1) / 2;
 
 export default function Shore({ width = 300 }) {
   const r = { sand: useRef(null), wet: useRef(null), glow: useRef(null), foam: useRef(null), film: useRef(null), breaker: useRef(null), lace0: useRef(null), lace1: useRef(null) };
   useEffect(() => {
     // Barely-there lapping, close to the original still shoreline; fully
     // still for people who prefer reduced motion.
-    const STEP = 8, BASE = width + 72, still = prefersReducedMotion();
-    let raf, waves = [], next = 0, setLeft = 0, wet = [], push = [], raw = [];
+    const STEP = 8, BASE = width + 32, still = prefersReducedMotion();
+    // slots: each wave keeps its own lace line, so lines cross-fade instead of
+    // one jumping between waves. glow/sheen: eased toward their targets, never switched.
+    let raf, waves = [], next = 0, setLeft = 0, wet = [], push = [], raw = [], slots = 0, lastT = null, glow = 0, sheen = 0;
     const spawn = (t) => {
       // Sets: 2-4 bigger waves, then a lull of smaller ones.
       if (setLeft <= 0) setLeft = Math.round(rand(2, 4));
       const big = setLeft-- > 0 && Math.random() < 0.75;
       const A = big ? rand(6, 10) : rand(3, 6);
-      waves.push({ t0: t, A, ap: rand(0.9, 1.3), up: rand(1.4, 2.1) * (A / 60) ** 0.4, down: rand(2.6, 3.6), l: [[rand(0.18, 0.32), rand(0.006, 0.011), rand(0, 6.3)], [rand(0.1, 0.2), rand(0.018, 0.03), rand(0, 6.3)], [rand(0.04, 0.08), rand(0.05, 0.08), rand(0, 6.3)]], peak: null, slot: waves.length % 2 });
+      waves.push({ t0: t, A, ap: rand(0.9, 1.3), up: rand(1.4, 2.1) * (A / 60) ** 0.4, down: rand(2.6, 3.6), l: [[rand(0.18, 0.32), rand(0.006, 0.011), rand(0, 6.3)], [rand(0.1, 0.2), rand(0.018, 0.03), rand(0, 6.3)], [rand(0.04, 0.08), rand(0.05, 0.08), rand(0, 6.3)]], peak: null, slot: slots++ % 2, laceOp: 0 });
       next = t + (big ? rand(7, 10) : rand(8, 12));
     };
     const lobes = (w, y) => w.l.reduce((s, [a, f, p]) => s + a * Math.sin(y * f + p), 0);
     const pathOf = (xs) => xs.map((x, i) => (i ? 'L' : 'M') + x.toFixed(1) + ' ' + (i * STEP - STEP)).join('');
     const frame = (now) => {
       const t = now / 1000, H = innerHeight, n = Math.ceil(H / STEP) + 3;
+      const dt = lastT == null ? 0 : Math.min(0.1, t - lastT);
+      lastT = t;
       if (!still && t >= next) spawn(t);
       const line = new Array(n), brk = new Array(n);
       let energy = 0, film = 0, bOp = 0;
-      for (let i = 0; i < n; i++) { const y = i * STEP - STEP; line[i] = BASE + 4 * Math.sin(y * 0.012 + t * 0.25); brk[i] = null; }
-      const lace = [null, null], laceOp = [0, 0];
+      // The resting shoreline drifts; waves push up the sand from wherever it is.
+      const rest = new Array(n), up = new Array(n).fill(0);
+      for (let i = 0; i < n; i++) { const y = i * STEP - STEP; rest[i] = BASE + 4 * Math.sin(y * 0.012 + t * 0.25); brk[i] = null; }
       waves = waves.filter((w) => t - w.t0 < w.ap + w.up + w.down + 3);
       for (const w of waves) {
         const k = t - w.t0;
@@ -41,11 +48,21 @@ export default function Shore({ width = 300 }) {
           const p = k / w.ap, op = Math.sin(Math.PI * Math.min(1, p * 1.1)) * Math.min(1, w.A / 50);
           if (op > bOp) { bOp = op; for (let i = 0; i < n; i++) { const y = i * STEP - STEP; brk[i] = BASE + 18 + 120 * (1 - ease(p)) + 10 * lobes(w, y * 0.7); } }
           continue;
-        } else if (k < w.ap + w.up) { const p = (k - w.ap) / w.up; reach = ease(p); energy = Math.max(energy, 1 - p * 0.6); }
-        else if (k < w.ap + w.up + w.down) { const p = (k - w.ap - w.up) / w.down; reach = 1 - easeIO(p); film = Math.max(film, 1 - p); if (!w.peak) w.peak = line.map((_, i) => BASE - w.A * (1 + lobes(w, i * STEP - STEP))); laceOp[w.slot] = Math.max(laceOp[w.slot], 0.75 * (1 - p * 0.5)); lace[w.slot] = w.peak; }
-        else { const p = (k - w.ap - w.up - w.down) / 3; if (w.peak) { lace[w.slot] = w.peak; laceOp[w.slot] = Math.max(laceOp[w.slot], 0.38 * (1 - p)); } continue; }
-        for (let i = 0; i < n; i++) { const x = BASE - w.A * reach * (1 + lobes(w, i * STEP - STEP)); if (x < line[i]) line[i] = x; }
+        } else if (k < w.ap + w.up) { const p = (k - w.ap) / w.up; reach = easeSine(p); energy = Math.max(energy, Math.sin(Math.PI * p)); }
+        else if (k < w.ap + w.up + w.down) {
+          const p = (k - w.ap - w.up) / w.down;
+          reach = 1 - easeIO(p);
+          film = Math.max(film, Math.sin(Math.PI * Math.min(1, p * 1.4)) * (1 - p));
+          if (!w.peak) w.peak = rest.map((x, i) => x - w.A * (1 + lobes(w, i * STEP - STEP)));
+          w.laceOp = 0.75 * easeSine(Math.min(1, p * 3)) * (1 - p * 0.5);
+        } else { if (w.peak) w.laceOp = 0.375 * (1 - easeSine(Math.min(1, (k - w.ap - w.up - w.down) / 3))); continue; }
+        // Overlapping waves blend (a soft maximum) instead of meeting in a corner.
+        for (let i = 0; i < n; i++) up[i] += (w.A * reach * (1 + lobes(w, i * STEP - STEP))) ** 4;
       }
+      for (let i = 0; i < n; i++) line[i] = rest[i] - up[i] ** 0.25;
+      const fade = 1 - Math.exp(-dt * 1.5);
+      glow += (energy - glow) * fade;
+      sheen += (film - sheen) * fade;
       const water = null;
       for (let i = 0; i < n; i++) {
         const y = i * STEP - STEP;
@@ -67,11 +84,15 @@ export default function Shore({ width = 300 }) {
       const L = pathOf(line), Lr = line.map((x, i) => 'L' + x.toFixed(1) + ' ' + (i * STEP - STEP)).reverse().join('');
       r.sand.current.setAttribute('d', 'M0 ' + -STEP + L.replace(/^M/, 'L') + 'L0 ' + (n * STEP) + 'Z');
       r.wet.current.setAttribute('d', pathOf(wet.slice(0, n)) + Lr + 'Z');
-      r.glow.current.setAttribute('d', L); r.glow.current.setAttribute('stroke-width', (6 + 16 * energy).toFixed(1)); r.glow.current.setAttribute('opacity', (0.35 + 0.45 * energy).toFixed(2));
-      r.foam.current.setAttribute('d', L); r.foam.current.setAttribute('stroke-width', (1.6 + 2.4 * energy).toFixed(1));
-      r.film.current.setAttribute('d', pathOf(line.map((x) => x + 10 + 26 * film))); r.film.current.setAttribute('opacity', (0.5 * film).toFixed(2));
+      r.glow.current.setAttribute('d', L); r.glow.current.setAttribute('stroke-width', (6 + 16 * glow).toFixed(2)); r.glow.current.setAttribute('opacity', (0.35 + 0.45 * glow).toFixed(3));
+      r.foam.current.setAttribute('d', L); r.foam.current.setAttribute('stroke-width', (1.6 + 2.4 * glow).toFixed(2));
+      r.film.current.setAttribute('d', pathOf(line.map((x) => x + 10 + 26 * sheen))); r.film.current.setAttribute('opacity', (0.5 * sheen).toFixed(3));
       if (bOp > 0.02) { r.breaker.current.setAttribute('d', pathOf(brk)); r.breaker.current.setAttribute('opacity', bOp.toFixed(2)); } else r.breaker.current.setAttribute('opacity', '0');
-      [r.lace0, r.lace1].forEach((ref, s) => { if (lace[s] && laceOp[s] > 0.01) { ref.current.setAttribute('d', pathOf(lace[s].map((x, i) => Math.max(width - 14, x)))); ref.current.setAttribute('opacity', laceOp[s].toFixed(2)); } else ref.current.setAttribute('opacity', '0'); });
+      [r.lace0, r.lace1].forEach((ref, s) => {
+        const w = waves.find((x) => x.slot === s && x.peak);
+        if (w && w.laceOp > 0.005) { ref.current.setAttribute('d', pathOf(w.peak.map((x) => Math.max(width - 14, x)))); ref.current.setAttribute('opacity', w.laceOp.toFixed(3)); }
+        else ref.current.setAttribute('opacity', '0');
+      });
       if (!still) raf = requestAnimationFrame(frame);
     };
     raf = requestAnimationFrame(frame);

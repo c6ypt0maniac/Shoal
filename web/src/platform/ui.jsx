@@ -90,11 +90,18 @@ export function ItemCard({ icon, toggle, title, by, meta, tags, body, footL, foo
   );
 }
 
+// The dimmed, blurred page behind a popup. It overhangs the screen by 64px on
+// every side (with 64px more padding, so the popup stays centered): a blur
+// fades out at its own edges, which Safari shows as a lighter strip along the
+// top, so the edges are kept off-screen. One element, no z-index tricks:
+// Safari painted a separate blur layer over the popup's own background.
+export const overlay = 'fixed -inset-16 z-50 flex items-center justify-center bg-ink/15 p-20 backdrop-blur-md';
+
 export function Modal({ onClose, children, wide }) {
   useEffect(() => { const k = (e) => e.key === 'Escape' && onClose(); addEventListener('keydown', k); return () => removeEventListener('keydown', k); }, [onClose]);
   return (
     // Sand, like the sidebar and the sign-in popup, over a light blur of the page.
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/15 p-4 backdrop-blur-md" onClick={onClose}>
+    <div className={overlay} onClick={onClose}>
       <div className={'sand relative max-h-[92vh] w-full overflow-y-auto rounded-[24px] ' + (wide ? 'max-w-[1040px]' : 'max-w-[620px]')} onClick={(e) => e.stopPropagation()}>
         <button onClick={onClose} aria-label="Close" className="absolute right-4 top-4 z-10 flex size-9 cursor-pointer items-center justify-center rounded-full bg-white/60 text-lg text-ink hover:bg-white">×</button>
         {children}

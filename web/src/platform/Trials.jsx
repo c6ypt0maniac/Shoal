@@ -37,7 +37,7 @@ export default function Trials({ s, act, go }) {
   useEffect(() => { const h = setTimeout(() => api.trials().then((x) => { setT(x); setLoadErr(null); }, (e) => setLoadErr(e.message)), 150); return () => clearTimeout(h); }, [s.events.length, n]);
   // Couldn't load: try again every few seconds, so it recovers once the server is back.
   useEffect(() => { if (!loadErr) return; const h = setTimeout(() => setN((x) => x + 1), 4000); return () => clearTimeout(h); }, [loadErr, n]);
-  if (!s.pains.some((p) => !p.healthy)) return <Empty>No flaky tests yet. <button className="cursor-pointer text-accent underline" onClick={() => go('setup')}>Connect and scan a repo</button> first.</Empty>;
+  if (!s.pains.some((p) => !p.healthy)) return <Empty>No flaky tests yet. <button className="cursor-pointer text-accent underline" onClick={() => go('setup')}>Scan for flaky tests</button> first.</Empty>;
   if (!t) return loadErr
     ? <Empty>{loadErr} <button className="cursor-pointer text-accent underline" onClick={() => setN((x) => x + 1)}>Retry</button></Empty>
     : <div className="text-muted">Loading…</div>;
