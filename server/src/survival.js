@@ -50,6 +50,17 @@ export function startSurvival(bounty) {
   };
 }
 
+// Demo mode (SHOAL_SURVIVAL_MINUTES) also shortens windows that started before
+// it was turned on, so an old 7-14 day window doesn't hold the repo hostage.
+function shortenForDemo(bounty) {
+  if (!(Number(process.env.SHOAL_SURVIVAL_MINUTES) > 0)) return;
+  const s = bounty.survival;
+  const end = Date.parse(s.startedAt) + windowMs(s.days);
+  if (end >= Date.parse(s.endsAt)) return;
+  s.endsAt = new Date(end).toISOString();
+  if (Date.parse(s.nextCheckAt) > end) s.nextCheckAt = s.endsAt;
+}
+
 let checking = false;
 export const isCheckingSurvival = () => checking;
 
@@ -60,6 +71,7 @@ export async function checkSurvivors({ trigger, bountyId = null, onlyDue = false
   if (checking) return [];
   checking = true;
   const now = Date.now();
+  state.bounties.filter((b) => b.status === "surviving").forEach(shortenForDemo);
   const due = (b) => !onlyDue || now >= Date.parse(b.survival.nextCheckAt) || now >= Date.parse(b.survival.endsAt);
   const watched = state.bounties.filter((b) => b.status === "surviving" && (!bountyId || b.id === bountyId) && due(b));
   try {

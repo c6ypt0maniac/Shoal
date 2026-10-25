@@ -2,7 +2,7 @@
 // and keeping the connection in sync (server/src/index.js, scope.js, sync.js).
 import { useEffect, useMemo, useState } from 'react';
 import { api } from './api.js';
-import { Tag, Toggle, card, field, ghost, primary } from './ui.jsx';
+import { Tag, Toggle, card, field, ghost, primary, signInHref } from './ui.jsx';
 
 const dirOf = (p) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '.');
 const label = (d) => (d === '.' ? 'Files in the repo root' : d + '/');
@@ -50,7 +50,8 @@ function ConnectForm({ s, act }) {
   const [repos, setRepos] = useState(null), [repo, setRepo] = useState(''), [typed, setTyped] = useState('');
   const [files, setFiles] = useState(null), [filesErr, setFilesErr] = useState(''), [hidden, setHidden] = useState(new Set());
   const signedIn = Boolean(s.me?.viewer), source = typed.trim() || repo;
-  const last = [...s.events].reverse().find((e) => /^connect\./.test(e.type));
+  // The "scan" step comes after connect.done (the repo is connected by then), so it doesn't count.
+  const last = [...s.events].reverse().find((e) => /^connect\./.test(e.type) && e.step !== 'scan');
   const connecting = last?.type === 'connect.step' ? last.message : '';
   useEffect(() => { api.problems().then(setProblems).catch(() => setProblems([])); }, []);
   useEffect(() => { if (signedIn && !repos) api.repos().then(setRepos).catch(() => setRepos([])); }, [signedIn, repos]);
@@ -79,7 +80,7 @@ function ConnectForm({ s, act }) {
       <div className="flex flex-col gap-2">
         {signedIn
           ? <select className={field} value={repo} onChange={(e) => { setRepo(e.target.value); setTyped(''); }}><option value="">{repos ? 'Choose one of your repositories' : 'Loading repositories…'}</option>{(repos || []).map((r) => <option key={r.fullName} value={r.fullName}>{r.fullName}{r.private ? ' (private)' : ''}</option>)}</select>
-          : s.me?.oauth !== false && <a href="/api/auth/github?return=/app%23setup" className={primary + ' self-start text-paper hover:text-paper'}>Sign in with GitHub for private repos</a>}
+          : s.me?.oauth !== false && <a href={signInHref('setup')} className={primary + ' self-start text-paper hover:text-paper'}>Sign in with GitHub for private repos</a>}
         <input className={field} value={typed} onChange={(e) => { setTyped(e.target.value); setRepo(''); }} placeholder={signedIn ? 'Or paste any owner/name or GitHub URL' : 'Public repo: owner/name or GitHub URL'} />
         <button className={ghost + ' self-start'} onClick={() => { setRepo('demo'); setTyped(''); }}>Use the bundled demo repo instead</button>
       </div>
@@ -103,9 +104,17 @@ export function Setup({ s, act, steps, onPost, go }) {
   useEffect(() => { if (changing !== null && done > changing) setChanging(null); }, [done, changing]);
   steps = changing !== null ? [false, false, false] : steps;
   const cur = steps.findIndex((x) => !x);
+  // What the last finished scan said, e.g. "No test files found in the shared code".
+  const started = last(/^scan\.started$/)?.id ?? 0;
+  const scanNote = !scanning && started && s.events.filter((e) => e.id > started && /^scan\.(warning|completed)$/.test(e.type)).map((e) => e.message);
   const rows = [
     ['Connect your code', 'Pick a GitHub repo, or try the bundled demo, and choose which folders agents can see.', <ConnectForm s={s} act={act} />],
-    ['Find flaky tests', 'Shoal runs every test file 10 times and prices each flaky one by the dev-hours it costs.', <button className={primary} disabled={!steps[0] || scanning} onClick={act(api.scan)}>{scanning ? 'Scanning…' : 'Scan my tests'}</button>],
+    ['Find flaky tests', 'Shoal runs every test file 10 times and prices each flaky one by the dev-hours it costs.', (
+      <div className="flex flex-col gap-2">
+        <button className={primary + ' self-start'} disabled={!steps[0] || scanning} onClick={act(api.scan)}>{scanning ? 'Scanning…' : 'Scan my tests'}</button>
+        {scanNote?.length > 0 && <span className="text-sm text-muted">Last scan: {scanNote.join('. ')}.{!s.pains.length && ' Shoal needs a repo with automated tests; try the demo repo to see it work.'}</span>}
+      </div>
+    )],
     ['Post your first bounty', "Set a reward and pick who competes. It's held, not charged, until a fix passes 10 runs in a row and survives.", <div className="flex flex-wrap gap-2"><button className={primary} disabled={!steps[1]} onClick={onPost}>Post a bounty</button><button className={ghost} disabled={!steps[1]} onClick={() => go('agents')}>Browse agents first</button><button className={ghost} disabled={!steps[1]} onClick={() => go('trials')}>Try models for free</button></div>],
   ];
   return (

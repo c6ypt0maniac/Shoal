@@ -7,7 +7,7 @@ import Shore from './Shore.jsx';
 import { Agents, CompetitorPicker, ListingDetail, PublishAgent, nameOf } from './Market.jsx';
 import { Repo, Setup } from './Repo.jsx';
 import Trials from './Trials.jsx';
-import { Browse, Empty, Group, Icon, ItemCard, Label, LIVE, Modal, STATUS, Tag, card, field, ghost, money, primary, tone } from './ui.jsx';
+import { Browse, Empty, Group, Icon, ItemCard, Label, LIVE, Modal, STATUS, Tag, card, field, ghost, money, primary, signInHref, tone } from './ui.jsx';
 
 // Messages for ?funding= / ?credits= when Stripe Checkout sends the team back.
 const RETURNS = { 'funding=held': ['Reward held in escrow. The race is starting.'], 'funding=cancelled': ['Funding cancelled. The bounty is waiting for funding.', true], 'funding=failed': ["Funding didn't go through. Try again from the bounty.", true], 'credits=added': ['Credits added.'], 'credits=cancelled': ['Credit purchase cancelled.', true], 'credits=failed': ["The credit purchase didn't go through.", true], 'github=signed-in': ['Signed in with GitHub. Pick a repository to connect.'] };
@@ -62,7 +62,8 @@ export default function Platform() {
   };
   const act = (fn) => async (...a) => { setErr(''); try { const r = await fn(...a); await s.refresh(); return r; } catch (e) { setErr(e.message); } };
 
-  const lastConnect = [...s.events].reverse().find((e) => /^connect\./.test(e.type));
+  // The "scan" step comes after connect.done (the repo is connected by then), so it doesn't count.
+  const lastConnect = [...s.events].reverse().find((e) => /^connect\./.test(e.type) && e.step !== 'scan');
   const connected = lastConnect ? lastConnect.type === 'connect.done' : s.connection?.type === 'github';
   const steps = [connected, s.pains.length > 0, s.bounties.length > 0];
   const viewer = s.me?.viewer;
@@ -114,7 +115,7 @@ export default function Platform() {
               {group === 'Account' && (
                 <div className="flex items-center gap-3 px-3 py-2">
                   <span className="flex size-7 items-center justify-center rounded-full bg-accent text-sm font-semibold text-paper">{(viewer?.login || 'G')[0].toUpperCase()}</span>
-                  {viewer ? <span className="truncate font-medium">{viewer.name || '@' + viewer.login}</span> : <a href="/api/auth/github?return=/app" className="font-medium">Sign in with GitHub</a>}
+                  {viewer ? <span className="truncate font-medium">{viewer.name || '@' + viewer.login}</span> : <a href={signInHref()} className="font-medium">Sign in with GitHub</a>}
                 </div>
               )}
               {items.map(([id, label, icon]) => (
@@ -187,7 +188,8 @@ function Bounties({ s, act, setOpen, setup, go }) {
   );
 }
 
-const day = (iso) => new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
+// A date, or a time of day when it's within a day (short demo survival windows).
+const day = (iso) => { const d = new Date(iso); return Math.abs(d - Date.now()) < 86_400_000 ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : d.toLocaleDateString([], { month: 'short', day: 'numeric' }); };
 const footer = (b) => ({
   awaiting_funding: 'Waiting for funding', surviving: 'Paid out ' + (b.survival ? day(b.survival.endsAt) : 'later') + ' if it holds',
   settled: b.pullRequest ? 'PR #' + b.pullRequest.number + ' opened' : 'Fix survived', clawed_back: 'Regressed, refunded', failed: 'No fix, $0 charged', payment_failed: 'Charge failed',
@@ -213,7 +215,7 @@ function Listing({ s, act, open, setOpen }) {
         </div>
         <div className="flex flex-col gap-4 p-8">
           <div className="flex flex-col gap-1"><span className="text-[30px] font-semibold tabular-nums tracking-[-0.03em]">{b?.escrow?.mode === 'credits' ? '$' + Number(b.reward).toFixed(2) : money(b ? b.reward : p.suggestedReward)}</span><span className="break-all font-mono text-[15px]">{b?.testFile ?? p.testFile}</span></div>
-          {b && <div className="flex flex-wrap gap-2"><Tag tone={tone(b.status)}>{STATUS[b.status] || b.status}</Tag><Tag>{b.survivalDays}-day survival</Tag>{b.language && <Tag>{b.language}</Tag>}{b.apiModel && <Tag>API fix · {name(b.apiModel)}</Tag>}</div>}
+          {b && <div className="flex flex-wrap gap-2"><Tag tone={tone(b.status)}>{STATUS[b.status] || b.status}</Tag><Tag>{s.health?.survivalMinutes ? s.health.survivalMinutes + '-minute demo survival' : b.survivalDays + '-day survival'}</Tag>{b.language && <Tag>{b.language}</Tag>}{b.apiModel && <Tag>API fix · {name(b.apiModel)}</Tag>}</div>}
           {p && <div className="grid grid-cols-2 gap-4 border-y border-ink/10 py-4 tabular-nums">
             <div className="flex flex-col"><span className="text-xl font-semibold">{Math.round((p.failures / p.runs) * 100)}%</span><span className="text-sm text-muted">Flake rate</span></div>
             <div className="flex flex-col"><span className="text-xl font-semibold">{p.hoursPerWeek} h</span><span className="text-sm text-muted">Lost per week</span></div>
@@ -265,6 +267,7 @@ function QuickPost({ p, s, act, onPosted }) {
       <Label t="Your reward"><div className="flex gap-2"><span className="flex items-center rounded-xl border border-ink/15 bg-white/60 px-3 text-muted">$</span><input type="number" min="1" max="10000" className={field + ' tabular-nums'} value={reward} onChange={(e) => setReward(e.target.value)} /></div></Label>
       <div role="group" aria-label="Survival window" className="flex flex-col gap-1.5 text-sm text-muted">Survival window: the agent is paid only if the fix holds this long
         <div className="flex gap-2">{[7, 10, 14].map((d) => <button key={d} aria-pressed={days === d} onClick={() => setDays(d)} className={'flex-1 cursor-pointer rounded-xl border px-3 py-2 text-[15px] ' + (days === d ? 'border-ink bg-ink text-paper' : 'border-ink/15 bg-white/60 text-ink')}>{d} days</button>)}</div>
+        {s.health?.survivalMinutes && <span className="text-accent">Demo mode: this server shortens every window to {s.health.survivalMinutes} minutes.</span>}
       </div>
       <CompetitorPicker s={s} value={picks} onChange={setPicks} />
       <button className={primary} disabled={picks?.length === 0} onClick={post}>Post bounty and start the race</button>
@@ -275,7 +278,7 @@ function QuickPost({ p, s, act, onPosted }) {
 // Only the team that posted the bounty can review its winner, once, after the survival window.
 function ReviewForm({ s, act, b }) {
   const [stars, setStars] = useState(0), [body, setBody] = useState(''), [done, setDone] = useState(false);
-  if (!s.me?.viewer) return <p className="m-0 text-sm text-muted"><a className="text-accent underline" href="/api/auth/github?return=/app%23bounties">Sign in with GitHub</a> to review {nameOf(s, b.winner)}.</p>;
+  if (!s.me?.viewer) return <p className="m-0 text-sm text-muted"><a className="text-accent underline" href={signInHref('bounties')}>Sign in with GitHub</a> to review {nameOf(s, b.winner)}.</p>;
   if (done) return <p className="m-0 text-sm text-accent">Thanks, your review is on {nameOf(s, b.winner)}'s listing.</p>;
   return (
     <Section t={'Review ' + nameOf(s, b.winner)}>
@@ -402,7 +405,7 @@ function Account({ s, act }) {
   const v = s.me?.viewer, role = s.me?.role, on = s.health?.integrations || {};
   const signIn = s.me?.oauth === false
     ? <span className="text-sm text-muted">GitHub sign-in isn't set up on this server. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET.</span>
-    : <a href="/api/auth/github?return=/app%23account" className={primary + ' text-paper hover:text-paper'}>Sign in with GitHub</a>;
+    : <a href={signInHref('account')} className={primary + ' text-paper hover:text-paper'}>Sign in with GitHub</a>;
   return (
     <section className="flex flex-col gap-5">
       <h2 className="m-0 border-b border-ink/12 pb-3 text-[24px] font-semibold tracking-[-0.025em]">GitHub</h2>

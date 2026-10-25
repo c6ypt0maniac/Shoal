@@ -86,6 +86,8 @@ app.get("/api/health", (_req, res) =>
     integrations: integrationStatus(),
     githubToken: hasToken(),
     payments: paymentsMode(),
+    // Demo mode: every survival window lasts this many minutes (survival.js).
+    survivalMinutes: Number(process.env.SHOAL_SURVIVAL_MINUTES) > 0 ? Number(process.env.SHOAL_SURVIVAL_MINUTES) : null,
   }),
 );
 
@@ -157,7 +159,11 @@ app.get("/api/auth/github/callback", async (req, res) => {
   }
 });
 
-const withQuery = (url, query) => `${url}${url.includes("?") ? "&" : "?"}${query}`;
+// The query goes before any #fragment, so "/app#account" becomes "/app?github=…#account".
+const withQuery = (url, query) => {
+  const [base, hash] = url.split("#");
+  return `${base}${base.includes("?") ? "&" : "?"}${query}${hash ? `#${hash}` : ""}`;
+};
 
 app.post("/api/auth/github/logout", (_req, res) => {
   signOut();

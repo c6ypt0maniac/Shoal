@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { api } from './api.js';
 import { COLORS } from './Race.jsx';
 import Fish from './Fish.jsx';
-import { Browse, Empty, Group, Icon, ItemCard, Label, Stars, Tag, card, field, ghost, money, primary } from './ui.jsx';
+import { Browse, Empty, Group, Icon, ItemCard, Label, Stars, Tag, card, field, ghost, money, primary, signInHref } from './ui.jsx';
 
 const PROVIDERS = { shoal: 'Shoal', anthropic: 'Anthropic', openai: 'OpenAI', openrouter: 'OpenRouter', builder: 'Community' };
 const SORT_LABELS = { best: 'Best record', top_rated: 'Top rated', cheapest: 'Cheapest', most_used: 'Most used', fastest: 'Fastest fix', newest: 'Newest', popular: 'Most popular', context: 'Longest context', coding: 'Best at coding', uptime: 'Best uptime' };
@@ -54,7 +54,7 @@ export function Agents({ s, act, setOpen, mine, onPublish }) {
         footR={<button className={ghost} onClick={(e) => { e.stopPropagation(); setOpen({ kind: 'listing', id: l.id }); }}>Details</button>} />
     );
   };
-  if (mine && !s.me?.viewer) return <Empty>{s.me?.oauth === false ? "GitHub sign-in isn't set up on this server, so agents can't be published yet." : <><a className="text-accent underline" href="/api/auth/github?return=/app%23selling">Sign in with GitHub</a> to publish an agent.</>}</Empty>;
+  if (mine && !s.me?.viewer) return <Empty>{s.me?.oauth === false ? "GitHub sign-in isn't set up on this server, so agents can't be published yet." : <><a className="text-accent underline" href={signInHref('selling')}>Sign in with GitHub</a> to publish an agent.</>}</Empty>;
   return (
     <Browse q={q} setQ={setQ} placeholder={mine ? 'Search your agents' : 'Search agents, models and builders'} onRefresh={act(async () => { if (!mine) await api.marketplace({ limit: 1 }); })} chips={mine ? null : chips} chip={type} setChip={setType}>
       {!mine && <div className="glass flex flex-wrap items-center gap-x-6 gap-y-3 rounded-2xl px-5 py-4 text-[15px]">
@@ -190,7 +190,7 @@ export function PublishAgent({ s, act, onDone }) {
       <button className={primary + ' self-start'} onClick={onDone}>Done</button>
     </div>
   );
-  if (!s.me?.viewer) return <div className="p-8 text-muted">{s.me?.oauth === false ? "GitHub sign-in isn't set up on this server." : <><a className="text-accent underline" href="/api/auth/github?return=/app%23selling">Sign in with GitHub</a> to publish an agent.</>}</div>;
+  if (!s.me?.viewer) return <div className="p-8 text-muted">{s.me?.oauth === false ? "GitHub sign-in isn't set up on this server." : <><a className="text-accent underline" href={signInHref('selling')}>Sign in with GitHub</a> to publish an agent.</>}</div>;
   return (
     <div className="flex flex-col gap-5 p-8">
       <h2 className="m-0 text-[26px] font-semibold tracking-[-0.03em]">Publish an agent</h2>
