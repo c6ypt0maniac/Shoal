@@ -88,16 +88,19 @@ export default function Trials({ s, act, go }) {
                 {pr.awaitingReview && <Tag>Waiting for a review from {pr.awaitingReview.name}</Tag>}
                 {!pr.checking && !pr.proven && pr.candidates?.length > 0 && !pr.awaitingReview && <Tag tone="bad">No fix proven</Tag>}
                 {p.bounty && <Tag tone={tone(p.bounty.status)}>API fix: {STATUS[p.bounty.status] || p.bounty.status}</Tag>}
-                {p.ladder?.status === 'running' && <Tag>Sealed trials: step {p.ladder.step}</Tag>}
-                {p.ladder?.status === 'stopped' && <Tag tone="bad">{p.ladder.stopped === 'cap' ? 'Stopped at the spend cap' : 'No model proved a fix'}</Tag>}
+                {p.ladder?.status === 'running' && <Tag>Diagnosing: step {p.ladder.step}</Tag>}
+                {p.ladder?.status === 'awaiting_authorization' && <Tag tone="ok">Best model: {p.ladder.pickName}</Tag>}
+                {p.ladder?.status === 'fixing' && <Tag>{p.ladder.pickName} is writing the fix…</Tag>}
+                {p.ladder?.status === 'stopped' && <Tag tone="bad">{{ cap: 'Stopped at the spend cap', exhausted: 'No model diagnosed it', not_proven: 'No fix proven · $0 charged' }[p.ladder.stopped] || 'Stopped'}</Tag>}
               </div>
               {p.ladder?.diagnoses?.length > 0 && (() => {
                 // The small trial: who diagnosed what. The winner's diagnosis says
                 // what needs fixing; how stays sealed until unlock.
-                const won = p.ladder.diagnoses.find((d) => d.wroteFix && d.correct);
+                const won = p.ladder.diagnoses.find((d) => d.model === p.ladder.pick);
                 return <div className="flex flex-col gap-1 text-sm">
                   {won && <span><span className="text-muted">Needs fixing:</span> <span className="font-mono">{won.file}</span>, {won.location}. {won.cause}</span>}
-                  <span className="text-muted">Diagnosed: {p.ladder.diagnoses.map((d) => d.name + (d.correct ? ' ✓' : d.correct === false ? ' ✗' : '')).join(', ')}{won ? ' · fix written by ' + won.name : ''}</span>
+                  <span className="text-muted">Diagnosed: {p.ladder.diagnoses.map((d) => d.name + (d.correct ? ' ✓' : d.correct === false ? ' ✗' : '')).join(', ')}{won ? ' · cheapest correct: ' + won.name : ''}</span>
+                  {p.ladder.status === 'awaiting_authorization' && <span className="text-muted">No fix has been written yet. Authorize {p.ladder.pickName} and it writes the fix; you're charged only if the fix is proven, never more than the quote.</span>}
                 </div>;
               })()}
               {pr.candidates?.filter((c) => c.checks?.review?.skipped).map((c) => <span key={c.trialId} className="text-sm text-muted">{c.name}: {c.checks.review.reason}</span>)}
@@ -106,7 +109,9 @@ export default function Trials({ s, act, go }) {
                 {pr.proven && !p.bounty && (p.sealed
                   ? <button className={primary} disabled={price > balance} onClick={trialAct(() => api.unlock(pr.proven.trialId))}>Unlock fix · {usd(price)}</button>
                   : <button className={primary} disabled={price > balance} onClick={trialAct(() => api.approve(p.painId))}>Buy fix · about {usd(price)}</button>)}
-                {!pr.proven && p.ladder?.status !== 'running' && <button className={ghost} disabled={t.canRunTrials !== true} title={t.canRunTrials === true ? '' : t.canRunTrials} onClick={trialAct(() => api.sealedTrials(p.painId))}>Run sealed trials</button>}
+                {p.ladder?.status === 'awaiting_authorization' && <button className={primary} disabled={p.ladder.quote > balance} onClick={trialAct(() => api.authorize(p.painId))}>Authorize {p.ladder.pickName} to fix · up to {usd(p.ladder.quote)}</button>}
+                {p.ladder?.status === 'awaiting_authorization' && p.ladder.quote > balance && <button className={ghost} onClick={() => go('billing')}>Add credits</button>}
+                {!pr.proven && !['running', 'awaiting_authorization', 'fixing'].includes(p.ladder?.status) && <button className={ghost} disabled={t.canRunTrials !== true} title={t.canRunTrials === true ? '' : t.canRunTrials} onClick={trialAct(() => api.sealedTrials(p.painId))}>Run sealed trials</button>}
                 {pr.proven && !p.bounty && price > balance && <button className={ghost} onClick={() => go('billing')}>Add credits</button>}
                 {p.attempts > 0 && !pr.checking && !pr.proven && <button className={ghost} onClick={trialAct(() => api.prove(p.painId))}>Build proof report</button>}
               </div>

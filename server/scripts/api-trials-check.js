@@ -1,10 +1,10 @@
 // Checks sealed API trials (api-trials.js) in practice mode (no keys, no spend):
 //   trials need credits;
-//   the trial is small: models only diagnose; step 1's wrong diagnoses
-//   mean none of them writes a fix; step 2's correct ones are graded and only
-//   the cheapest writes the full fix, which is proven (step 3 never asked);
-//   until unlock no fix code leaves Shoal (API, file/zip downloads, MCP);
-//   unlock charges credits once, at the price shown, and lands the fix;
+//   the trial only diagnoses: step 1's diagnoses are wrong, step 2's right,
+//   and the cheapest correct model is recommended with a quote; no fix is
+//   written (step 3 never asked);
+//   authorizing it: that model alone writes the fix, it's proven, charged
+//   once (no more than the quote) and lands;
 //   a model that failed is never asked again on the same bug;
 //   the spend cap stops the ladder before a call that would go over it.
 //   node scripts/api-trials-check.js
@@ -76,53 +76,41 @@ try {
   check("no credits: refused with 402", none.status === 402, none.text);
 
   await addCredits({ dollars: 25, mode: "simulated" });
-  console.log("2. The ladder stops at the first step with a proven fix");
+  console.log("2. The trial only diagnoses, then recommends the cheapest correct model");
   const started = await req("/api/trials/sealed", { painId: cart.id });
   check("started", started.status === 202, started.text);
   let p = await ladderDone("test/cart.test.js");
-  const { diagnosed, fixed } = state.apiTrials[cart.id];
-  check("proven at step 2", p.ladder.status === "proven" && p.ladder.step === 2, JSON.stringify({ ...p.ladder, diagnoses: undefined }));
-  check("step 1's models each diagnosed once, wrongly, and wrote no fix", STEP_1.every((m) => diagnosed.filter((x) => x === m).length === 1 && !fixed.includes(m)));
-  check("only one full fix was written, by a model that diagnosed it right", fixed.length === 1 && ["claude-sonnet-5-5", "gpt-6.1-sol"].includes(fixed[0]) && state.trials.filter((t) => t.painId === cart.id).length === 1, fixed.join(", "));
+  let { diagnosed, fixed } = state.apiTrials[cart.id];
+  check("stopped at step 2 waiting for the go-ahead", p.ladder.status === "awaiting_authorization" && p.ladder.step === 2, JSON.stringify({ ...p.ladder, diagnoses: undefined }));
+  check("step 1's models each diagnosed once, wrongly", STEP_1.every((m) => diagnosed.filter((x) => x === m).length === 1));
   check("step 3 was never asked", !diagnosed.includes("claude-opus-5-5") && !diagnosed.includes("gpt-6-astra"), diagnosed.join(", "));
+  check("a step-2 model that diagnosed it right is recommended", ["claude-sonnet-5-5", "gpt-6.1-sol"].includes(p.ladder.pick) && p.ladder.pickName, p.ladder.pick);
+  check("no fix was written in the trial", fixed.length === 0 && state.trials.filter((t) => t.painId === cart.id).length === 0);
   check("the team sees what's broken, not the plan", p.ladder.diagnoses.length === 5 && p.ladder.diagnoses.every((d) => !("plan" in d) && d.file) && !JSON.stringify(p.ladder).includes("Practice mode."));
-  check("Shoal set the model tags and measured costs", state.trials.filter((t) => t.painId === cart.id).every((t) => t.sealed && t.client?.app === "Shoal API" && t.apiCost > 0));
-  check("spend was recorded for this bug", state.trialSpend[cart.id]?.fix > 0, JSON.stringify(state.trialSpend[cart.id]));
-  const price = p.fixPrice;
-  check("a price is shown before unlocking, $2.99-$19.99, ending in .99", price >= 2.99 && price <= 19.99 && Math.round(price * 100) % 100 === 99, String(price));
-
-  console.log("3. Sealed until unlocked");
-  const proven = p.proof.proven;
-  const sealedText = (await req("/api/trials")).text;
-  const mine = (await api("/api/trials")).trials.find((t) => t.id === proven.trialId);
-  check("the trial shows paths, not code", mine.locked && mine.files.every((f) => typeof f === "string"));
-  check("the proof's diff has line counts but no lines", proven.locked && proven.checks.diff.files.every((f) => !f.hunks && f.added >= 0));
-  check("file download refused", (await req(`/api/trials/${proven.trialId}/file?path=src/cart.js`)).status === 403);
-  check("repo zip refused", (await req(`/api/trials/${proven.trialId}/repo`)).status === 403);
+  const quote = p.ladder.quote;
+  check("a quote is shown before authorizing, $2.99-$19.99, ending in .99", quote >= 2.99 && quote <= 19.99 && Math.round(quote * 100) % 100 === 99, String(quote));
+  check("running the trial again leaves the recommendation alone", (await req("/api/trials/sealed", { painId: cart.id })).status === 202 && (await until("refusal", async () => (state.apiTrials[cart.id].status === "awaiting_authorization" ? true : null))));
   check("MCP list_reviews shows nothing", JSON.parse(await call("list_reviews")).reviews.length === 0);
-  check("MCP get_review refuses it", /No review is waiting/.test(await call("get_review", { trial_id: proven.trialId })));
 
-  console.log("4. Unlock charges once and lands the fix");
+  console.log("3. Authorizing: the recommended model writes the fix; charged once, only when proven");
   const before = balanceCents();
-  const cartTrials = state.trials.filter((t) => t.painId === cart.id).length;
-  const fixSpend = state.trialSpend[cart.id].fix;
-  const unlock = await req(`/api/trials/${proven.trialId}/unlock`, {});
-  check("unlock accepted", unlock.status === 202, unlock.text);
-  const bountyId = JSON.parse(unlock.text).id;
-  const bounty = await until("the unlock", async () => {
-    const b = state.bounties.find((x) => x.id === bountyId);
+  const auth = await req("/api/trials/authorize", { painId: cart.id });
+  check("authorize accepted", auth.status === 202, auth.text);
+  check("a second authorize is refused", (await req("/api/trials/authorize", { painId: cart.id })).status === 409);
+  const bounty = await until("the fix to land", async () => {
+    const id = state.apiTrials[cart.id].bountyId;
+    const b = id && state.bounties.find((x) => x.id === id);
     return b && !["open", "verifying"].includes(b.status) ? b : null;
   });
+  ({ fixed } = state.apiTrials[cart.id]);
+  const trials = state.trials.filter((t) => t.painId === cart.id);
+  check("only the recommended model wrote a fix", fixed.length === 1 && fixed[0] === p.ladder.pick && trials.length === 1 && trials[0].model === p.ladder.pick, fixed.join(", "));
+  check("Shoal set the model tag and measured the cost", trials[0].sealed && trials[0].client?.app === "Shoal API" && trials[0].apiCost > 0);
   check("the fix landed (survival window started)", bounty.status === "surviving", bounty.status);
-  check("charged exactly the price shown", before - balanceCents() === Math.round(price * 100), `${(before - balanceCents()) / 100} vs ${price}`);
-  check("no second paid run: no new model call", state.trials.filter((t) => t.painId === cart.id).length === cartTrials && state.trialSpend[cart.id].fix === fixSpend && state.trialSpend[cart.id].revenue === price);
-  const again = await req(`/api/trials/${proven.trialId}/unlock`, {});
-  check("a second unlock is refused and charges nothing", again.status === 409 && before - balanceCents() === Math.round(price * 100), again.text);
-  const file = await req(`/api/trials/${proven.trialId}/file?path=src/cart.js`);
-  check("the code is readable after unlock", file.status === 200);
-  const original = new Set((await readFile(path.join(DEMO_REPO, "src/cart.js"), "utf8")).split("\n").map((l) => l.trim()));
-  const changed = file.text.split("\n").map((l) => l.trim()).filter((l) => l.length > 8 && !original.has(l));
-  check("none of the fix's changed lines appeared before unlock", changed.length > 0 && changed.every((l) => !sealedText.includes(JSON.stringify(l).slice(1, -1))), changed.join(" | "));
+  const charged = (before - balanceCents()) / 100;
+  check("charged once, no more than the quote", charged > 0 && charged <= quote && charged === state.apiTrials[cart.id].price && state.trialSpend[cart.id].revenue === charged, `${charged} vs quote ${quote}`);
+  const file = await req(`/api/trials/${trials[0].id}/file?path=src/cart.js`);
+  check("the code is readable once it landed", file.status === 200 && /return lookupDiscount/.test(file.text));
 
   console.log("5. The spend cap stops the ladder");
   process.env.SHOAL_MOCK_FAIL_MODELS = ALL.join(",");
@@ -143,7 +131,7 @@ try {
   check("running again asks no model", state.apiTrials[orders.id].diagnosed.length === ALL.length && state.trials.length === trialsBefore);
 
   const margins = await req("/api/owner/margins");
-  check("owner margin view (local)", margins.status === 200 && JSON.parse(margins.text).rows.some((r) => r.painId === cart.id && r.revenue === price), margins.text.slice(0, 200));
+  check("owner margin view (local)", margins.status === 200 && JSON.parse(margins.text).rows.some((r) => r.painId === cart.id && r.revenue === charged), margins.text.slice(0, 200));
 } catch (err) {
   check("run", false, err.stack);
 }

@@ -78,6 +78,7 @@ export const api = {
   approve: (painId) => post('/api/trials/approve', { painId }),
   sealedTrials: (painId) => post('/api/trials/sealed', painId ? { painId } : {}),
   unlock: (trialId) => post('/api/trials/' + id(trialId) + '/unlock', {}),
+  authorize: (painId) => post('/api/trials/authorize', { painId }),
   prove: (painId) => post('/api/proofs', { painId }),
 
   // Money

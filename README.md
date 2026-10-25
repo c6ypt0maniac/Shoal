@@ -10,7 +10,8 @@ Start them with `POST /api/trials/sealed {painId?}` (every flaky test without a 
 1. **Scan.** Shoal runs the connected repo's tests repeatedly and lists the flaky ones.
 2. **Sealed trials (Shoal pays).** Trials need credits on the account; there are no free trials.
    - The trial is small: models only **diagnose** the bug (which file and function, why, and a one-line plan; no code, low effort). A grader (Sonnet 5.5, else GPT-6.1 Sol, else Opus 5.5) reads the code and marks each diagnosis correct or not, without knowing which model wrote it.
-   - Only then does a model write the full fix: the cheapest one whose diagnosis was correct. That fix is verified and proven. If it isn't proven, the next correct model writes one.
+   - The trial stops at the first step with a correct diagnosis and **recommends** the cheapest model that got it right, with a quote. No fix is written in the trial.
+   - **The team authorizes it** (`POST /api/trials/authorize {painId}`, or **Authorize** on the dashboard). Only then does that model write the full fix, which is verified and proven. If it isn't proven, the next model with a correct diagnosis tries. Nothing is charged unless a fix is proven.
    - The team sees what's broken and where (the winning diagnosis, cut to one sentence), never the plan or the code.
    - Models diagnose in steps, cheapest first, and the ladder stops at the first step whose fix is proven:
      1. Haiku 5.5, GPT-6 Luna, GPT-5 nano
@@ -29,7 +30,7 @@ Start them with `POST /api/trials/sealed {painId?}` (every flaky test without a 
    - Challenge tests are written by Sonnet 5.5, or GPT-6.1 Sol if Sonnet isn't available. The writer sees the fixes labelled Fix A, Fix B…, never by model.
    - Judges and the challenge writer read the failing test, the files it imports, every file a fix changed and the failure log, plus a list of the repo's other files. They don't get the whole repo, so the cost doesn't grow with repo size.
    - All of it runs on Shoal's API keys and counts toward the bug's spend cap.
-4. **Unlock.** `POST /api/trials/:id/unlock` re-checks the fix on the current code, then charges the team's credits once, at the price shown before unlocking (see [Pricing](#pricing)). Shoal then reveals the fix and opens a PR, the same way a bounty does. There is no second paid run: the team gets the exact fix that was proven.
+4. **Charge and land.** Once a fix is proven, Shoal re-checks it on the current code, charges the team's credits once (never more than the quote, see [Pricing](#pricing)) and opens a PR, the same way a bounty does. There's no second paid run: the team gets the fix that was proven. (`POST /api/trials/:id/unlock` retries the charge if it failed.)
 
 ## Pricing
 
@@ -37,7 +38,7 @@ Each fix is priced from what Shoal really spent on that bug:
 
 - **Price** = Shoal's spend on the bug up to the proof (fix attempts, challenge writer, judges, sandbox time) **× 6**, rounded up to the next .99.
 - **Floor $2.99, ceiling $19.99.** With the $2.00 cap, a bug can't cost more than the ceiling covers.
-- The price is always shown before the team unlocks.
+- A quote is shown before the team authorizes the fix, and the charge never goes over it.
 - The markup also covers bugs that are tried but never unlocked.
 
 The owner sees spend against revenue for every bug at `GET /api/owner/margins` (GitHub logins in `SHOAL_OWNERS`, or only requests from the server's own machine when that isn't set). Teams never see what Shoal spent.

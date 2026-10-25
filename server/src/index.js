@@ -31,7 +31,7 @@ import { markConnected, reapplyBoughtFixes, setAutoSync, syncNow, syncStatus } f
 import { detectClaude, finishLogin, startLogin } from "./claude-runner.js";
 import { detectCodex, startCodexLogin } from "./codex-runner.js";
 import { startTrialRun, stopTrialRun, trialRun } from "./trial-runner.js";
-import { canStart, isSealed, ladderStatus, publicLadder, runSealedTrials, sealProof, sealTrial } from "./api-trials.js";
+import { authorizeFix, canStart, isSealed, ladderStatus, publicLadder, runSealedTrials, sealProof, sealTrial } from "./api-trials.js";
 import { marginView } from "./spend.js";
 import { unlockPrice } from "./pricing.js";
 import { integrationStatus } from "./integrations.js";
@@ -492,7 +492,7 @@ app.post("/api/trials/sealed", (req, res) => {
   const painId = req.body?.painId;
   const noCredits = canStart();
   if (noCredits) return res.status(402).json({ error: noCredits });
-  const ids = painId ? [painId] : state.pains.filter((p) => !p.healthy && !proofFor(p.id).proven && ladderStatus(p.id)?.status !== "running").map((p) => p.id);
+  const ids = painId ? [painId] : state.pains.filter((p) => !p.healthy && !proofFor(p.id).proven && !["running", "awaiting_authorization", "fixing"].includes(ladderStatus(p.id)?.status)).map((p) => p.id);
   if (!ids.length) return res.status(400).json({ error: "No flaky test is waiting for trials. Scan the repo first." });
   if (painId && !state.pains.some((p) => p.id === painId)) return res.status(404).json({ error: `Unknown problem ${painId}` });
   background(async () => {
@@ -501,7 +501,20 @@ app.post("/api/trials/sealed", (req, res) => {
   res.status(202).json({ started: ids });
 });
 
-// Unlock a sealed, proven fix: charges credits once at the price shown, then
+// The team's go-ahead for the model the trial recommended: it writes the fix
+// now; proven, credits are charged (never more than the quote shown) and the
+// fix lands as a PR. Runs in the background (api-trials.js authorizeFix).
+app.post("/api/trials/authorize", async (req, res) => {
+  const painId = req.body?.painId;
+  const ladder = ladderStatus(painId);
+  if (ladder?.status !== "awaiting_authorization") return res.status(409).json({ error: "There's no recommended model waiting for your go-ahead on this test" });
+  if (Math.round(ladder.quote * 100) > balanceCents()) return res.status(402).json({ error: `Not enough credits: this fix costs up to $${ladder.quote.toFixed(2)}. Add credits first.` });
+  const postedBy = (await currentUser(req))?.login ?? null;
+  background(() => authorizeFix(painId, { survivalDays: req.body?.survivalDays, postedBy }));
+  res.status(202).json(publicLadder(painId));
+});
+
+// Unlock a sealed, proven fix (if the charge after authorizing failed): charges credits once at the price shown, then
 // the exact fix that was proven lands as a PR (bounties.js runUnlock). No
 // second paid run.
 app.post("/api/trials/:id/unlock", async (req, res) => {

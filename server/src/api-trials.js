@@ -9,10 +9,15 @@
 // imports and the diagnoses, labelled A, B, C... never by model, and marks
 // each correct or not. Only then does a model write the full fix: the
 // cheapest one whose diagnosis was correct, with its own diagnosis in hand.
-// That fix is verified and goes through the proof report (proof.js); if it
-// isn't proven, the next correct model writes one, then the next step
-// diagnoses. A model is never asked twice for a diagnosis or a fix. Every
-// call is checked against the bug's spend cap first (spend.js).
+// The trial stops at the first step with a correct diagnosis and recommends
+// the cheapest model that got it right, with a quote. Nothing more happens
+// until the team authorizes it (authorizeFix): only then does that model
+// write the full fix, which is verified and goes through the proof report
+// (proof.js). Proven: credits are charged (never more than the quote) and the
+// fix lands as a PR. Not proven: the next correct model tries; if none
+// proves one, nothing is charged. A model is never asked twice for a
+// diagnosis or a fix. Every call is checked against the bug's spend cap
+// first (spend.js).
 //
 // Sealed: until the team unlocks, no fix code leaves Shoal. The API, the MCP
 // tools and the dashboard show what's broken and where (the winning
@@ -27,7 +32,8 @@ import { MOCK, contextFiles, diagnosisPrompt, fixPrompt, judgeViaApi, modelUnava
 import { proofFor, proveProblem } from "./proof.js";
 import { addSpend, estimate, fitsCap, spentOn, trialCap } from "./spend.js";
 import { balanceCents } from "./credits.js";
-import { FLOOR, unlockPrice } from "./pricing.js";
+import { FLOOR, priceFor, unlockPrice } from "./pricing.js";
+import { createBounty, runBounty } from "./bounties.js";
 
 export const STEPS = [
   ["claude-haiku-5-5", "gpt-6-luna", "gpt-5-nano"],
@@ -48,7 +54,7 @@ export function publicLadder(painId) {
   const l = state.apiTrials[painId];
   if (!l) return null;
   const { diagnoses, ...rest } = l;
-  return { ...rest, diagnoses: diagnoses.map((d) => ({ model: d.model, name: MODELS[d.model].name, file: d.file, location: brief(d.location), cause: brief(d.cause), correct: d.correct, wroteFix: l.fixed.includes(d.model) })) };
+  return { ...rest, pickName: l.pick ? MODELS[l.pick].name : null, diagnoses: diagnoses.map((d) => ({ model: d.model, name: MODELS[d.model].name, file: d.file, location: brief(d.location), cause: brief(d.cause), correct: d.correct, wroteFix: l.fixed.includes(d.model) })) };
 }
 
 // A trial Shoal paid for and the team hasn't unlocked: its code stays hidden.
@@ -68,6 +74,7 @@ export async function runSealedTrials(painId) {
   if (pain.healthy) throw httpError(400, `${pain.testFile} isn't flaky; nothing to fix`);
   const ladder = ladderFor(painId);
   if (ladder.status === "running") throw httpError(409, `Trials for ${pain.testFile} are already running`);
+  if (["awaiting_authorization", "fixing"].includes(ladder.status)) throw httpError(409, `${MODELS[ladder.pick].name} is already recommended for ${pain.testFile}`);
   if (proofFor(painId).proven) throw httpError(409, `${pain.testFile} already has a proven fix`);
   const noCredits = canStart();
   if (noCredits) throw httpError(402, noCredits);
@@ -94,19 +101,60 @@ export async function runSealedTrials(painId) {
         const found = (await Promise.all(go.map((m) => diagnose(pain, m, prompt, ladder)))).filter(Boolean);
         if (found.length) await grade(pain, found);
       }
-      // Full fixes only from correct diagnoses, cheapest model first.
-      const ready = ladder.diagnoses.filter((d) => d.correct && !ladder.fixed.includes(d.model)).sort((a, b) => costPerFix(a.model) - costPerFix(b.model));
-      for (const d of ready) {
-        if (!fitsCap(painId, estimate(d.model, await fixPrompt(pain, { diagnosis: d }), 8_000))) return stop(ladder, pain, "cap");
-        if ((await writeFix(pain, d, ladder)) !== "verified") continue;
-        await proveProblem(painId);
-        if (proofFor(painId).proven) {
-          ladder.price = unlockPrice(painId);
-          return stop(ladder, pain, "proven");
-        }
+      // A correct diagnosis: recommend the cheapest model that got it right,
+      // and wait for the team to authorize it. No fix is written yet.
+      const ready = correctUnfixed(ladder);
+      if (ready.length) {
+        ladder.pick = ready[0].model;
+        ladder.quote = await quote(pain, ready[0]);
+        return stop(ladder, pain, "diagnosed");
       }
     }
     return stop(ladder, pain, "exhausted");
+  } catch (err) {
+    ladder.status = "failed";
+    ladder.stopped = err.message;
+    throw err;
+  }
+}
+
+const correctUnfixed = (ladder) => ladder.diagnoses.filter((d) => d.correct && !ladder.fixed.includes(d.model)).sort((a, b) => costPerFix(a.model) - costPerFix(b.model));
+
+// The most the team will pay if it authorizes this model: Shoal's spend so
+// far plus an estimate of the fix and its proof (two judges and the challenge
+// writer at about $0.10 each), priced like any fix. The charge never goes
+// over it.
+async function quote(pain, diagnosis) {
+  const fix = estimate(diagnosis.model, await fixPrompt(pain, { diagnosis }), 8_000);
+  return priceFor(spentOn(pain.id) + fix + 0.3);
+}
+
+// The team authorized the recommended model: it writes the fix now, which
+// is verified and proven; proven, it's charged and lands as a PR (the bounty
+// flow, bounties.js runUnlock). If it isn't proven, the next model with a
+// correct diagnosis tries. Nothing is charged unless one is proven.
+export async function authorizeFix(painId, { survivalDays, postedBy = null } = {}) {
+  const pain = state.pains.find((p) => p.id === painId);
+  const ladder = state.apiTrials[painId];
+  if (!pain || !ladder) throw httpError(404, "Run the trial for this test first");
+  if (ladder.status !== "awaiting_authorization") throw httpError(409, ladder.status === "fixing" ? "The fix is already being written" : "There's no recommended model waiting for your go-ahead");
+  if (balanceCents() < Math.round(ladder.quote * 100)) throw httpError(402, `Not enough credits: this fix costs up to $${ladder.quote.toFixed(2)}. Add credits first.`);
+  Object.assign(ladder, { status: "fixing", authorizedAt: new Date().toISOString(), authorizedBy: postedBy });
+  try {
+    for (const d of correctUnfixed(ladder)) {
+      if (!fitsCap(painId, estimate(d.model, await fixPrompt(pain, { diagnosis: d }), 8_000))) return stop(ladder, pain, "cap");
+      if ((await writeFix(pain, d, ladder)) !== "verified") continue;
+      await proveProblem(painId);
+      const proven = proofFor(painId).proven;
+      if (!proven) continue;
+      ladder.price = Math.min(unlockPrice(painId), ladder.quote);
+      stop(ladder, pain, "proven");
+      const bounty = createBounty({ painId, reward: ladder.price, funding: "credits", apiModel: proven.model, trialId: proven.trialId, unlock: true, survivalDays, postedBy });
+      ladder.bountyId = bounty.id;
+      await runBounty(bounty.id);
+      return ladder;
+    }
+    return stop(ladder, pain, "not_proven");
   } catch (err) {
     ladder.status = "failed";
     ladder.stopped = err.message;
@@ -189,16 +237,20 @@ async function writeFix(pain, diagnosis, ladder) {
 const label = (i) => String.fromCharCode(65 + (i % 26)) + (i >= 26 ? Math.floor(i / 26) : "");
 
 const STOPS = {
-  proven: (l) => `proven; unlock for $${l.price.toFixed(2)}`,
+  diagnosed: (l) => `${MODELS[l.pick].name} diagnosed it correctly at the lowest cost. Authorize it to write the fix (up to $${l.quote.toFixed(2)}, charged only if the fix is proven).`,
+  proven: (l) => `proven; charging $${l.price.toFixed(2)} and opening the PR`,
+  not_proven: () => "no model's fix was proven; nothing charged",
   cap: () => "stopped at this bug's spend cap",
-  exhausted: () => "no model's fix was proven",
+  exhausted: () => "no model diagnosed it correctly",
 };
 
+const STATUS_AFTER = { diagnosed: "awaiting_authorization", proven: "proven" };
+
 function stop(ladder, pain, why) {
-  ladder.status = why === "proven" ? "proven" : "stopped";
+  ladder.status = STATUS_AFTER[why] ?? "stopped";
   ladder.stopped = why;
   ladder.finishedAt = new Date().toISOString();
-  emit(why === "proven" ? "trials.done" : "trials.error", { message: `Sealed trials for ${pain.testFile}: ${STOPS[why](ladder)}` });
+  emit(STATUS_AFTER[why] ? "trials.done" : "trials.error", { message: `Sealed trials for ${pain.testFile}: ${STOPS[why](ladder)}` });
   return ladder;
 }
 

@@ -11,8 +11,10 @@ export const MARKUP = 6;
 export const FLOOR = 2.99;
 export const CEILING = 19.99;
 
-export function unlockPrice(painId) {
-  const raw = spentOn(painId) * MARKUP;
-  const rounded = Math.ceil(raw) - 0.01;
+export const unlockPrice = (painId) => priceFor(spentOn(painId));
+
+// Shoal's spend on a bug -> the price.
+export function priceFor(spend) {
+  const rounded = Math.ceil(spend * MARKUP) - 0.01;
   return Math.round(Math.min(CEILING, Math.max(FLOOR, rounded)) * 100) / 100;
 }
