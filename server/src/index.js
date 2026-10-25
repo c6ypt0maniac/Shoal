@@ -24,6 +24,7 @@ import { canOpenChanges, ciStats as hostCiStats, cloneRepo as hostCloneRepo, get
 import { agentCard, authorize, beginIntegrationAuth, disconnectIntegration, finishIntegrationAuth, integrationStatus, openFromRequest, parsers, startIntegrations } from "./integrations.js";
 import { markConnected, setAutoSync, syncNow, syncStatus } from "./sync.js";
 import { detectClaude, finishLogin, startLogin, startTrialRun, stopTrialRun, trialRun } from "./claude-runner.js";
+import { approveCompleteFix, buildCompleteFix, completeFixStatus, completeRepoFiles } from "./complete-fix.js";
 import {
   authorizeUrl, completeOAuth, getViewer, hasToken, listRepos, oauthConfigured, parseRepo, repoFiles, signOut,
 } from "./github.js";
@@ -314,6 +315,7 @@ app.get("/api/trials", (_req, res) =>
     trials: state.trials.slice(0, 40).map(({ files, ...t }) => ({ ...t, files: files.map((f) => f.path) })),
     models: MODELS,
     run: trialRun(),
+    completeFix: completeFixStatus(),
   }),
 );
 
@@ -407,6 +409,20 @@ app.post("/api/proofs", (req, res) => {
   background(() => proveProblem(painId));
   res.status(202).json(proofFor(painId));
 });
+
+// Combine the proven winner for every failing test, run the full suite once
+// more on the combined result, then let the person review/download/approve it.
+app.get("/api/complete-fix", (_req, res) => res.json(completeFixStatus()));
+app.post("/api/complete-fix/build", (_req, res) => {
+  background(buildCompleteFix);
+  res.status(202).json({ ...completeFixStatus(), status: "building" });
+});
+app.get("/api/complete-fix/repo", async (_req, res) => {
+  const files = await completeRepoFiles();
+  const name = `${(state.connection.fullName ?? "repo").replace(/[^\w.-]+/g, "-")}-complete-verified-fix.zip`;
+  res.attachment(name).type("application/zip").send(zip(files));
+});
+app.post("/api/complete-fix/approve", async (_req, res) => res.status(201).json(await approveCompleteFix()));
 
 // --- Credits -----------------------------------------------------------------
 

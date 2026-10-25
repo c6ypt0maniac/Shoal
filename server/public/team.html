@@ -164,6 +164,7 @@
         <tbody id="trialProblems"></tbody>
       </table>
       <div id="proofReports"></div>
+      <div id="completeFix"></div>
       <details id="trialLogWrap" hidden><summary>Every trial</summary><ul id="trialLog"></ul></details>
       <details class="manual"><summary>Use your own Claude Code session instead</summary>
         <div class="cmd"><code id="mcpCmd"></code><button type="button" onclick="copyMcp()">Copy</button></div>
@@ -466,7 +467,7 @@ window.buyCredits = (dollars, btn) => busy(btn, async () => {
   if (res.checkoutUrl) location.href = res.checkoutUrl;
 });
 
-function renderTrials({ scoreboard, problems, trials, run, pick }) {
+function renderTrials({ scoreboard, problems, trials, run, pick, completeFix }) {
   currentPick = pick ?? null;
   latestScoreboard = scoreboard;
   renderRun(run ?? null, scoreboard);
@@ -513,6 +514,7 @@ function renderTrials({ scoreboard, problems, trials, run, pick }) {
     : `<tr><td colspan="4" class="hint">Scan the repo first: trials run on the flaky tests it finds.</td></tr>`;
 
   renderProofs(problems);
+  renderCompleteFix(completeFix);
 
   $("trialLogWrap").hidden = !trials.length;
   $("trialLog").innerHTML = trials.map((t) => `<li>${t.status === "passed" ? "✅" : t.status === "failed" ? "❌" : "⏳"}
@@ -523,6 +525,62 @@ function renderTrials({ scoreboard, problems, trials, run, pick }) {
 
 window.approveModel = (painId, btn) => busy(btn, () => post("/api/trials/approve", { painId }));
 window.buildProof = (painId, btn, fresh) => busy(btn, () => post("/api/proofs", { painId, fresh: Boolean(fresh) }));
+
+// --- One complete, reviewable repository -------------------------------------
+
+function renderCompleteFix(c) {
+  const box = $("completeFix");
+  if (!c?.total) return (box.innerHTML = "");
+  const heading = `<h3 class="proof-title">Review complete fix</h3>`;
+  if (c.status === "building") {
+    box.innerHTML = `${heading}<div class="report"><b>⏳ Combining proven fixes and running the complete test suite…</b></div>`;
+    return;
+  }
+  if (c.status === "idle" || !c.status) {
+    box.innerHTML = `${heading}<div class="report">
+      <p><b>${c.proven} of ${c.total} problems have a proven fix.</b></p>
+      <p class="hint">The complete repository becomes available only after every selected fix is proven.</p>
+      ${c.eligible ? `<button class="cta" onclick="buildCompleteFix(this)">Build and verify complete repo</button>` : ""}
+    </div>`;
+    return;
+  }
+  if (c.status === "conflict") {
+    box.innerHTML = `${heading}<div class="report none"><b>Fixes overlap and need another selection.</b>
+      <ul>${(c.conflicts ?? []).map((x) => `<li>${esc(x.path)}: ${x.tests.map(esc).join(", ")}</li>`).join("")}</ul>
+      <button onclick="buildCompleteFix(this)">Try again</button></div>`;
+    return;
+  }
+  if (c.status === "failed") {
+    box.innerHTML = `${heading}<div class="report none"><b>✗ The selected fixes did not pass together.</b>
+      <p class="hint">Nothing can be approved until the complete suite passes.</p>
+      ${c.suite?.log ? `<details><summary>Show test failure</summary><pre>${esc(c.suite.log)}</pre></details>` : ""}
+      <button onclick="buildCompleteFix(this)">Rebuild and verify</button></div>`;
+    return;
+  }
+  if (c.status !== "ready") return;
+  const files = c.diff?.files ?? [];
+  box.innerHTML = `${heading}<div class="report">
+    <h3>✓ Complete repository verified</h3>
+    <p><b>${c.selected.length} problem${c.selected.length === 1 ? "" : "s"} fixed · ${files.length} file${files.length === 1 ? "" : "s"} changed · complete test suite passed</b></p>
+    <ul>${c.selected.map((s) => `<li><code>${esc(s.testFile)}</code> — ${esc(s.name)}</li>`).join("")}</ul>
+    ${files.map((f) => `<details class="proof" open><summary><b>${esc(f.path)}</b> · +${f.added} −${f.removed} lines</summary>
+      <div class="diff">${f.hunks.map((h) => h.lines.map((l) =>
+        `<div class="dl ${l.type === "+" ? "add" : l.type === "-" ? "del" : ""}">${l.type === " " ? "&nbsp;" : l.type} ${esc(l.text)}</div>`).join("")).join(`<div class="dl gap">⋯</div>`)}</div>
+    </details>`).join("")}
+    <p><a class="dl-btn" href="/api/complete-fix/repo">⬇ Download complete repo</a>
+      ${c.pullRequest ? `<a class="cta" href="${esc(c.pullRequest.url)}" target="_blank">Open pull request #${c.pullRequest.number}</a>` : `<button class="cta" onclick="approveCompleteFix(this)">Approve and create pull request</button>`}</p>
+  </div>`;
+}
+
+window.buildCompleteFix = (btn) => busy(btn, async () => {
+  await post("/api/complete-fix/build");
+  await refresh();
+});
+window.approveCompleteFix = (btn) => busy(btn, async () => {
+  const pr = await post("/api/complete-fix/approve");
+  if (pr.url) window.open(pr.url, "_blank");
+  await refresh();
+});
 
 // --- Proof reports -------------------------------------------------------------
 

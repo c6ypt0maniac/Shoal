@@ -23,6 +23,8 @@ export const state = {
   trialRun: null,
   // Proof reports keyed by trial id (see proof.js).
   proofs: {},
+  // One fully verified repository assembled from each problem's proven fix.
+  completeFix: null,
   // Test files the scan found but can't run here (toolchain missing).
   cantRun: [],
   // Auto-sync with GitHub (see sync.js).
@@ -52,5 +54,6 @@ export function resetState() {
   state.trials = [];
   state.trialRun = null;
   state.proofs = {};
+  state.completeFix = null;
   state.cantRun = [];
 }

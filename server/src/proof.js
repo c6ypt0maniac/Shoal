@@ -347,7 +347,7 @@ function score(proof) {
 
 // --- Diff ---------------------------------------------------------------------
 
-async function diffFiles(files) {
+export async function diffFiles(files) {
   const out = [];
   for (const f of files) {
     const before = (await readRepoFile(clean(f.path)).catch(() => "")).split(/\r?\n/);
