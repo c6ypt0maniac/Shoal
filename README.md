@@ -22,6 +22,8 @@ npm install
 npm run dev             # http://localhost:4000
 ```
 
+The landing page lives in `web/` (React + Vite + Tailwind). From the repo root, `npm install` then `npm start` builds it and serves it at `/`. The sign-in page moves to `/start`. If `web/` hasn't been built, `/` falls back to the sign-in page. To work on the landing page, run `npm run dev:web` (http://localhost:5173, `/api` proxied to port 4000) alongside `npm run dev`.
+
 With no keys at all, agents are mocked so the demo runs end to end. Then:
 
 - **Claude Code on this machine:** run `claude mcp add --transport http shoal http://localhost:4000/mcp`. Requests from localhost skip sign-in. The dashboard's one-click trial uses this path too.

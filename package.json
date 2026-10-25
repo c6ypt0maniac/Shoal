@@ -1,13 +1,16 @@
 {
   "name": "shoal",
   "private": true,
-  "description": "Run Shoal from the repo root: npm install, then npm start. The server lives in server/.",
+  "description": "Run Shoal from the repo root: npm install, then npm start. The server lives in server/, the landing page in web/.",
   "engines": {
     "node": ">=22.9"
   },
   "scripts": {
-    "postinstall": "npm --prefix server install",
+    "postinstall": "npm --prefix server install && npm --prefix web install",
+    "build": "npm --prefix web run build",
+    "prestart": "npm run build",
     "start": "npm --prefix server start",
-    "dev": "npm --prefix server run dev"
+    "dev": "npm --prefix server run dev",
+    "dev:web": "npm --prefix web run dev"
   }
 }

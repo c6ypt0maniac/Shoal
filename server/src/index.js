@@ -10,6 +10,7 @@ import { getStacks, isTestFile, listAllFiles, resetWorkspace, setSource, DEMO_RE
 import { describeStack } from "./stack.js";
 import { zip } from "./zip.js";
 import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { describeFile } from "./describe.js";
 import { confirmCreditPurchase, confirmFunding, paymentsMode, startCheckout, startCreditCheckout, stripeConfigured, stripeKeyProblem } from "./escrow.js";
 import { isProtected } from "./verifier.js";
@@ -51,9 +52,18 @@ mountMcp(app, { baseUrl: BASE_URL });
 // the SSE stream instead of waiting on the HTTP response.
 const background = (fn) => fn().catch((err) => emit("error", { message: err.message }));
 
-// Pages: / (sign in + choose path), /team (dashboard), /builder
+// Pages: / (landing, built from web/), /start (sign in + choose path), /team (dashboard), /builder
 const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../public");
-app.use(express.static(PUBLIC_DIR));
+const WEB_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
+const hasLanding = existsSync(path.join(WEB_DIR, "index.html"));
+// Older GitHub sign-ins return to "/?github=…"; that, ?switch and a missing build all go to the sign-in page.
+app.get("/", (req, res) => {
+  const signIn = !hasLanding || "github" in req.query || "github_error" in req.query || "switch" in req.query;
+  res.sendFile(path.join(signIn ? PUBLIC_DIR : WEB_DIR, "index.html"));
+});
+app.get("/start", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "index.html")));
+app.use(express.static(PUBLIC_DIR, { index: false }));
+if (hasLanding) app.use(express.static(WEB_DIR, { index: false }));
 
 app.get("/api/health", (_req, res) =>
   res.json({ ok: true, mock: MOCK, githubToken: hasToken(), payments: paymentsMode() }),
