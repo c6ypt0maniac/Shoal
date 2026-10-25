@@ -31,16 +31,18 @@ const curve = (ys) => smooth(along(ys));
 
 export default function ShoreCard({ className = '', children }) {
   const box = useRef(null);
-  const r = { water: useRef(null), wet: useRef(null), glow: useRef(null), foam: useRef(null), lace: useRef(null), film: useRef(null) };
+  const r = { water: useRef(null), wet: useRef(null), glow: useRef(null), foam: useRef(null), lace: [useRef(null), useRef(null), useRef(null)], film: useRef(null) };
 
   useEffect(() => {
     const el = box.current;
     const still = prefersReducedMotion();
-    let raf, waves = [], next = 0.6, wet = [], lastBase = null, lastT = null, foam = 0;
+    // Each wave leaves its own lace line (slot), so lines cross-fade instead of
+    // one line jumping between waves' shapes. At most 3 waves are ever alive.
+    let raf, waves = [], next = 0.6, wet = [], lastBase = null, lastT = null, foam = 0, slots = 0;
 
     const spawn = (t) => {
       // Small swash with broad, gentle lobes along the shore.
-      waves.push({ t0: t, A: rand(7, 14), up: rand(3.2, 4), down: rand(4.6, 5.6), l: [[rand(0.18, 0.3), rand(0.006, 0.01), rand(0, 6.3)], [rand(0.08, 0.14), rand(0.014, 0.022), rand(0, 6.3)]], peak: null });
+      waves.push({ t0: t, A: rand(7, 14), up: rand(3.2, 4), down: rand(4.6, 5.6), l: [[rand(0.18, 0.3), rand(0.006, 0.01), rand(0, 6.3)], [rand(0.08, 0.14), rand(0.014, 0.022), rand(0, 6.3)]], peak: null, slot: slots++ % 3, laceOp: 0 });
       // A new wave arrives while the last is still sliding back, so the water never stops.
       next = t + rand(4, 5.5);
     };
@@ -59,7 +61,7 @@ export default function ShoreCard({ className = '', children }) {
       const rest = Array.from({ length: n }, (_, i) => base + 2.4 * Math.sin(i * STEP * 0.012 + t * 0.32) + 1 * Math.sin(i * STEP * 0.028 - t * 0.45));
       // How far up the sand each point is pushed, by all waves together.
       const push = new Array(n).fill(0);
-      let energy = 0, film = 0, lace = null, laceOp = 0;
+      let energy = 0, film = 0;
       waves = waves.filter((w) => t - w.t0 < w.up + w.down + 3);
       for (const w of waves) {
         const k = t - w.t0;
@@ -73,10 +75,9 @@ export default function ShoreCard({ className = '', children }) {
           reach = 1 - easeSine(p);
           film = Math.max(film, Math.sin(Math.PI * Math.min(1, p * 1.4)) * (1 - p));
           if (!w.peak) w.peak = rest.map((y, i) => y - w.A * (1 + lobes(w, i * STEP)));
-          lace = w.peak;
-          laceOp = Math.max(laceOp, 0.65 * easeSine(Math.min(1, p * 3)) * (1 - 0.3 * p));
+          w.laceOp = 0.65 * easeSine(Math.min(1, p * 3)) * (1 - 0.3 * p);
         } else {
-          if (w.peak) { lace = w.peak; laceOp = Math.max(laceOp, 0.45 * (1 - easeSine((k - w.up - w.down) / 3))); }
+          if (w.peak) w.laceOp = 0.455 * (1 - easeSine(Math.min(1, (k - w.up - w.down) / 3)));
           continue;
         }
         // Measured from the moving water, so a wave starts and ends exactly
@@ -103,10 +104,13 @@ export default function ShoreCard({ className = '', children }) {
       r.foam.current.setAttribute('stroke-width', (1.4 + 1.2 * foam).toFixed(2));
       r.film.current.setAttribute('d', curve(shore.map((y) => y + 5 + 8 * film)));
       r.film.current.setAttribute('opacity', (0.4 * film).toFixed(3));
-      if (lace && laceOp > 0.01) {
-        r.lace.current.setAttribute('d', curve(lace.map((y) => Math.max(y, base - MAX_REACH))));
-        r.lace.current.setAttribute('opacity', laceOp.toFixed(3));
-      } else r.lace.current.setAttribute('opacity', '0');
+      r.lace.forEach((ref, slot) => {
+        const w = waves.find((x) => x.slot === slot && x.peak);
+        if (w && w.laceOp > 0.005) {
+          ref.current.setAttribute('d', curve(w.peak.map((y) => Math.max(y, base - MAX_REACH))));
+          ref.current.setAttribute('opacity', w.laceOp.toFixed(3));
+        } else ref.current.setAttribute('opacity', '0');
+      });
       if (!still) raf = requestAnimationFrame(frame);
     };
     raf = requestAnimationFrame(frame);
@@ -128,7 +132,7 @@ export default function ShoreCard({ className = '', children }) {
           <filter id="shore-card-softer" x="-5%" y="-50%" width="110%" height="200%"><feGaussianBlur stdDeviation="4" /></filter>
         </defs>
         <path ref={r.wet} fill="#A88A5C" opacity="0.2" />
-        <path ref={r.lace} fill="none" stroke="#FFFFFF" strokeWidth="1.6" strokeDasharray="1.5 4 3 6" strokeLinecap="round" opacity="0" />
+        {r.lace.map((ref, i) => <path key={i} ref={ref} fill="none" stroke="#FFFFFF" strokeWidth="1.6" strokeDasharray={['1.5 4 3 6', '3 5 1.5 3', '2 6 4 4'][i]} strokeLinecap="round" opacity="0" />)}
         <path ref={r.water} fill="url(#shore-card-water)" />
         <path ref={r.film} fill="none" stroke="#FFFFFF" strokeWidth="9" filter="url(#shore-card-softer)" opacity="0" />
         <path ref={r.glow} fill="none" stroke="#FFFFFF" strokeWidth="7" filter="url(#shore-card-soft)" />
