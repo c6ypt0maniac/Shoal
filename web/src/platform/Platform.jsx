@@ -12,8 +12,10 @@ const ghost = btn + ' border border-ink/15 bg-white/55 text-ink hover:bg-white/8
 const field = 'w-full rounded-xl border border-ink/15 bg-white/60 px-3 py-2.5 text-base text-ink outline-none focus:border-accent';
 const card = 'glass flex flex-col gap-3 rounded-[20px] p-6';
 const money = (n) => '$' + Number(n || 0).toLocaleString();
-const LIVE = ['bidding', 'working', 'verifying'];
-const STATUS = { open: 'Open', awaiting_funding: 'Needs funding', bidding: 'Bidding', working: 'Racing', verifying: 'Verifying', settled: 'Fixed', failed: 'No fix', payment_failed: 'Payment failed' };
+const LIVE = ['bidding', 'awarding', 'working', 'verifying'];
+const STATUS = { open: 'Open', awaiting_funding: 'Needs funding', bidding: 'Bidding', awarding: 'Awarding', working: 'Racing', verifying: 'Verifying', settled: 'Fixed', failed: 'No fix', payment_failed: 'Payment failed' };
+// Messages for ?funding= / ?credits= when Stripe Checkout sends the team back.
+const RETURNS = { 'funding=held': ['Reward held in escrow. The race is starting.'], 'funding=cancelled': ['Funding cancelled. The bounty is waiting for funding.', true], 'funding=failed': ["Funding didn't go through. Try again from the bounty.", true], 'credits=added': ['Credits added.'], 'credits=cancelled': ['Credit purchase cancelled.', true], 'credits=failed': ["The credit purchase didn't go through.", true] };
 
 // Line icons, 20px, stroke = currentColor.
 const PATHS = {
@@ -66,6 +68,14 @@ export default function Platform() {
   const [open, setOpen] = useState(null);
   const [create, setCreate] = useState(null);
   const [err, setErr] = useState('');
+  const [note, setNote] = useState(null);
+  useEffect(() => {
+    const q = new URLSearchParams(location.search), k = ['funding', 'credits'].find((x) => q.has(x));
+    if (!k) return;
+    const r = RETURNS[k + '=' + q.get(k)];
+    if (r) r[1] ? setErr(r[0]) : setNote(r[0]);
+    history.replaceState(null, '', location.pathname + location.hash);
+  }, []);
   const [leaving, setLeaving] = useState(null), [navN, setNavN] = useState(0);
   const go = (v) => {
     if (v === view) return;
@@ -98,6 +108,7 @@ export default function Platform() {
               {['bounties', 'agents', 'selling'].includes(v) && <button className={primary} onClick={() => setCreate(v === 'bounties' ? 'bounty' : 'agent')}><Icon n="plus" size={18} />{v === 'bounties' ? 'Post a bounty' : 'Publish an agent'}</button>}
             </div>
             {err && <div className="glass rounded-2xl px-5 py-3 text-bad">{err}</div>}
+            {note && !err && <div className="glass rounded-2xl px-5 py-3 text-accent">{note}</div>}
             {v === 'setup' && <Setup s={s} act={act} steps={steps} onPost={() => setCreate('bounty')} go={go} />}
             {v === 'bounties' && <Bounties s={s} act={act} setOpen={setOpen} setup={!steps[1]} go={go} />}
             {v === 'agents' && <Agents s={s} act={act} setOpen={setOpen} />}
@@ -381,6 +392,7 @@ function Listing({ s, act, open, setOpen }) {
     );
   }
   const b = open.kind === 'bounty' ? s.bounties.find((x) => x.id === open.id) : null;
+  const name = (id) => s.agents.find((a) => a.id === id)?.name || b?.bids?.find((x) => x.agentId === id)?.agentName || id;
   const p = s.pains.find((x) => x.id === (b ? b.painId : open.id));
   if (!p) return null;
   return (
@@ -398,8 +410,16 @@ function Listing({ s, act, open, setOpen }) {
           </div>
           {!b && <QuickPost p={p} act={act} agents={s.agents} onPosted={(nb) => setOpen({ kind: 'bounty', id: nb.id })} />}
           {b?.status === 'awaiting_funding' && <button className={primary} onClick={act(async () => { const r = await api.fund(b.id); if (r?.checkoutUrl) location.href = r.checkoutUrl; else await api.run(b.id); })}>Fund and start the race</button>}
-          {b?.status === 'settled' && <p className="m-0 text-[15px]">A verified fix was charged and opened as a pull request.</p>}
+          {(b?.status === 'open' || b?.status === 'awarding') && b.escrow?.status === 'held' && <button className={primary} onClick={act(() => api.run(b.id))}>Start the race</button>}
+          {b?.status === 'settled' && <p className="m-0 text-[15px]">{b.pullRequest ? <>A verified fix was charged and opened as <a className="text-accent underline" href={b.pullRequest.url} target="_blank" rel="noreferrer">PR #{b.pullRequest.number}</a>.</> : <>A verified fix from {name(b.winner)} was charged.</>}</p>}
           {b?.status === 'failed' && <p className="m-0 text-[15px]">No agent's fix held up. The hold was released and you paid $0.</p>}
+          {b?.status === 'payment_failed' && <p className="m-0 text-[15px] text-bad">The fix was verified but the charge failed.</p>}
+          {b?.bids?.length > 0 && <div className="flex flex-col gap-2"><span className="text-sm font-medium text-muted">Bids</span>{b.bids.map((x) => (
+            <div key={x.agentId} className="flex flex-col gap-0.5 border-t border-ink/10 pt-2 text-[15px]"><span><span className="font-medium">{x.agentName || name(x.agentId)}</span> · {money(x.price)} · {Math.round(x.confidence * 100)}% confident{b.winner === x.agentId && <span className="text-accent"> · winner</span>}</span>{x.plan && <span className="text-sm text-muted">{x.plan}</span>}</div>
+          ))}</div>}
+          {b?.attempts?.length > 0 && <div className="flex flex-col gap-2"><span className="text-sm font-medium text-muted">Attempts</span>{b.attempts.map((x, i) => (
+            <div key={i} className="flex flex-col gap-1 border-t border-ink/10 pt-2 text-[15px]"><span className={x.passed ? 'text-accent' : 'text-bad'}>{x.passed ? 'Verified' : 'Rejected'} · <span className="text-ink">{name(x.agentId)}</span></span><span className="text-sm text-muted">{x.passed ? x.summary : x.reason}</span>{x.runs?.length > 0 && <div className="flex gap-1">{x.runs.map((ok, j) => <span key={j} className={'h-2 flex-1 rounded-full ' + (ok ? 'bg-accent/60' : 'bg-bad/75')} />)}</div>}</div>
+          ))}</div>}
           <p className="m-0 text-sm text-muted">The reward is held in escrow. No verified fix, $0 charged.</p>
         </div>
       </div>
