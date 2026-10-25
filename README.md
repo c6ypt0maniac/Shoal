@@ -169,6 +169,23 @@ These parts still assume one long-running Node process with a writable disk:
 3. Start the API with `npm start` from `server/`, with Node 22 or newer.
 4. Check that `https://<api-domain>/api/health` answers.
 
+### Website on Vercel, API on Railway
+
+The repo has a `Dockerfile` (the API: `server/` plus the demo repo, with git and Python for teams' tests, running as a non-root user) and a `railway.json` (build from it, health check on `/api/health`).
+
+1. **Railway:** New Project → Deploy from GitHub repo → this repo. Railway builds the `Dockerfile` and sets `PORT`. Under Settings → Networking, generate a domain, e.g. `shoal-api.up.railway.app`.
+2. **Railway variables:** the keys from your `server/.env` (see Environment below), plus:
+   - `SHOAL_PUBLIC_URL` = the **Vercel website's** address (e.g. `https://shoal.vercel.app`). Sign-in and Stripe return links are built from it, and the browser stays on that site.
+   - `SUPABASE_DB_URL` as the Supabase **pooler** URI (Railway can't reach the IPv6-only direct host). Without it, state lives in the container and is lost on every redeploy; a Railway volume mounted at `/app/server/.data` keeps it instead.
+3. **Vercel:** in `web/vercel.json`, add a rewrite so the website's `/api/*` reaches the API, then push:
+   ```json
+   "rewrites": [{ "source": "/api/:path*", "destination": "https://<railway-domain>/api/:path*" }]
+   ```
+4. **GitHub sign-in:** a second OAuth App for production (GitHub allows one callback URL per app) with callback `https://<vercel-domain>/api/auth/github/callback`; its id and secret go in Railway.
+5. **Stripe webhook** (optional): endpoint `https://<vercel-domain>/api/stripe/webhook`, event `checkout.session.completed`; its `whsec_` secret goes in Railway as `STRIPE_WEBHOOK_SECRET`.
+
+GitHub sign-in is still one sign-in for the whole server (see the table above), so keep a deployed Shoal private: Vercel → Settings → Deployment Protection, and don't share the Railway domain.
+
 **Deploying the API to Vercel once it's ready:** create a Vercel project with Root Directory `server`. Vercel detects the Express app in `src/index.js`. Add the same environment variables. `SHOAL_PUBLIC_URL` can be left unset to use the production domain.
 
 ## Environment
