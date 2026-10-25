@@ -14,6 +14,7 @@ import path from "node:path";
 
 process.env.PORT = "4111";
 process.env.SHOAL_MOCK = "1";
+process.env.SHOAL_MOCK_JUDGES = "1"; // stand-in judges: never spend anyone's Claude/ChatGPT plan or API credit
 process.env.SHOAL_TEST_USERS = "1";
 process.env.SHOAL_AUTH_SECRET ??= "marketplace-check-secret";
 process.env.SHOAL_DATA_DIR = await mkdtemp(path.join(tmpdir(), "shoal-market-"));

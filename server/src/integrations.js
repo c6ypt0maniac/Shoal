@@ -72,6 +72,7 @@ export const INTEGRATIONS = [
     vars: [
       { name: "STRIPE_SECRET_KEY", secret: true, pattern: /^(sk|rk)_(test|live)_/ },
       { name: "STRIPE_ALLOW_LIVE", optional: true, hint: "1 to take real money with a live key" },
+      { name: "STRIPE_WEBHOOK_SECRET", secret: true, optional: true, pattern: /^whsec_/, hint: "whsec_... so payments land even if the browser never comes back (stripe listen, or Developers -> Webhooks)" },
     ],
     async check({ STRIPE_SECRET_KEY: key, STRIPE_ALLOW_LIVE: allow }) {
       const r = await getJson("https://api.stripe.com/v1/balance", { authorization: `Bearer ${key}` });

@@ -615,7 +615,7 @@ export function publicBounty(b) {
     rank: a.rank ?? null,
     score: a.score ?? null,
     judged: Boolean(a.judged ?? a.judges),
-    judges: (a.judges ?? []).map(({ name, ok, summary, unavailable }) => ({ name, ok, summary, unavailable: Boolean(unavailable) })),
+    judges: (a.judges ?? []).map(({ name, ok, summary, unavailable, via }) => ({ name, ok, summary, via: via ?? null, unavailable: Boolean(unavailable) })),
   }));
   return {
     ...rest,

@@ -306,7 +306,7 @@ function Results({ b, name }) {
             <span className="ml-auto text-sm tabular-nums text-muted">{[r.linesChanged != null && r.linesChanged + ' lines', r.durationMs != null && Math.round(r.durationMs / 1000) + ' s'].filter(Boolean).join(' · ')}</span></div>
           <span className="text-sm">{why(r)}</span>
           {r.runs.length > 0 && <Runs runs={r.runs} />}
-          {r.judges.map((j) => <span key={j.name} className="text-sm"><span className={j.ok ? 'text-accent' : 'text-bad'}>{j.ok ? 'Pass' : 'Fail'}</span> · {j.name}: <span className="text-muted">{j.summary}</span></span>)}
+          {r.judges.map((j) => <span key={j.name} className="text-sm"><span className={j.ok ? 'text-accent' : 'text-bad'}>{j.ok ? 'Pass' : 'Fail'}</span> · {j.name}{j.via ? ' via ' + j.via : ''}: <span className="text-muted">{j.summary}</span></span>)}
         </div>
       ))}
       <span className="text-sm text-muted">Fixes that pass 10 runs in a row with no regressions are ranked by each agent’s record of verified and surviving fixes, never by price, and ties go to the smaller change. Judges review them in that order; the first both pass wins. Other agents’ code stays private.</span>
@@ -351,7 +351,7 @@ function Listing({ s, act, open, setOpen, postBounty }) {
             <span className="text-[15px]">{w.summary}</span>
             <span className="text-sm text-muted">{w.files.join(', ')}{w.linesChanged != null ? ' · ' + w.linesChanged + ' lines changed' : ''}</span>
             {w.runs?.length > 0 && <Runs runs={w.runs} />}
-            {w.judges?.map((j) => <span key={j.model} className="text-sm"><span className={j.ok ? 'text-accent' : 'text-bad'}>{j.ok ? 'Pass' : 'Fail'}</span> · {j.name}: <span className="text-muted">{j.summary}</span></span>)}
+            {w.judges?.map((j) => <span key={j.model} className="text-sm"><span className={j.ok ? 'text-accent' : 'text-bad'}>{j.ok ? 'Pass' : 'Fail'}</span> · {j.name}{j.via ? ' via ' + j.via : ''}: <span className="text-muted">{j.summary}</span></span>)}
           </Section>}
           {!b?.apiModel && b?.results?.length > 0 && <Results b={b} name={name} />}
           {b?.failures?.length > 0 && <Section t="Why the tries failed">{b.failures.map((f, i) => <span key={i} className="text-sm text-bad">{f}</span>)}</Section>}

@@ -18,7 +18,7 @@ import { zip } from "./zip.js";
 import { readFile, rm } from "node:fs/promises";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { describeFile } from "./describe.js";
-import { confirmCreditPurchase, confirmFunding, holdWithSavedCard, paymentsMode, refundEscrow, releaseEscrow, startCheckout, startCreditCheckout, stripeConfigured, stripeKeyProblem } from "./escrow.js";
+import { confirmCreditPurchase, confirmFunding, holdWithSavedCard, paymentsMode, refundEscrow, releaseEscrow, startCheckout, startCreditCheckout, stripe, stripeConfigured, stripeKeyProblem } from "./escrow.js";
 import { billingFor, dismissPrompt, finishSetup, forgetBilling, removeCard, savedCard, startSetup } from "./billing.js";
 import { isProtected } from "./verifier.js";
 import { PROBLEMS, cleanProblems, cleanSharedPaths, isSecret } from "./scope.js";
@@ -55,7 +55,9 @@ app.use(WEB_ORIGINS.length ? cors({ origin: WEB_ORIGINS, credentials: true }) : 
 // third). Not /mcp or event streams: those are streamed and must not be buffered.
 app.use(compression({ filter: (req, res) => !req.path.startsWith("/mcp") && !/event-stream/.test(res.getHeader("Content-Type") ?? "") && compression.filter(req, res) }));
 // Trial patches carry whole files, so allow more than the 100kb default.
-app.use(express.json({ limit: "2mb" }));
+// Not the Stripe webhook: its signature is checked against the raw body.
+const json = express.json({ limit: "2mb" });
+app.use((req, res, next) => (req.path === "/api/stripe/webhook" ? next() : json(req, res, next)));
 
 // MCP endpoint for the team's own AI app (Claude, ChatGPT, Codex): the free
 // trial round, plus its GitHub sign-in (see mcp.js and oauth.js).
@@ -554,6 +556,35 @@ app.post("/api/credits/buy", async (req, res) => {
   res.json({ checkoutUrl });
 });
 
+// Stripe webhook: the same confirmations as the return pages, sent straight
+// from Stripe, so a payment still lands if the browser never makes it back
+// (tab closed, network dropped). All three are safe to receive twice.
+// Setup: STRIPE_WEBHOOK_SECRET from Stripe (Developers -> Webhooks, endpoint
+// <SHOAL_PUBLIC_URL>/api/stripe/webhook, event checkout.session.completed),
+// or locally from `stripe listen --forward-to localhost:4000/api/stripe/webhook`.
+app.post("/api/stripe/webhook", express.raw({ type: "*/*" }), async (req, res) => {
+  const secret = process.env.STRIPE_WEBHOOK_SECRET;
+  if (!secret || !stripeConfigured()) return res.status(400).json({ error: "Stripe webhooks aren't set up on this server (STRIPE_WEBHOOK_SECRET)" });
+  let event;
+  try {
+    event = stripe().webhooks.constructEvent(req.body, req.get("stripe-signature") ?? "", secret);
+  } catch (err) {
+    return res.status(400).json({ error: `Webhook signature didn't verify: ${err.message}` });
+  }
+  if (["checkout.session.completed", "checkout.session.async_payment_succeeded"].includes(event.type)) {
+    const session = event.data.object;
+    if (session.metadata?.kind === "credits") {
+      if (session.payment_status === "paid") await addCredits({ dollars: session.amount_total / 100, mode: paymentsMode(), stripeSessionId: session.id });
+    } else if (session.metadata?.kind === "billing-setup") {
+      await finishSetup(session.metadata.github, session.id);
+    } else if (session.metadata?.bountyId) {
+      const bounty = state.bounties.find((b) => b.id === session.metadata.bountyId);
+      if (bounty) await fundAndStart(bounty, session.id);
+    }
+  }
+  res.json({ received: true });
+});
+
 app.get("/api/credits/return", async (req, res) => {
   try {
     const { dollars, sessionId } = await confirmCreditPurchase(req.query.session_id);
@@ -644,17 +675,28 @@ const checkoutUrls = (req, bounty) => {
 };
 
 // Stripe sends the team back here after Checkout; confirm the hold, then run.
+// Stripe confirmed the hold: start the race. Both the return page and the
+// webhook call this, in either order, so it's safe to call twice: the hold is
+// confirmed once, and opening the link again later (or for a bounty that's
+// already racing or done) never resets or reruns it.
+const confirming = new Map();
+async function fundAndStart(bounty, sessionId) {
+  if (bounty.escrow.status === "awaiting_funding") {
+    if (!confirming.has(bounty.id)) confirming.set(bounty.id, confirmFunding(bounty, sessionId).finally(() => confirming.delete(bounty.id)));
+    await confirming.get(bounty.id);
+  }
+  const starting = ["awaiting_funding", "open"].includes(bounty.status);
+  if (starting) {
+    bounty.status = "open";
+    background(() => runBounty(bounty.id));
+  }
+  return starting;
+}
+
 app.get("/api/escrow/return", async (req, res) => {
   const bounty = getBounty(req.query.bounty);
   try {
-    if (bounty.escrow.status === "awaiting_funding") await confirmFunding(bounty, req.query.session_id);
-    // Opening this link again later (or for a bounty that's already racing or
-    // done) must not reset or rerun it: only a bounty waiting to start starts.
-    const starting = ["awaiting_funding", "open"].includes(bounty.status);
-    if (starting) {
-      bounty.status = "open";
-      background(() => runBounty(bounty.id));
-    }
+    const starting = await fundAndStart(bounty, req.query.session_id);
     res.redirect(starting ? dashboard("funding=held", "bounties") : hasLanding ? "/app#bounties" : "/team");
   } catch (err) {
     emit("escrow.error", { bountyId: bounty.id, message: `Funding didn't go through: ${err.message}` });

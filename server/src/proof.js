@@ -29,7 +29,7 @@ import { state } from "./store.js";
 import { MODELS, rankedOptions } from "./trials.js";
 import { askClaude } from "./claude-runner.js";
 import { askCodex } from "./codex-runner.js";
-import { MOCK, judgeViaApi } from "./agents.js";
+import { judgeViaApi } from "./agents.js";
 
 const STRESS_PARALLEL = 40;
 const STRESS_MIXED = 10;
@@ -380,37 +380,62 @@ async function askJudge(j, prompt) {
   }
 }
 
+// Every model that can stand in as a judge when one lab can't run here.
+const SUBSTITUTES = [
+  { provider: "anthropic", id: "claude-sonnet-5-5", alias: "sonnet" },
+  { provider: "anthropic", id: "claude-opus-5-5", alias: "opus" },
+  { provider: "anthropic", id: "claude-haiku-5-5", alias: "haiku" },
+  { provider: "openai", id: "gpt-6-astra" },
+  { provider: "openai", id: "gpt-6.1-sol" },
+];
+
 // The two judges on one bounty attempt that already passed the verifier.
 // author: who wrote it (never judges itself). others: the other verified
 // attempts' files, so the judges can spot a bug this one only avoids.
-// -> { ok, judges, cost }. ok only if both judges ran and both passed. In
-// mock mode (no keys at all) the judges are stand-ins that pass, so the
-// demo still runs.
+// -> { ok, judges, cost }. ok only if both judges ran and both passed.
+// Judges are always real models: the team's Claude Code / Codex here, or an
+// API key (askJudge). Mock agents' fixes get real judges too. If one lab
+// can't run here, the second judge is another model from the lab that can,
+// still never the author. With no real judge at all the fix can't win.
+// SHOAL_MOCK_JUDGES=1 (the check scripts) skips real judges for stand-ins
+// that pass, so checks never spend anyone's plan or API credit.
 export async function judgeAttempt({ pain, files, author, others = [] }) {
+  if (process.env.SHOAL_MOCK_JUDGES === "1") {
+    const judges = judgesFor(author).map((j) => ({ provider: j.provider, model: j.id, name: MODELS[j.id].name, status: "waiting" }));
+    for (const j of judges) recordVerdict(j, { verdict: "pass", summary: "Stand-in judge (SHOAL_MOCK_JUDGES=1): not a real review.", remaining: [], risks: [] }, "stand-in");
+    return { ok: true, judges, cost: 0 };
+  }
   const code = await allSharedCode();
   const diff = await diffFiles(files);
   const fix = { id: `attempt:${author}`, model: author, files };
   const options = others.map((files, i) => ({ trial: { id: `other:${i}`, files } }));
   const prompt = reviewPrompt(pain, fix, diff, { code, options });
   let cost = 0;
-  const judges = await Promise.all(
-    judgesFor(author).map(async (j) => {
-      const judge = { provider: j.provider, model: j.id, alias: j.alias ?? null, name: MODELS[j.id].name, status: "waiting" };
-      if (MOCK) {
-        recordVerdict(judge, { verdict: "pass", summary: "Mock judge (no API keys): not a real review.", remaining: [], risks: [] }, "mock");
-        return judge;
-      }
-      const got = await askJudge(judge, prompt);
-      if (got) {
-        cost += got.cost;
-        recordVerdict(judge, parseVerdict(got.text), got.via);
-      } else {
-        recordVerdict(judge, { verdict: "fail", summary: `No way to run ${judge.name}: sign in to ${j.provider === "anthropic" ? "Claude Code" : "Codex"} here or set ${j.provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"}.`, remaining: [], risks: [] }, null);
-        judge.unavailable = true;
-      }
-      return judge;
-    }),
-  );
+  const newJudge = (j) => ({ provider: j.provider, model: j.id, alias: j.alias ?? null, name: MODELS[j.id].name, status: "waiting" });
+  const run = async (judge) => {
+    const got = await askJudge(judge, prompt);
+    if (!got) return false;
+    cost += got.cost ?? 0;
+    recordVerdict(judge, parseVerdict(got.text), got.via);
+    return true;
+  };
+  const judges = judgesFor(author).map(newJudge);
+  const answered = await Promise.all(judges.map(run));
+  for (let i = 0; i < judges.length; i++) {
+    if (answered[i]) continue;
+    const used = new Set([author, ...judges.map((j) => j.model)]);
+    const working = new Set(judges.filter((_, k) => answered[k]).map((j) => j.provider));
+    // Try the lab that already answered first, then anything else.
+    const subs = SUBSTITUTES.filter((s) => !used.has(s.id)).sort((a, b) => working.has(b.provider) - working.has(a.provider));
+    let replaced = false;
+    for (const s of subs) {
+      const judge = newJudge(s);
+      if (await run(judge)) { judges[i] = judge; answered[i] = replaced = true; break; }
+    }
+    if (replaced) continue;
+    recordVerdict(judges[i], { verdict: "fail", summary: "No real judge could run: sign in to Claude Code (or Codex) on the machine running Shoal, or set ANTHROPIC_API_KEY or OPENAI_API_KEY.", remaining: [], risks: [] }, null);
+    judges[i].unavailable = true;
+  }
   const strip = ({ alias, ...j }) => j;
   return { ok: judges.every((j) => j.ok), judges: judges.map(strip), cost };
 }
