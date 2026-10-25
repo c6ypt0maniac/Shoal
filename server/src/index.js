@@ -56,6 +56,8 @@ const background = (fn) => fn().catch((err) => emit("error", { message: err.mess
 const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../public");
 const WEB_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
 const hasLanding = existsSync(path.join(WEB_DIR, "index.html"));
+// Where Stripe sends the team back to: the React dashboard when it is built, else the old one.
+const dashboard = (query, view) => (hasLanding ? `/app?${query}#${view}` : `/team?${query}`);
 // Older GitHub sign-ins return to "/?github=…"; that, ?switch and a missing build all go to the sign-in page.
 app.get("/", (req, res) => {
   const signIn = !hasLanding || "github" in req.query || "github_error" in req.query || "switch" in req.query;
@@ -383,7 +385,7 @@ app.post("/api/credits/buy", async (req, res) => {
   const base = `${req.protocol}://${req.get("host")}`;
   const checkoutUrl = await startCreditCheckout(dollars, {
     successUrl: `${base}/api/credits/return?session_id={CHECKOUT_SESSION_ID}`,
-    cancelUrl: `${base}/team?credits=cancelled`,
+    cancelUrl: `${base}${dashboard("credits=cancelled", "billing")}`,
   });
   res.json({ checkoutUrl });
 });
@@ -392,10 +394,10 @@ app.get("/api/credits/return", async (req, res) => {
   try {
     const { dollars, sessionId } = await confirmCreditPurchase(req.query.session_id);
     await addCredits({ dollars, mode: paymentsMode(), stripeSessionId: sessionId });
-    res.redirect("/team?credits=added");
+    res.redirect(dashboard("credits=added", "billing"));
   } catch (err) {
     emit("credits.error", { message: `Credit purchase didn't go through: ${err.message}` });
-    res.redirect("/team?credits=failed");
+    res.redirect(dashboard("credits=failed", "billing"));
   }
 });
 
@@ -426,7 +428,7 @@ const checkoutUrls = (req, bounty) => {
   const base = `${req.protocol}://${req.get("host")}`;
   return {
     successUrl: `${base}/api/escrow/return?bounty=${bounty.id}&session_id={CHECKOUT_SESSION_ID}`,
-    cancelUrl: `${base}/team?funding=cancelled`,
+    cancelUrl: `${base}${dashboard("funding=cancelled", "bounties")}`,
   };
 };
 
@@ -437,10 +439,10 @@ app.get("/api/escrow/return", async (req, res) => {
     if (bounty.escrow.status === "awaiting_funding") await confirmFunding(bounty, req.query.session_id);
     bounty.status = "open";
     background(() => runBounty(bounty.id));
-    res.redirect("/team?funding=held");
+    res.redirect(dashboard("funding=held", "bounties"));
   } catch (err) {
     emit("escrow.error", { bountyId: bounty.id, message: `Funding didn't go through: ${err.message}` });
-    res.redirect("/team?funding=failed");
+    res.redirect(dashboard("funding=failed", "bounties"));
   }
 });
 
