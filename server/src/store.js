@@ -39,6 +39,8 @@ export const state = {
   reviewVotes: [],
   // Prepaid credits (see credits.js).
   credits: null,
+  // Each GitHub account's saved payment method (see billing.js).
+  billing: {},
 };
 
 // Unique across restarts, since bounties and the ledger are kept on disk.

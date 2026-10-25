@@ -12,7 +12,8 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const DEMO_REPO = path.resolve(here, "../../demo-repo");
-export const REPOS_DIR = path.resolve(here, "../.repos");
+// SHOAL_REPOS_DIR: where clones go (default server/.repos), e.g. for a test server.
+export const REPOS_DIR = path.resolve(here, "..", process.env.SHOAL_REPOS_DIR || ".repos");
 // SHOAL_WORKSPACE lets a second server (e.g. a preview) run without
 // clobbering the main one's checkout.
 export const WORKSPACE = path.resolve(here, "..", process.env.SHOAL_WORKSPACE || ".workspace");

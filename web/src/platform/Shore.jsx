@@ -12,15 +12,17 @@ const easeIO = (p) => (p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2);
 export default function Shore({ width = 300 }) {
   const r = { sand: useRef(null), wet: useRef(null), glow: useRef(null), foam: useRef(null), film: useRef(null), breaker: useRef(null), lace0: useRef(null), lace1: useRef(null) };
   useEffect(() => {
-    const STEP = 8, BASE = width + 72, still = true; // waves removed: static shoreline
+    // Barely-there lapping, close to the original still shoreline; fully
+    // still for people who prefer reduced motion.
+    const STEP = 8, BASE = width + 72, still = prefersReducedMotion();
     let raf, waves = [], next = 0, setLeft = 0, wet = [], push = [], raw = [];
     const spawn = (t) => {
       // Sets: 2-4 bigger waves, then a lull of smaller ones.
       if (setLeft <= 0) setLeft = Math.round(rand(2, 4));
       const big = setLeft-- > 0 && Math.random() < 0.75;
-      const A = big ? rand(55, 82) : rand(22, 42);
+      const A = big ? rand(6, 10) : rand(3, 6);
       waves.push({ t0: t, A, ap: rand(0.9, 1.3), up: rand(1.4, 2.1) * (A / 60) ** 0.4, down: rand(2.6, 3.6), l: [[rand(0.18, 0.32), rand(0.006, 0.011), rand(0, 6.3)], [rand(0.1, 0.2), rand(0.018, 0.03), rand(0, 6.3)], [rand(0.04, 0.08), rand(0.05, 0.08), rand(0, 6.3)]], peak: null, slot: waves.length % 2 });
-      next = t + (big ? rand(4.2, 6.5) : rand(5.5, 8.5));
+      next = t + (big ? rand(7, 10) : rand(8, 12));
     };
     const lobes = (w, y) => w.l.reduce((s, [a, f, p]) => s + a * Math.sin(y * f + p), 0);
     const pathOf = (xs) => xs.map((x, i) => (i ? 'L' : 'M') + x.toFixed(1) + ' ' + (i * STEP - STEP)).join('');
@@ -73,7 +75,8 @@ export default function Shore({ width = 300 }) {
       if (!still) raf = requestAnimationFrame(frame);
     };
     raf = requestAnimationFrame(frame);
-    const redraw = () => requestAnimationFrame(frame);
+    // While animating, the next frame picks up the new size; a second loop would double the work.
+    const redraw = () => still && requestAnimationFrame(frame);
     addEventListener('resize', redraw);
     return () => { cancelAnimationFrame(raf); removeEventListener('resize', redraw); };
   }, [width]);

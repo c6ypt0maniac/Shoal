@@ -93,9 +93,10 @@ export function ItemCard({ icon, toggle, title, by, meta, tags, body, footL, foo
 export function Modal({ onClose, children, wide }) {
   useEffect(() => { const k = (e) => e.key === 'Escape' && onClose(); addEventListener('keydown', k); return () => removeEventListener('keydown', k); }, [onClose]);
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/30 p-4 backdrop-blur-sm" onClick={onClose}>
-      <div className={'glass relative max-h-[92vh] w-full overflow-y-auto rounded-[24px] bg-[rgb(240_247_252/0.85)] ' + (wide ? 'max-w-[1040px]' : 'max-w-[620px]')} onClick={(e) => e.stopPropagation()}>
-        <button onClick={onClose} aria-label="Close" className="absolute right-4 top-4 z-10 flex size-9 cursor-pointer items-center justify-center rounded-full bg-white/70 text-lg hover:bg-white">×</button>
+    // Sand, like the sidebar and the sign-in popup, over a light blur of the page.
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/15 p-4 backdrop-blur-md" onClick={onClose}>
+      <div className={'sand relative max-h-[92vh] w-full overflow-y-auto rounded-[24px] ' + (wide ? 'max-w-[1040px]' : 'max-w-[620px]')} onClick={(e) => e.stopPropagation()}>
+        <button onClick={onClose} aria-label="Close" className="absolute right-4 top-4 z-10 flex size-9 cursor-pointer items-center justify-center rounded-full bg-white/60 text-lg text-ink hover:bg-white">×</button>
         {children}
       </div>
     </div>

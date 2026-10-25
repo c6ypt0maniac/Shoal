@@ -9,15 +9,16 @@ import { checkSurvivors } from "./survival.js";
 import { loadState, saveState, storageInfo } from "./persist.js";
 import { importOpenRouterModel, listing, listingExists, marketplace, ownerOf, publishAgent, refreshOpenRouter, removeListing, rotateSecret, updateAgent } from "./marketplace.js";
 import { createReview, deleteReview, replyToReview, reviewsFor, voteHelpful } from "./reviews.js";
-import { eventsAfter, emit, waitForEvents } from "./events.js";
+import { clearEvents, eventsAfter, emit, waitForEvents } from "./events.js";
 import { state, resetState, DEMO_CONNECTION } from "./store.js";
-import { getStacks, isTestFile, listAllFiles, resetWorkspace, setSource, DEMO_REPO, WORKSPACE } from "./repo.js";
+import { getSource, getStacks, isTestFile, listAllFiles, resetWorkspace, setSource, DEMO_REPO, REPOS_DIR, WORKSPACE } from "./repo.js";
 import { describeStack } from "./stack.js";
 import { zip } from "./zip.js";
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { describeFile } from "./describe.js";
-import { confirmCreditPurchase, confirmFunding, paymentsMode, startCheckout, startCreditCheckout, stripeConfigured, stripeKeyProblem } from "./escrow.js";
+import { confirmCreditPurchase, confirmFunding, holdWithSavedCard, paymentsMode, refundEscrow, releaseEscrow, startCheckout, startCreditCheckout, stripeConfigured, stripeKeyProblem } from "./escrow.js";
+import { billingFor, dismissPrompt, finishSetup, forgetBilling, removeCard, savedCard, startSetup } from "./billing.js";
 import { isProtected } from "./verifier.js";
 import { PROBLEMS, cleanProblems, cleanSharedPaths, isSecret } from "./scope.js";
 import { AGENTS, MOCK, modelUnavailable } from "./agents.js";
@@ -31,7 +32,7 @@ import { detectCodex, startCodexLogin } from "./codex-runner.js";
 import { startTrialRun, stopTrialRun, trialRun } from "./trial-runner.js";
 import { integrationStatus } from "./integrations.js";
 import {
-  authorizeUrl, ciStats, cloneRepo, completeOAuth, getRepo, getViewer, hasToken, listRepos, oauthConfigured, parseRepo, repoFiles, revokeGrant, signedInWithEnvToken, signOut,
+  authorizeUrl, getOAuthToken, ciStats, cloneRepo, completeOAuth, getRepo, getViewer, hasToken, listRepos, oauthConfigured, parseRepo, repoFiles, revokeGrant, signedInWithEnvToken, signOut,
 } from "./github.js";
 
 const PORT = Number(process.env.PORT) || 4000;
@@ -201,19 +202,48 @@ app.delete("/api/me", async (req, res) => {
     return res.status(400).json({ error: "This server signs in with GITHUB_TOKEN from server/.env, not a GitHub sign-in. Remove it from .env to sign out." });
   }
   const login = user.login;
+  // Shoal is your workspace: deleting the account wipes all of it, back to a
+  // fresh start. The wipe itself is in memory and saved before answering;
+  // the slow, outside parts (Stripe, deleting the clone, revoking GitHub
+  // access) run right after, in the background, so this answers quickly.
+  // Money is settled, not dropped: held rewards are released and a fix still
+  // in its survival window is refunded, so nothing is charged after you leave.
+  const settle = state.bounties.filter((b) => b.escrow?.status === "held" || (b.escrow?.status === "charged" && b.status === "surviving"));
   const listings = state.listings.filter((l) => (l.owner ?? l.addedBy) === login).map((l) => l.id);
-  const before = state.reviews.length;
-  state.listings = state.listings.filter((l) => !listings.includes(l.id));
-  state.reviews = state.reviews.filter((r) => r.reviewer !== login && !listings.includes(r.listingId));
-  for (const r of state.reviews) if (r.reply?.by === login) delete r.reply;
-  state.reviewVotes = state.reviewVotes.filter((v) => v.voter !== login && state.reviews.some((r) => r.id === v.reviewId));
-  for (const b of state.bounties) if (b.postedBy === login) b.postedBy = null;
-  const revoked = await revokeGrant();
+  const removed = { listings: listings.length, reviews: state.reviews.length, bounties: state.bounties.length };
+  const clone = state.connection.type === "github" ? getSource().dir : null;
+  const token = getOAuthToken();
+  const billing = state.billing[login];
+  setSource(DEMO_REPO);
+  await resetWorkspace();
+  resetState();
+  Object.assign(state, {
+    connection: DEMO_CONNECTION,
+    ci: [],
+    sync: { auto: true, checkedAt: null, syncedAt: null, waiting: null, error: null },
+    modelCost: {},
+    agents: {},
+    listings: [],
+    reviews: [],
+    reviewVotes: [],
+    credits: null,
+    role: null,
+  });
+  delete state.billing[login];
+  clearEvents();
   signOut();
-  state.role = null;
   await saveState();
-  emit("auth.account_deleted", { message: `@${login} deleted their Shoal account (${listings.length} listing${listings.length === 1 ? "" : "s"}, ${before - state.reviews.length} review${before - state.reviews.length === 1 ? "" : "s"} removed)` });
-  res.json({ ok: true, removed: { listings: listings.length, reviews: before - state.reviews.length }, githubAccessRevoked: revoked });
+  emit("auth.account_deleted", { message: `Account deleted: everything was wiped (${removed.bounties} bounties, ${removed.listings} listings, ${removed.reviews} reviews, the repo connection and credits)` });
+  res.json({ ok: true, removed });
+
+  // Afterwards, in parallel: release/refund held money, delete the Stripe
+  // customer, the clone on disk, and Shoal's access on GitHub.
+  Promise.allSettled([
+    ...settle.map((b) => (b.escrow.status === "held" ? releaseEscrow(b) : refundEscrow(b)).catch((err) => emit("escrow.error", { bountyId: b.id, message: `Couldn't release or refund ${b.id} after deleting the account: ${err.message}. Do it by hand in Stripe.` }))),
+    forgetBilling(login, billing),
+    clone && clone.startsWith(REPOS_DIR) ? rm(clone, { recursive: true, force: true }) : null,
+    revokeGrant(token),
+  ]).then(() => console.log(`Finished cleaning up after @${login}'s account deletion`));
 });
 
 // --- Who you are on Shoal: a team with dev pain, or an agent builder -------
@@ -273,13 +303,15 @@ async function connect(body, step, res) {
   const fullName = parseRepo(body?.repo);
   step("repo", `Looking up ${fullName} on GitHub`);
   const repo = await getRepo(fullName);
-  step("ci", `Reading GitHub Actions history for ${repo.fullName}`);
-  const ci = await ciStats(fullName).catch((err) => {
-    emit("connect.warning", { message: `Couldn't read GitHub Actions history: ${err.message}` });
-    return [];
-  });
-  step("clone", `Cloning ${fullName} (${repo.defaultBranch}) and installing dependencies`);
-  const dir = await cloneRepo(fullName, (message) => step("install", message));
+  // The Actions history is read while the code downloads, not before it.
+  step("clone", `Getting ${fullName} (${repo.defaultBranch}) and its CI history, and installing dependencies`);
+  const [ci, dir] = await Promise.all([
+    ciStats(fullName).catch((err) => {
+      emit("connect.warning", { message: `Couldn't read GitHub Actions history: ${err.message}` });
+      return [];
+    }),
+    cloneRepo(fullName, (message) => step("install", message), repo.defaultBranch),
+  ]);
 
   setSource(dir, body?.testCommand);
   await resetWorkspace();
@@ -490,7 +522,10 @@ app.get("/api/credits", (_req, res) => res.json({ ...creditsSummary(), payments:
 app.post("/api/credits/buy", async (req, res) => {
   const dollars = Number(req.body?.dollars);
   if (!isCreditAmount(dollars)) return res.status(400).json({ error: "Choose a pack or a whole amount from $5 to $1,000" });
-  if (!stripeConfigured()) return res.json(await addCredits({ dollars, mode: "simulated" }));
+  // Credits are bought, never given: without Stripe there's no payment, so no
+  // credits. ("Buy" used to add them for free in simulated mode, which is how
+  // a balance appeared from nowhere.)
+  if (!stripeConfigured()) return res.status(409).json({ error: "Buying credits needs Stripe, which isn't set up on this server" });
   const base = `${req.protocol}://${req.get("host")}`;
   const checkoutUrl = await startCreditCheckout(dollars, {
     successUrl: `${base}/api/credits/return?session_id={CHECKOUT_SESSION_ID}`,
@@ -510,22 +545,69 @@ app.get("/api/credits/return", async (req, res) => {
   }
 });
 
+// With Stripe, the reward is held on the team's saved card (set up once,
+// see billing.js); no card yet: 402 with needsPaymentMethod, so the platform
+// asks for one. A card that needs confirming (3-D Secure) gets Checkout.
 async function openBounty(req, res, opts) {
   const funding = stripeConfigured() && req.body?.funding !== "simulated" ? "stripe" : "simulated";
+  const card = funding === "stripe" && opts.postedBy ? savedCard(opts.postedBy) : null;
+  if (funding === "stripe" && (!card || card.simulated)) {
+    return res.status(402).json({ error: "Add a payment method before posting a bounty", needsPaymentMethod: true });
+  }
   const bounty = createBounty({ ...opts, funding });
   let checkoutUrl = null;
   if (funding === "stripe") {
     try {
-      checkoutUrl = await startCheckout(bounty, checkoutUrls(req, bounty));
+      await holdWithSavedCard(bounty, card);
+      bounty.status = "open";
     } catch (err) {
-      // Don't leave an unfundable bounty behind.
-      state.bounties = state.bounties.filter((b) => b !== bounty);
-      emit("escrow.error", { bountyId: bounty.id, message: `Couldn't open Stripe Checkout: ${err.message}` });
-      throw Object.assign(err, { status: 502 });
+      if (err.needsCheckout) {
+        checkoutUrl = await startCheckout(bounty, checkoutUrls(req, bounty));
+      } else {
+        // Declined, or Stripe failed: don't leave an unfundable bounty behind.
+        state.bounties = state.bounties.filter((b) => b !== bounty);
+        emit("escrow.error", { bountyId: bounty.id, message: `Couldn't hold the reward on your card: ${err.message}` });
+        throw Object.assign(new Error(`Your card couldn't hold $${bounty.reward}: ${err.message}. Update your payment method in Profile.`), { status: 402 });
+      }
     }
   }
   res.status(201).json({ ...publicBounty(bounty), checkoutUrl });
 }
+
+// --- Payment method (see billing.js) -------------------------------------------
+
+const signedInUser = async (req) => {
+  const user = await currentUser(req);
+  if (!user) throw Object.assign(new Error("Sign in with GitHub first"), { status: 401 });
+  return user;
+};
+
+app.get("/api/billing", async (req, res) => res.json(billingFor((await signedInUser(req)).login)));
+// Save or replace the card: { url } to Stripe Checkout (setup mode), or the
+// billing state at once when payments are simulated.
+app.post("/api/billing/setup", async (req, res) => {
+  const user = await signedInUser(req);
+  const base = `${req.protocol}://${req.get("host")}`;
+  // Back to the page they started from (a platform view name).
+  const view = /^[a-z]{1,20}$/.test(req.body?.from ?? "") ? req.body.from : "bounties";
+  res.json(await startSetup(user.login, {
+    successUrl: `${base}/api/billing/return?view=${view}&session_id={CHECKOUT_SESSION_ID}`,
+    cancelUrl: `${base}${dashboard("payments=cancelled", view)}`,
+  }));
+});
+app.get("/api/billing/return", async (req, res) => {
+  const view = /^[a-z]{1,20}$/.test(req.query.view ?? "") ? req.query.view : "bounties";
+  try {
+    const user = await signedInUser(req);
+    await finishSetup(user.login, req.query.session_id);
+    res.redirect(dashboard("payments=saved", view));
+  } catch (err) {
+    res.redirect(dashboard(`payments=failed&reason=${encodeURIComponent(err.message)}`, view));
+  }
+});
+// "Later" on the new-account prompt.
+app.post("/api/billing/later", async (req, res) => res.json(dismissPrompt((await signedInUser(req)).login)));
+app.delete("/api/billing", async (req, res) => res.json(await removeCard((await signedInUser(req)).login)));
 
 app.post("/api/bounties/:id/fund", async (req, res) => {
   const bounty = getBounty(req.params.id);

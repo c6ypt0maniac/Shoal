@@ -95,7 +95,9 @@ const STACKS = [
       ctx.names(root).includes("pnpm-lock.yaml") ? "pnpm install --frozen-lockfile"
       : ctx.names(root).includes("yarn.lock") ? "yarn install --frozen-lockfile"
       : ctx.names(root).includes("bun.lockb") ? "bun install"
-      : "npm install --no-audit --no-fund",
+      // npm ci is faster and exact when there's a lockfile; --prefer-offline reuses the local cache.
+      : ctx.names(root).includes("package-lock.json") ? "npm ci --prefer-offline --no-audit --no-fund"
+      : "npm install --prefer-offline --no-audit --no-fund",
     challenge: (testFile) => `${dirOf(testFile)}/shoal-challenge.test${testFile.match(/\.[cm]?[jt]sx?$/)?.[0] ?? ".js"}`.replace(/^\.\//, ""),
     hint: (fw) => ({ node: "node:test and node:assert/strict", jest: "Jest (describe/test/expect)", vitest: "Vitest (import { test, expect } from 'vitest')", mocha: "Mocha with node:assert", bun: "bun:test" })[fw] ?? "the repo's existing test style",
   },

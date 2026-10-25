@@ -14,9 +14,6 @@ const WATER = 30; // resting water depth at the bottom, px
 const STEP = 14; // spacing of points along the shore; curves are drawn between them
 const MAX_REACH = 30; // the wet line never climbs higher than this above the water
 
-// Smooth minimum: two waves meeting blend into one curve instead of a corner.
-const smin = (a, b, k = 5) => -k * Math.log(Math.exp(-a / k) + Math.exp(-b / k));
-
 // A smooth curve through [x, y] points (each point is a control point, the
 // curve passes through the midpoints between them).
 function smooth(pts, move = true) {
@@ -39,12 +36,13 @@ export default function ShoreCard({ className = '', children }) {
   useEffect(() => {
     const el = box.current;
     const still = prefersReducedMotion();
-    let raf, waves = [], next = 0.6, wet = [], lastBase = null, lastT = null;
+    let raf, waves = [], next = 0.6, wet = [], lastBase = null, lastT = null, foam = 0;
 
     const spawn = (t) => {
       // Small swash with broad, gentle lobes along the shore.
-      waves.push({ t0: t, A: rand(7, 14), up: rand(1.8, 2.4), down: rand(2.8, 3.6), l: [[rand(0.18, 0.3), rand(0.006, 0.01), rand(0, 6.3)], [rand(0.08, 0.14), rand(0.014, 0.022), rand(0, 6.3)]], peak: null });
-      next = t + rand(3.6, 5.4);
+      waves.push({ t0: t, A: rand(7, 14), up: rand(3.2, 4), down: rand(4.6, 5.6), l: [[rand(0.18, 0.3), rand(0.006, 0.01), rand(0, 6.3)], [rand(0.08, 0.14), rand(0.014, 0.022), rand(0, 6.3)]], peak: null });
+      // A new wave arrives while the last is still sliding back, so the water never stops.
+      next = t + rand(4, 5.5);
     };
     const lobes = (w, x) => w.l.reduce((s, [a, f, p]) => s + a * Math.sin(x * f + p), 0);
 
@@ -57,8 +55,10 @@ export default function ShoreCard({ className = '', children }) {
       if (base !== lastBase) { wet = []; lastBase = base; }
       if (!still && t >= next) spawn(t);
 
-      // Resting water breathes a little.
-      const shore = Array.from({ length: n }, (_, i) => base + 1.5 * Math.sin(i * STEP * 0.012 + t * 0.5));
+      // The water between waves keeps moving: a slow swell travelling along the shore.
+      const rest = Array.from({ length: n }, (_, i) => base + 2.4 * Math.sin(i * STEP * 0.012 + t * 0.32) + 1 * Math.sin(i * STEP * 0.028 - t * 0.45));
+      // How far up the sand each point is pushed, by all waves together.
+      const push = new Array(n).fill(0);
       let energy = 0, film = 0, lace = null, laceOp = 0;
       waves = waves.filter((w) => t - w.t0 < w.up + w.down + 3);
       for (const w of waves) {
@@ -72,15 +72,18 @@ export default function ShoreCard({ className = '', children }) {
           const p = (k - w.up) / w.down;
           reach = 1 - easeSine(p);
           film = Math.max(film, Math.sin(Math.PI * Math.min(1, p * 1.4)) * (1 - p));
-          if (!w.peak) w.peak = shore.map((_, i) => base - w.A * (1 + lobes(w, i * STEP)));
+          if (!w.peak) w.peak = rest.map((y, i) => y - w.A * (1 + lobes(w, i * STEP)));
           lace = w.peak;
           laceOp = Math.max(laceOp, 0.65 * easeSine(Math.min(1, p * 3)) * (1 - 0.3 * p));
         } else {
           if (w.peak) { lace = w.peak; laceOp = Math.max(laceOp, 0.45 * (1 - easeSine((k - w.up - w.down) / 3))); }
           continue;
         }
-        for (let i = 0; i < n; i++) shore[i] = smin(shore[i], base - w.A * reach * (1 + lobes(w, i * STEP)));
+        // Measured from the moving water, so a wave starts and ends exactly
+        // where the water is (no jump), and overlapping waves blend (a soft maximum).
+        for (let i = 0; i < n; i++) push[i] += (w.A * reach * (1 + lobes(w, i * STEP))) ** 4;
       }
+      const shore = rest.map((y, i) => y - push[i] ** 0.25);
       // Wet sand follows the water up at once and dries back slowly (same speed at any frame rate).
       const dry = 1 - Math.exp(-dt * 0.25);
       for (let i = 0; i < n; i++) {
@@ -94,9 +97,10 @@ export default function ShoreCard({ className = '', children }) {
       r.water.current.setAttribute('d', L + `L${n * STEP} ${H + 2}L${-STEP} ${H + 2}Z`);
       r.wet.current.setAttribute('d', curve(wet.slice(0, n)) + backPath + 'Z');
       r.glow.current.setAttribute('d', L);
-      r.glow.current.setAttribute('opacity', (0.35 + 0.35 * energy).toFixed(3));
+      foam += (energy - foam) * (1 - Math.exp(-dt * 1.5));
+      r.glow.current.setAttribute('opacity', (0.35 + 0.35 * foam).toFixed(3));
       r.foam.current.setAttribute('d', L);
-      r.foam.current.setAttribute('stroke-width', (1.4 + 1.2 * energy).toFixed(2));
+      r.foam.current.setAttribute('stroke-width', (1.4 + 1.2 * foam).toFixed(2));
       r.film.current.setAttribute('d', curve(shore.map((y) => y + 5 + 8 * film)));
       r.film.current.setAttribute('opacity', (0.4 * film).toFixed(3));
       if (lace && laceOp > 0.01) {
@@ -106,7 +110,8 @@ export default function ShoreCard({ className = '', children }) {
       if (!still) raf = requestAnimationFrame(frame);
     };
     raf = requestAnimationFrame(frame);
-    const ro = new ResizeObserver(() => requestAnimationFrame(frame));
+    // While animating, the next frame picks up the new size; a second loop would double the work.
+    const ro = new ResizeObserver(() => still && requestAnimationFrame(frame));
     ro.observe(el);
     return () => { cancelAnimationFrame(raf); ro.disconnect(); };
   }, []);

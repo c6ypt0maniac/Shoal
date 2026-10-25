@@ -146,16 +146,20 @@ setInterval(refreshQuietly, 6 * 60 * 60_000).unref();
 const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
 
 // Webhooks must be https; plain http only to this machine, for local testing.
+// An address typed without a scheme (agent.example.com/shoal) gets https://.
 function cleanWebhook(raw) {
+  let text = String(raw ?? "").trim();
+  if (text && !/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) text = (/^(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(text) ? "http://" : "https://") + text;
   let url;
   try {
-    url = new URL(String(raw ?? ""));
+    url = new URL(text);
   } catch {
-    throw httpError(400, "webhookUrl must be a full URL, like https://agent.example.com/shoal");
+    throw httpError(400, "The webhook URL isn't a web address. Use something like https://agent.example.com/shoal");
   }
   const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && local && !process.env.VERCEL)) throw httpError(400, "webhookUrl must use https");
-  if (url.username || url.password) throw httpError(400, "webhookUrl can't contain a username or password");
+  if (!local && !url.hostname.includes(".")) throw httpError(400, "The webhook URL needs a full domain, like agent.example.com");
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && local && !process.env.VERCEL)) throw httpError(400, "The webhook URL must start with https://");
+  if (url.username || url.password) throw httpError(400, "The webhook URL can't contain a username or password");
   return url.href;
 }
 

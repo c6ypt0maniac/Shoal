@@ -4,13 +4,14 @@ import { api } from './api.js';
 import { useShoal } from './useShoal.js';
 import Race from './Race.jsx';
 import Shore from './Shore.jsx';
+import ShoreCard from './ShoreCard.jsx';
 import { Agents, CompetitorPicker, ListingDetail, PublishAgent, nameOf } from './Market.jsx';
 import { Repo, Setup } from './Repo.jsx';
 import Trials from './Trials.jsx';
 import { Browse, Empty, Group, Icon, ItemCard, Label, LIVE, Modal, STATUS, Tag, btn, card, field, ghost, money, primary, signInHref, tone } from './ui.jsx';
 
 // Messages for ?funding= / ?credits= when Stripe Checkout sends the team back.
-const RETURNS = { 'funding=held': ['Reward held in escrow. The race is starting.'], 'funding=cancelled': ['Funding cancelled. The bounty is waiting for funding.', true], 'funding=failed': ["Funding didn't go through. Try again from the bounty.", true], 'credits=added': ['Credits added.'], 'credits=cancelled': ['Credit purchase cancelled.', true], 'credits=failed': ["The credit purchase didn't go through.", true], 'github=signed-in': ['Signed in with GitHub. Pick a repository to connect.'] };
+const RETURNS = { 'payments=saved': ['Payment method saved. Bounties are held on this card from now on.'], 'payments=cancelled': ["No card saved. You'll be asked again when you post a bounty.", true], 'payments=failed': ["The card wasn't saved. Try again from Profile.", true], 'funding=held': ['Reward held in escrow. The race is starting.'], 'funding=cancelled': ['Funding cancelled. The bounty is waiting for funding.', true], 'funding=failed': ["Funding didn't go through. Try again from the bounty.", true], 'credits=added': ['Credits added.'], 'credits=cancelled': ['Credit purchase cancelled.', true], 'credits=failed': ["The credit purchase didn't go through.", true], 'github=signed-in': ['Signed in with GitHub. Pick a repository to connect.'] };
 
 const NAV = [
   ['Account', [['account', 'Profile', 'user'], ['billing', 'Credits & billing', 'card']]],
@@ -19,8 +20,8 @@ const NAV = [
   ['Results', [['settlement', 'Settlement', 'chart']]],
 ];
 const TITLES = {
-  account: ['Profile', 'Your GitHub account, role and integrations'],
-  billing: ['Credits & billing', 'Credit packs for API fixes. Rewards are held, never charged until a fix is verified.'],
+  account: ['Profile', 'Your GitHub account and role'],
+  billing: ['Credits & billing', 'Your card for bounties, and credit packs for API fixes. Rewards are held, never charged until a fix is verified.'],
   setup: ['Get started', 'Three steps. Try everything with the demo repo first.'],
   repo: ['Repository', 'What agents can see, and how Shoal stays in sync'],
   activity: ['Activity', 'Every attempt, green run, rejection and payout'],
@@ -47,7 +48,7 @@ export default function Platform() {
   const [err, setErr] = useState('');
   const [note, setNote] = useState(null);
   useEffect(() => {
-    const q = new URLSearchParams(location.search), k = ['funding', 'credits', 'github'].find((x) => q.has(x));
+    const q = new URLSearchParams(location.search), k = ['payments', 'funding', 'credits', 'github'].find((x) => q.has(x));
     if (q.has('github_error')) setErr('GitHub sign-in failed: ' + q.get('github_error'));
     else if (!k) return;
     const r = RETURNS[k + '=' + q.get(k)];
@@ -58,6 +59,7 @@ export default function Platform() {
   // fromUrl: the URL already says where to go (back/forward, an edited #link).
   const go = (v, fromUrl) => {
     if (v === view) return;
+    setErr('');
     setLeaving({ v: view, n: navN }); setNavN((n) => n + 1); setView(v);
     if (!fromUrl) history.pushState(null, '', '#' + v);
     scrollTo(0, 0);
@@ -69,6 +71,7 @@ export default function Platform() {
     return () => { removeEventListener('popstate', onUrl); removeEventListener('hashchange', onUrl); };
   }, [view, navN]);
   const act = (fn) => async (...a) => { setErr(''); try { const r = await fn(...a); await s.refresh(); return r; } catch (e) { setErr(e.message); } };
+  const pay = usePayment(s.me?.viewer);
 
   // The "scan" step comes after connect.done (the repo is connected by then), so it doesn't count.
   const lastConnect = [...s.events].reverse().find((e) => /^connect\./.test(e.type) && e.step !== 'scan');
@@ -85,8 +88,17 @@ export default function Platform() {
       pill.style.transform = 'translateY(' + el.offsetTop + 'px)'; pill.style.height = el.offsetHeight + 'px'; pill.style.opacity = '1';
       pillReady.current = true;
     };
+    // Re-measure whenever the sidebar's layout shifts, not just on navigation:
+    // rows that load later (the saved card), badges, and web fonts all move the
+    // items, and a stale position highlights the wrong spot.
+    const aside = asideRef.current;
+    const ro = new ResizeObserver(() => place());
+    const watch = () => { ro.disconnect(); if (aside) for (const c of aside.children) if (c !== pillRef.current) ro.observe(c); };
+    const mo = new MutationObserver(() => { watch(); place(); });
+    if (aside) { watch(); mo.observe(aside, { childList: true, subtree: true, characterData: true }); }
+    document.fonts?.ready.then(place);
     place(); addEventListener('resize', place);
-    return () => removeEventListener('resize', place);
+    return () => { removeEventListener('resize', place); ro.disconnect(); mo.disconnect(); };
   }, [view, viewer]);
   const page = (v) => (
     <>
@@ -159,6 +171,7 @@ export default function Platform() {
       {create && <Create s={s} act={act} mode={create} setMode={setCreate} onPosted={(b) => { setCreate(null); go('bounties'); if (b?.id) setOpen({ kind: 'bounty', id: b.id }); }} />}
       </div>
       {locked && <SignInGate s={s} view={view} err={err} />}
+      {!locked && pay.asking && <PaymentPrompt pay={pay} />}
     </>
   );
 }
@@ -169,20 +182,23 @@ function SignInGate({ s, view, err }) {
   const loading = !s.health && !s.me;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/15 p-4 font-sans text-ink backdrop-blur-md" role="dialog" aria-modal="true" aria-labelledby="gate-title">
-      <div className="sand flex w-full max-w-[460px] flex-col gap-5 rounded-[24px] p-8">
-        <a href="/" className="flex items-center gap-2 text-xl font-semibold tracking-[-0.03em] text-ink"><span className="block size-[10px] rounded-full bg-accent" />Shoal</a>
-        <h1 id="gate-title" className="m-0 text-[26px] font-semibold tracking-[-0.03em]">{loading ? 'Connecting…' : 'Sign in to use Shoal'}</h1>
-        {!loading && s.me?.oauth === false ? (
-          <p className="m-0 text-[15px] text-[#6B5432]">GitHub sign-in isn't set up on this server yet, so nobody can sign in. Set <code>GITHUB_CLIENT_ID</code> and <code>GITHUB_CLIENT_SECRET</code> in <code>server/.env</code> and restart the server.</p>
-        ) : !loading && (
-          <>
-            <p className="m-0 text-[15px] text-[#6B5432]">Shoal uses your GitHub account to connect repositories, open pull requests, and keep track of your bounties and agents.</p>
-            <a href={signInHref(view)} className={primary + ' text-paper hover:text-paper'}>Sign in with GitHub</a>
-          </>
-        )}
-        {err && <span className="text-sm text-bad">{err}</span>}
-        <a href="/" className="self-start text-sm text-[#6B5432] underline">Back to the home page</a>
-      </div>
+      {/* Beach, like the sidebar, with small waves washing up its lower edge. */}
+      <ShoreCard className="w-full max-w-[460px] rounded-[24px]">
+        <div className="flex flex-col gap-5 p-8">
+          <a href="/" className="flex items-center gap-2 text-xl font-semibold tracking-[-0.03em] text-ink"><span className="block size-[10px] rounded-full bg-accent" />Shoal</a>
+          <h1 id="gate-title" className="m-0 text-[26px] font-semibold tracking-[-0.03em]">{loading ? 'Connecting…' : 'Sign in to use Shoal'}</h1>
+          {!loading && s.me?.oauth === false ? (
+            <p className="m-0 text-[15px] text-[#6B5432]">GitHub sign-in isn't set up on this server yet, so nobody can sign in. Set <code>GITHUB_CLIENT_ID</code> and <code>GITHUB_CLIENT_SECRET</code> in <code>server/.env</code> and restart the server.</p>
+          ) : !loading && (
+            <>
+              <p className="m-0 text-[15px] text-[#6B5432]">Shoal uses your GitHub account to connect repositories, open pull requests, and keep track of your bounties and agents.</p>
+              <a href={signInHref(view)} className={primary + ' text-paper hover:text-paper'}>Sign in with GitHub</a>
+            </>
+          )}
+          {err && <span className="text-sm text-bad">{err}</span>}
+          <a href="/" className="self-start text-sm text-[#6B5432] underline">Back to the home page</a>
+        </div>
+      </ShoreCard>
     </div>
   );
 }
@@ -298,7 +314,14 @@ function QuickPost({ p, s, act, onPosted }) {
   const [days, setDays] = useState(7);
   const [picks, setPicks] = useState(null);
   const post = act(async () => {
-    const b = await api.postBounty(p.id, Number(reward) || p.suggestedReward, { survivalDays: days, competitors: picks });
+    let b;
+    try {
+      b = await api.postBounty(p.id, Number(reward) || p.suggestedReward, { survivalDays: days, competitors: picks });
+    } catch (e) {
+      // No card yet: ask for one instead of showing an error.
+      if (e.data?.needsPaymentMethod) { dispatchEvent(new Event('shoal:need-payment')); return; }
+      throw e;
+    }
     if (b.checkoutUrl) { location.href = b.checkoutUrl; return; }
     if (b.escrow?.status === 'held') await api.run(b.id);
     onPosted(b);
@@ -398,9 +421,10 @@ function Billing({ s, act }) {
   const c = s.credits;
   return (
     <section className="flex flex-col gap-5">
+      {s.me?.viewer && <PaymentMethod act={act} from="billing" />}
       <h2 className="m-0 border-b border-ink/12 pb-3 text-[24px] font-semibold tracking-[-0.025em]">Credits</h2>
       <div className="glass-dark flex flex-wrap items-center gap-4 rounded-[20px] p-6 text-paper">
-        <div className="flex flex-col"><span className="text-[32px] font-semibold tabular-nums">{'$' + Number(c?.balance ?? 0).toFixed(2)}</span><span className="text-sm text-mist">Balance for API fixes · {c?.payments || s.health?.payments} payments</span></div>
+        <div className="flex flex-col"><span className="text-[32px] font-semibold tabular-nums">{c ? '$' + Number(c.balance ?? 0).toFixed(2) : '—'}</span><span className="text-sm text-mist">Balance for API fixes · {c?.payments || s.health?.payments} payments</span></div>
       </div>
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
         {[10, 25, 50].map((p) => (
@@ -440,10 +464,8 @@ function CustomCredits({ act }) {
   );
 }
 
-const INTEGRATIONS = [['github', 'GitHub sign-in'], ['anthropic', 'Claude API'], ['openai', 'OpenAI API'], ['openrouter', 'OpenRouter'], ['stripe', 'Stripe'], ['supabase', 'Supabase storage']];
-
 function Account({ s, act }) {
-  const v = s.me?.viewer, role = s.me?.role, on = s.health?.integrations || {};
+  const v = s.me?.viewer, role = s.me?.role;
   const signIn = s.me?.oauth === false
     ? <span className="text-sm text-muted">GitHub sign-in isn't set up on this server. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET.</span>
     : <a href={signInHref('account')} className={primary + ' text-paper hover:text-paper'}>Sign in with GitHub</a>;
@@ -461,14 +483,83 @@ function Account({ s, act }) {
           <button key={id} onClick={act(() => api.setRole(id))} className={card + ' cursor-pointer text-left ' + (role === id ? 'ring-2 ring-accent/60' : '')}><span className="text-[19px] font-semibold">{t}</span><span className="text-[15px] text-muted">{b}</span>{role === id && <span className="text-sm text-accent">Selected</span>}</button>
         ))}
       </div>
-      <h2 className="m-0 border-b border-ink/12 pb-3 text-[24px] font-semibold tracking-[-0.025em]">Server integrations</h2>
-      <div className="flex flex-wrap gap-2">
-        {INTEGRATIONS.map(([id, label]) => <Tag key={id} tone={on[id] ? 'ok' : undefined}>{label} · {on[id] ? 'set up' : 'not set'}</Tag>)}
-        <Tag tone={s.health?.githubToken ? 'ok' : undefined}>GITHUB_TOKEN · {s.health?.githubToken ? 'set' : 'not set'}</Tag>
-        <Tag>{s.health?.mock ? 'Practice agents (no API keys)' : 'Live agents'}</Tag>
-      </div>
       {v && <DeleteAccount login={v.login} act={act} />}
     </section>
+  );
+}
+
+// The signed-in user's saved card (server/src/billing.js). A new account (or
+// one that never set up payments) is asked right after signing in; asked
+// again whenever a bounty needs a card and there isn't one.
+function usePayment(viewer) {
+  const [billing, setBilling] = useState(null);
+  const [needed, setNeeded] = useState(false);
+  useEffect(() => { if (viewer) api.billing().then(setBilling, () => setBilling(null)); else setBilling(null); }, [viewer?.login]);
+  useEffect(() => {
+    const ask = () => setNeeded(true);
+    addEventListener('shoal:need-payment', ask);
+    return () => removeEventListener('shoal:need-payment', ask);
+  }, []);
+  const asking = Boolean(billing && !billing.ready && (needed || !billing.prompted));
+  return {
+    billing, asking, needed,
+    later: async () => { setNeeded(false); setBilling(await api.billingLater()); },
+    setup: async (from) => {
+      const r = await api.setupBilling(from);
+      if (r.url) { location.href = r.url; return; }
+      setNeeded(false); setBilling(r.billing);
+    },
+  };
+}
+
+const cardLine = (c) => c ? c.brand.charAt(0).toUpperCase() + c.brand.slice(1) + ' •••• ' + c.last4 + ' · expires ' + String(c.expMonth).padStart(2, '0') + '/' + String(c.expYear).slice(-2) : null;
+
+// For a new account (or posting a bounty without a card): add a payment
+// method once, so bounties never need a Checkout page.
+function PaymentPrompt({ pay }) {
+  const [busy, setBusy] = useState(false), [err, setErr] = useState('');
+  const run = (fn) => async () => { setBusy(true); setErr(''); try { await fn(); } catch (e) { setErr(e.message); } finally { setBusy(false); } };
+  const simulated = pay.billing?.mode === 'simulated';
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/15 p-4 font-sans text-ink backdrop-blur-md" role="dialog" aria-modal="true" aria-labelledby="pay-title">
+      <ShoreCard className="w-full max-w-[460px] rounded-[24px]">
+        <div className="flex flex-col gap-5 p-8">
+          <span className="flex items-center gap-2 text-xl font-semibold tracking-[-0.03em]"><span className="block size-[10px] rounded-full bg-accent" />Shoal</span>
+          <h1 id="pay-title" className="m-0 text-[26px] font-semibold tracking-[-0.03em]">{pay.needed ? 'Add a payment method to post bounties' : 'Set up payments'}</h1>
+          <p className="m-0 text-[15px] text-[#6B5432]">
+            Save a card once with Stripe. When you post a bounty, its reward is held on this card and charged only if an agent's fix is verified. It's refunded if the fix doesn't survive. Nothing is charged now.
+            {simulated && ' (Payments are simulated on this server, so no real card is needed.)'}
+          </p>
+          <button className={primary} disabled={busy} onClick={run(() => pay.setup('bounties'))}>{busy ? 'Opening Stripe…' : simulated ? 'Use a test card' : 'Add a card with Stripe'}</button>
+          {err && <span className="text-sm text-bad">{err}</span>}
+          <button className="cursor-pointer self-start text-sm text-[#6B5432] underline" disabled={busy} onClick={run(pay.later)}>Later</button>
+        </div>
+      </ShoreCard>
+    </div>
+  );
+}
+
+// The saved card, and changing or removing it. from: the page Stripe sends you back to.
+function PaymentMethod({ act, from = 'account' }) {
+  const [b, setB] = useState(null);
+  useEffect(() => { api.billing().then(setB, () => setB(null)); }, []);
+  const change = act(async () => { const r = await api.setupBilling(from); if (r.url) location.href = r.url; else setB(r.billing); });
+  const remove = act(async () => setB(await api.removeBilling()));
+  return (
+    <>
+      <h2 className="m-0 border-b border-ink/12 pb-3 text-[24px] font-semibold tracking-[-0.025em]">Payment method</h2>
+      <div className={card + ' md:flex-row md:items-center'}>
+        <span className="flex size-14 shrink-0 items-center justify-center rounded-2xl bg-accent/12 text-accent"><Icon n="card" size={24} /></span>
+        <div className="flex flex-1 flex-col">
+          <span className="text-[19px] font-semibold">{b?.ready ? cardLine(b.card) || 'Card saved' : 'No card saved'}</span>
+          <span className="text-[15px] text-muted">{b?.ready ? 'Bounty rewards are held on this card and charged only for verified fixes.' + (b.simulated ? ' Simulated: no real money moves.' : '') : 'Add a card so you can post bounties. Nothing is charged until a fix is verified.'}</span>
+        </div>
+        <div className="flex gap-2">
+          <button className={b?.ready ? ghost : primary} onClick={change}>{b?.ready ? 'Change card' : 'Add a card'}</button>
+          {b?.ready && <button className={ghost} onClick={remove}>Remove</button>}
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -479,7 +570,7 @@ function DeleteAccount({ login, act }) {
     <>
       <h2 className="m-0 border-b border-ink/12 pb-3 text-[24px] font-semibold tracking-[-0.025em]">Delete account</h2>
       <div className={card + ' border-bad/30'}>
-        <span className="text-[15px]">This can't be undone. It removes the agents and models you added to the marketplace, your reviews, replies and helpful votes, and reviews of your agents. Bounties you posted and their payment records stay, without your name. Shoal's access to your GitHub account is revoked and you're signed out.</span>
+        <span className="text-[15px]">This can't be undone. It wipes everything: the connected repository and its scans, your bounties (held rewards are released and fixes still in their survival window are refunded), model trials, activity, unused credits (they're forfeited), your saved card, and the agents, models and reviews in the marketplace. Shoal's access to your GitHub account is revoked and you're signed out, so signing in again starts fresh.</span>
         <Label t={'Type ' + login + ' to confirm'}><input className={field} value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck="false" /></Label>
         <button className={btn + ' self-start bg-bad text-paper hover:bg-ink'} disabled={typed.trim() !== login} onClick={act(async () => { await api.deleteAccount(); location.reload(); })}>Delete my account</button>
       </div>

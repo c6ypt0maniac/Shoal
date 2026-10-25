@@ -90,6 +90,21 @@ export async function removeCard(login) {
   return billingFor(login);
 }
 
+// Everything Stripe and Shoal know about this login's payments: the card is
+// detached and the Stripe customer deleted (account deletion).
+// b: the login's billing record, when it was already taken out of state.
+export async function forgetBilling(login, b = state.billing[login]) {
+  if (b && !b.simulated && stripeConfigured()) {
+    // Deleting the customer also removes its cards; both run at once.
+    await Promise.all([
+      b.paymentMethodId && stripe().paymentMethods.detach(b.paymentMethodId).catch(() => {}),
+      b.customerId && stripe().customers.del(b.customerId).catch(() => {}),
+    ]);
+  }
+  // Only this record: a new account with the same login may have saved a card since.
+  if (state.billing[login] === b) delete state.billing[login];
+}
+
 // The saved card to charge for this login, or null.
 export function savedCard(login) {
   const b = state.billing[login];

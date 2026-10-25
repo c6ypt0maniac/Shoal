@@ -30,7 +30,7 @@ export function stripeKeyProblem() {
 }
 
 let client = null;
-const stripe = () => (client ??= new Stripe(key()));
+export const stripe = () => (client ??= new Stripe(key()));
 
 const cents = (dollars) => Math.round(dollars * 100);
 
@@ -45,6 +45,32 @@ export function newEscrow(reward, mode) {
     paymentIntentId: null,
     checkoutSessionId: null,
   };
+}
+
+// Puts the reward on hold on the team's saved card (billing.js), with no
+// Checkout page. Throws with needsCheckout when the card needs its holder to
+// confirm (3-D Secure); the bounty then falls back to Checkout.
+export async function holdWithSavedCard(bounty, card) {
+  try {
+    const intent = await stripe().paymentIntents.create({
+      amount: cents(bounty.reward),
+      currency: "usd",
+      customer: card.customerId,
+      payment_method: card.paymentMethodId,
+      capture_method: "manual",
+      off_session: true,
+      confirm: true,
+      description: `Shoal bounty ${bounty.id}`,
+      metadata: { bountyId: bounty.id },
+    }, { idempotencyKey: `shoal-hold-${bounty.id}` });
+    if (intent.status !== "requires_capture") throw Object.assign(new Error(`Payment isn't on hold (status: ${intent.status})`), { needsCheckout: true });
+    bounty.escrow.paymentIntentId = intent.id;
+    bounty.escrow.status = "held";
+    emit("escrow.held", { bountyId: bounty.id, amount: bounty.reward, message: `$${bounty.reward} held on your saved card (not charged yet)` });
+  } catch (err) {
+    if (err.code === "authentication_required" || err.needsCheckout) throw Object.assign(err, { needsCheckout: true });
+    throw err;
+  }
 }
 
 // Creates a Checkout page where the team authorizes the full reward.
