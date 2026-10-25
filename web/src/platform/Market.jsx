@@ -86,9 +86,14 @@ function ImportModel({ act }) {
 }
 
 // Who competes on a bounty. null = the server's default (Shoal's built-in agents).
+const CLAUDE_DEFAULTS = ['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5'];
+
 export function CompetitorPicker({ s, value, onChange }) {
   const [open, setOpen] = useState(false);
-  const defaults = s.market.filter((l) => l.provider === 'shoal' && l.available).map((l) => l.id);
+  // Default: the Claude models that can run (server/src/marketplace.js
+  // defaultCompetitors), else Shoal's built-in agents.
+  const claude = s.market.filter((l) => CLAUDE_DEFAULTS.includes(l.id) && l.available).map((l) => l.id);
+  const defaults = claude.length ? claude : s.market.filter((l) => l.provider === 'shoal' && l.available).map((l) => l.id);
   const picked = value ?? defaults;
   const toggle = (id) => onChange(picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id]);
   const list = [...s.market].sort((a, b) => b.available - a.available || (b.shoal?.score ?? 0) - (a.shoal?.score ?? 0));

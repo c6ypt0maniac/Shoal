@@ -624,10 +624,13 @@ app.get("/api/credits/return", async (req, res) => {
 // see billing.js); no card yet: 402 with needsPaymentMethod, so the platform
 // asks for one. A card that needs confirming (3-D Secure) gets Checkout.
 async function openBounty(req, res, opts) {
-  const funding = stripeConfigured() && req.body?.funding !== "simulated" ? "stripe" : "simulated";
+  let funding = stripeConfigured() && req.body?.funding !== "simulated" ? "stripe" : "simulated";
   const card = funding === "stripe" && opts.postedBy ? savedCard(opts.postedBy) : null;
   if (funding === "stripe" && (!card || card.simulated)) {
-    return res.status(402).json({ error: "Add a payment method before posting a bounty", needsPaymentMethod: true });
+    // Chose "Later" on the payment prompt: post now with simulated funding
+    // (nothing held or charged) until a card is saved.
+    if (opts.postedBy && billingFor(opts.postedBy).prompted) funding = "simulated";
+    else return res.status(402).json({ error: "Add a payment method before posting a bounty", needsPaymentMethod: true });
   }
   const bounty = createBounty({ ...opts, funding });
   let checkoutUrl = null;

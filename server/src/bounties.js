@@ -16,7 +16,7 @@
 // was proven lands, charged once at the price shown (api-trials.js).
 import { AGENTS, requestModelFix } from "./agents.js";
 import { attemptFix } from "./competitors.js";
-import { checkCompetitors, nameFor } from "./marketplace.js";
+import { checkCompetitors, defaultCompetitors, nameFor } from "./marketplace.js";
 import { getStacks } from "./repo.js";
 import { stackFor } from "./stack.js";
 import { MODELS, costPerFix, linesChanged, providerLabel } from "./trials.js";
@@ -57,11 +57,17 @@ export function recoverInterrupted() {
 // trials, so that model runs through the API instead of the marketplace.
 // survivalDays: 7, 10 or 14 before the agent is paid. competitors: the
 // marketplace listings the team picked to compete (default: Shoal's
-// built-in agents); only those get the team's code. postedBy: GitHub login.
+// the Claude models, see defaultCompetitors); only those get the team's code. postedBy: GitHub login.
 export function createBounty({ painId, reward, funding = "simulated", apiModel = null, trialId = null, unlock = false, survivalDays, competitors, postedBy = null }) {
   const pain = state.pains.find((p) => p.id === painId);
   if (!pain) throw httpError(404, `Unknown pain ${painId}`);
   if (pain.healthy) throw httpError(400, `${pain.testFile} isn't flaky; nothing to fix`);
+  // A fix lands as a pull request: only on a GitHub repo you can push to
+  // that isn't archived. (The bundled demo repo is for trying Shoal out.)
+  const conn = state.connection;
+  if (conn.type === "github" && (!conn.canWrite || conn.archived)) {
+    throw httpError(403, `Bounties need a repo you can push to: ${conn.fullName} is ${conn.archived ? "archived" : "read-only for you"}`);
+  }
   // Credit runs carry the estimated fix price (can be cents); bounties a reward.
   const amount = funding === "credits" ? Number(reward) : Math.round(Number(reward) || pain.suggestedReward);
   if (funding !== "credits" && (amount < 1 || amount > 10_000)) throw httpError(400, "Reward must be between $1 and $10,000");
@@ -72,7 +78,7 @@ export function createBounty({ painId, reward, funding = "simulated", apiModel =
     title: `Make ${pain.testFile} reliable`,
     reward: amount,
     survivalDays: cleanSurvivalDays(survivalDays),
-    competitors: apiModel ? [apiModel] : checkCompetitors(competitors ?? AGENTS.map((a) => a.id)),
+    competitors: apiModel ? [apiModel] : checkCompetitors(competitors ?? defaultCompetitors()),
     language: stackFor(getStacks(), pain.testFile)?.def?.language ?? null,
     // The repo it's on and the scan it came from, so it keeps working after
     // you switch repos (see repos.js).

@@ -53,8 +53,10 @@ With what's built (scenario `S3_built`), ×6 gives a 61% gross margin at a 60% u
 This is the backend flow; the website reads it through the JSON API.
 
 1. **Post** with `POST /api/bounties {painId, reward, survivalDays}`. The team sets the reward, and `survivalDays` is 7, 10 or 14. The reward is held in escrow: a Stripe hold, simulated, or prepaid credits for an approved trial model.
+   - Only on a GitHub repo you can push to that isn't archived (the fix lands as a PR), or the bundled demo repo.
+   - With Stripe on, the reward is held on the poster's saved card. Someone who chose **Later** on the card prompt can post now: the bounty is funded with simulated money (nothing held or charged) until a card is saved.
 2. **Compete** with `POST /api/bounties/:id/run`.
-   - Every marketplace agent attempts the fix privately, in parallel. Agents never bid on price.
+   - The competitors the team picked attempt the fix privately, in parallel. By default that's the Claude models that can run (Haiku 5.5, Sonnet 5.5, Opus 5.5), or Shoal's built-in agents when there's no Anthropic key. Agents never bid on price.
    - Each attempt goes through the verifier.
    - The winner is the verified attempt with the best scorecard; the smaller change breaks a tie.
 3. **Only the winner's fix is shown.** `GET /api/bounties` returns `winningAttempt`, plus counts of attempts and verified ones. The losing attempts never leave the server. The winning fix is applied and opened as a PR.

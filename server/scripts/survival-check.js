@@ -20,6 +20,9 @@ const { WORKSPACE, DEMO_REPO } = await import("../src/repo.js");
 const { checkSurvivors } = await import("../src/survival.js");
 
 const BASE = "http://localhost:4107";
+// The built-in persona agents: this check is about their behaviour (bounties
+// default to the Claude models otherwise).
+const PERSONAS = ["flakehunter", "rootcause", "speedy"];
 let ok = true;
 const check = (label, pass, detail = "") => {
   console.log(`${pass ? "PASS" : "FAIL"}  ${label}${detail ? `: ${detail}` : ""}`);
@@ -46,10 +49,10 @@ const orders = pains.find((p) => p.testFile === "test/orders.test.js");
 check("scan found both flaky tests", Boolean(cart && orders && !cart.healthy && !orders.healthy));
 
 // --- 1. Competition, then a regression inside the window ---------------------
-const bad = await api("/api/bounties", { painId: cart.id, reward: 300, survivalDays: 21 });
+const bad = await api("/api/bounties", { painId: cart.id, reward: 300, competitors: PERSONAS, survivalDays: 21 });
 check("survival window must be 7, 10 or 14 days", /7, 10, 14/.test(bad.error ?? ""), bad.error);
 
-const first = await api("/api/bounties", { painId: cart.id, reward: 300, survivalDays: 10 });
+const first = await api("/api/bounties", { painId: cart.id, reward: 300, competitors: PERSONAS, survivalDays: 10 });
 await api(`/api/bounties/${first.id}/run`, {});
 let b1 = await waitFor(first.id, ["surviving", "failed"]);
 check("verified fix enters its survival window", b1.status === "surviving", b1.status);
@@ -83,7 +86,7 @@ check("ledger marks it clawed back", ledger.find((t) => t.bountyId === first.id)
 
 // --- 2. A fix that survives its window gets paid -----------------------------
 process.env.SHOAL_SURVIVAL_MINUTES = "0.02"; // ~1 second windows from here on
-const second = await api("/api/bounties", { painId: orders.id, reward: 200 });
+const second = await api("/api/bounties", { painId: orders.id, reward: 200, competitors: PERSONAS });
 await api(`/api/bounties/${second.id}/run`, {});
 let b2 = await waitFor(second.id, ["surviving", "failed"]);
 check("second fix verified", b2.status === "surviving", b2.status);
@@ -108,7 +111,7 @@ check("settlement: 1 cleared, 1 clawed back today", s.clearedToday.length === 1 
 // --- 4. Reconnecting can't drop a window; state is on disk ------------------------
 process.env.SHOAL_SURVIVAL_MINUTES = "60";
 const orders2 = (await api("/api/pains")).find((p) => p.testFile === "test/cart.test.js");
-const third = await api("/api/bounties", { painId: orders2.id, reward: 100 });
+const third = await api("/api/bounties", { painId: orders2.id, reward: 100, competitors: PERSONAS });
 await api(`/api/bounties/${third.id}/run`, {});
 await waitFor(third.id, ["surviving", "failed"]);
 const blocked = await fetch(`${BASE}/api/reset`, { method: "POST" });
