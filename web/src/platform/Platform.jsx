@@ -110,12 +110,14 @@ export default function Platform() {
   );
 
   const shoreWidth = useWide();
-  // Signed out: nothing of the platform renders, only the sign-in popup, until GitHub sign-in completes.
-  if (!viewer) return (<><Water strength={0.5} /><SignInGate s={s} view={view} err={err} /></>);
+  // Signed out: the platform shows blurred behind the sign-in popup and can't be
+  // clicked, focused or read by screen readers (inert) until GitHub sign-in completes.
+  const locked = !viewer;
 
   return (
     <>
       <Water strength={0.5} />
+      <div className="contents" inert={locked} aria-hidden={locked || undefined}>
       <Shore width={shoreWidth} />
       <div className="relative z-[1] grid min-h-screen grid-cols-1 font-sans text-[16px] leading-normal text-ink md:grid-cols-[260px_minmax(0,1fr)] lg:grid-cols-[300px_minmax(0,1fr)]">
         <aside ref={asideRef} className="relative flex flex-col gap-6 bg-[#EFDFBF] px-4 py-6 shadow-[0_6px_0_-2px_rgba(255,255,255,0.85),0_14px_18px_-6px_rgba(255,255,255,0.6)] md:shadow-none md:sticky md:top-0 md:h-screen md:overflow-y-auto md:bg-transparent [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -155,29 +157,31 @@ export default function Platform() {
       </div>
       {open && <Listing s={s} act={act} open={open} setOpen={setOpen} />}
       {create && <Create s={s} act={act} mode={create} setMode={setCreate} onPosted={(b) => { setCreate(null); go('bounties'); if (b?.id) setOpen({ kind: 'bounty', id: b.id }); }} />}
+      </div>
+      {locked && <SignInGate s={s} view={view} err={err} />}
     </>
   );
 }
 
-// The only thing a signed-out visitor sees: it can't be closed, and stays until
-// GitHub sign-in completes (which reloads /app with the viewer set).
+// What a signed-out visitor gets: a popup over the blurred platform that can't
+// be closed, until GitHub sign-in completes (which reloads /app with the viewer set).
 function SignInGate({ s, view, err }) {
   const loading = !s.health && !s.me;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/30 p-4 font-sans text-ink backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="gate-title">
-      <div className="glass flex w-full max-w-[460px] flex-col gap-5 rounded-[24px] bg-[rgb(240_247_252/0.9)] p-8">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/15 p-4 font-sans text-ink backdrop-blur-md" role="dialog" aria-modal="true" aria-labelledby="gate-title">
+      <div className="sand flex w-full max-w-[460px] flex-col gap-5 rounded-[24px] p-8">
         <a href="/" className="flex items-center gap-2 text-xl font-semibold tracking-[-0.03em] text-ink"><span className="block size-[10px] rounded-full bg-accent" />Shoal</a>
         <h1 id="gate-title" className="m-0 text-[26px] font-semibold tracking-[-0.03em]">{loading ? 'Connecting…' : 'Sign in to use Shoal'}</h1>
         {!loading && s.me?.oauth === false ? (
-          <p className="m-0 text-[15px] text-muted">GitHub sign-in isn't set up on this server yet, so nobody can sign in. Set <code>GITHUB_CLIENT_ID</code> and <code>GITHUB_CLIENT_SECRET</code> in <code>server/.env</code> and restart the server.</p>
+          <p className="m-0 text-[15px] text-[#6B5432]">GitHub sign-in isn't set up on this server yet, so nobody can sign in. Set <code>GITHUB_CLIENT_ID</code> and <code>GITHUB_CLIENT_SECRET</code> in <code>server/.env</code> and restart the server.</p>
         ) : !loading && (
           <>
-            <p className="m-0 text-[15px] text-muted">Shoal uses your GitHub account to connect repositories, open pull requests, and keep track of your bounties and agents.</p>
+            <p className="m-0 text-[15px] text-[#6B5432]">Shoal uses your GitHub account to connect repositories, open pull requests, and keep track of your bounties and agents.</p>
             <a href={signInHref(view)} className={primary + ' text-paper hover:text-paper'}>Sign in with GitHub</a>
           </>
         )}
         {err && <span className="text-sm text-bad">{err}</span>}
-        <a href="/" className="self-start text-sm text-muted underline">Back to the home page</a>
+        <a href="/" className="self-start text-sm text-[#6B5432] underline">Back to the home page</a>
       </div>
     </div>
   );
