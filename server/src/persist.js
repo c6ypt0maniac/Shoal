@@ -1,8 +1,8 @@
 // Durable state: what has to outlive a restart because it spans days or
 // involves money. Bounties (and their survival windows), the ledger, agent
 // scorecards, credits, marketplace listings, reviews, helpful votes,
-// measured model costs and the repo connection. Scans, trials and proofs
-// are not: a rescan rebuilds them.
+// measured model costs, the repo connection and its last scan. Trials and
+// proofs are not: they're rebuilt by running them again.
 //
 // Two backends, same data:
 //   Supabase Postgres  when SUPABASE_DB_URL is set. Shoal creates its own
@@ -73,6 +73,8 @@ const COLLECTIONS = {
 // Single values, one row each in the kv table.
 const VALUES = {
   connection: { get: () => state.connection, set: (v) => (state.connection = v) },
+  // The last scan: the bounties page lists bounties under their flaky test.
+  pains: { get: () => state.pains, set: (v) => (state.pains = v ?? []) },
   source: { get: () => ({ dir: getSource().dir, testCommand: getSource().testCommand }), set: () => {} },
   sync: { get: () => ({ auto: state.sync?.auto ?? true }), set: (v) => (state.sync = { ...state.sync, auto: v.auto }) },
   modelCost: { get: () => state.modelCost, set: (v) => (state.modelCost = v ?? {}) },
@@ -236,6 +238,7 @@ export async function loadState() {
   if (saved.source?.dir && existsSync(saved.source.dir)) {
     setSource(saved.source.dir, saved.source.testCommand);
     if (saved.connection) VALUES.connection.set(saved.connection);
+    if (saved.pains) VALUES.pains.set(saved.pains);
     if (saved.sync) VALUES.sync.set(saved.sync);
   }
   VALUES.modelCost.set(saved.modelCost);

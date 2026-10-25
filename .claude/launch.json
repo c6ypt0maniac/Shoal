@@ -4,7 +4,7 @@
     {
       "name": "shoal",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "server", "start"],
+      "runtimeArgs": ["start"],
       "port": 4000
     }
   ]

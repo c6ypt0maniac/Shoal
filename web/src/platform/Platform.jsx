@@ -40,7 +40,8 @@ function useWide() {
 
 export default function Platform() {
   const s = useShoal();
-  const [view, setView] = useState(() => location.hash.slice(1) || 'setup');
+  const fromHash = () => (TITLES[location.hash.slice(1)] ? location.hash.slice(1) : 'setup');
+  const [view, setView] = useState(fromHash);
   const [open, setOpen] = useState(null);
   const [create, setCreate] = useState(null);
   const [err, setErr] = useState('');
@@ -54,17 +55,25 @@ export default function Platform() {
     history.replaceState(null, '', location.pathname + location.hash);
   }, []);
   const [leaving, setLeaving] = useState(null), [navN, setNavN] = useState(0);
-  const go = (v) => {
+  // fromUrl: the URL already says where to go (back/forward, an edited #link).
+  const go = (v, fromUrl) => {
     if (v === view) return;
     setLeaving({ v: view, n: navN }); setNavN((n) => n + 1); setView(v);
-    history.replaceState(null, '', '#' + v); scrollTo(0, 0);
+    if (!fromUrl) history.pushState(null, '', '#' + v);
+    scrollTo(0, 0);
     clearTimeout(go.t); go.t = setTimeout(() => setLeaving(null), 420);
   };
+  useEffect(() => {
+    const onUrl = () => go(fromHash(), true);
+    addEventListener('popstate', onUrl); addEventListener('hashchange', onUrl);
+    return () => { removeEventListener('popstate', onUrl); removeEventListener('hashchange', onUrl); };
+  }, [view, navN]);
   const act = (fn) => async (...a) => { setErr(''); try { const r = await fn(...a); await s.refresh(); return r; } catch (e) { setErr(e.message); } };
 
   // The "scan" step comes after connect.done (the repo is connected by then), so it doesn't count.
   const lastConnect = [...s.events].reverse().find((e) => /^connect\./.test(e.type) && e.step !== 'scan');
-  const connected = lastConnect ? lastConnect.type === 'connect.done' : s.connection?.type === 'github';
+  // With no connect events (e.g. after a server restart), a saved scan means a repo is connected.
+  const connected = lastConnect ? lastConnect.type === 'connect.done' : s.connection?.type === 'github' || s.pains.length > 0;
   const steps = [connected, s.pains.length > 0, s.bounties.length > 0];
   const viewer = s.me?.viewer;
   const asideRef = useRef(null), pillRef = useRef(null), pillReady = useRef(false);
@@ -245,7 +254,7 @@ function Listing({ s, act, open, setOpen }) {
           {b?.status === 'clawed_back' && <p className="m-0 text-[15px]">The fix regressed during its survival window. You were refunded and the agent was paid $0.</p>}
           {b?.status === 'payment_failed' && <p className="m-0 text-[15px] text-bad">The fix was verified but the charge failed.</p>}
           {b?.winner && ['settled', 'clawed_back'].includes(b.status) && <ReviewForm s={s} act={act} b={b} />}
-          {b && <p className="m-0 text-sm text-muted">{ESCROW[b.escrow?.status] || b.escrow?.status}{b.escrow?.mode === 'stripe' ? ' · Stripe' + (b.escrow.live ? '' : ' test mode') : b.escrow?.mode === 'credits' ? ' · from credits' : ' · simulated'}. No surviving fix, $0 charged.</p>}
+          {b && <p className="m-0 text-sm text-muted">{ESCROW[b.escrow?.status] || b.escrow?.status}{b.escrow?.mode === 'stripe' ? ' · Stripe' + (b.escrow.live ? '' : ' test mode') : b.escrow?.mode === 'credits' ? ' · from credits' : ' · simulated'}.{['held', 'awaiting_funding'].includes(b.escrow?.status) ? ' No surviving fix, $0 charged.' : b.escrow?.status === 'charged' && b.status === 'surviving' ? ' Refunded if the fix regresses in its survival window.' : ''}</p>}
         </div>
       </div>
     </Modal>
@@ -347,7 +356,7 @@ function Settlement({ s, setOpen }) {
       <div className="text-[17px] font-semibold">Ledger</div>
       <div className="glass rounded-[20px] px-6 py-2">
         {s.ledger.length === 0 && <div className="py-4 text-muted">Nothing settled yet.</div>}
-        {s.ledger.map((t, i) => <button key={i} onClick={() => setOpen({ kind: 'bounty', id: t.bountyId })} className="grid w-full cursor-pointer grid-cols-[minmax(0,1fr)_auto_90px_110px] items-center gap-4 border-t border-ink/10 py-3 text-left tabular-nums first:border-t-0"><span className="truncate">{t.title || t.bountyId} <span className="text-muted">· {t.agentName || t.agentId}</span></span><Tag tone={LEDGER[t.status]?.[1]}>{LEDGER[t.status]?.[0] || t.status}</Tag><span>{money(t.amount)}</span><span className="text-right text-muted">fee {money(t.platformFee)}</span></button>)}
+        {s.ledger.map((t, i) => <button key={i} onClick={() => setOpen({ kind: 'bounty', id: t.bountyId })} className="grid w-full cursor-pointer grid-cols-[minmax(0,1fr)_auto_90px_110px] items-center gap-4 border-t border-ink/10 py-3 text-left tabular-nums first:border-t-0"><span className="truncate">{t.title || s.bounties.find((b) => b.id === t.bountyId)?.title || t.bountyId} <span className="text-muted">· {t.agentName || t.agentId}</span></span><Tag tone={LEDGER[t.status]?.[1]}>{LEDGER[t.status]?.[0] || t.status}</Tag><span>{money(t.amount)}</span><span className="text-right text-muted">fee {money(t.platformFee)}</span></button>)}
       </div>
     </section>
   );
