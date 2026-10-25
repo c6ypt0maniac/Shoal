@@ -45,8 +45,16 @@ export function recoverInterrupted() {
       emit("error", { bountyId: bounty.id, message: `${bounty.title} was interrupted by a restart after its payment step (${bounty.escrow.status}). Check it by hand.` });
       continue;
     }
-    Object.assign(bounty, { status: "open", attempts: [], winner: null });
-    emit("bounty.interrupted", { bountyId: bounty.id, message: `${bounty.title} was interrupted by a server restart. The reward is still held; start the race again.` });
+    // Graded diagnoses survive a restart: go straight back to picking the
+    // model that writes the fix, instead of diagnosing again.
+    const diagnosed = correctFirst({ ...bounty, attempts: [] }).length > 0;
+    Object.assign(bounty, { status: diagnosed ? "awaiting_go_ahead" : "open", attempts: [], winner: null });
+    emit("bounty.interrupted", {
+      bountyId: bounty.id,
+      message: diagnosed
+        ? `${bounty.title} was interrupted by a server restart while the fix was being written. The reward is still held and the diagnoses are kept; run the fix again.`
+        : `${bounty.title} was interrupted by a server restart. The reward is still held; start the race again.`,
+    });
   }
 }
 
@@ -249,6 +257,11 @@ async function compete(bounty, pain) {
 // written until the team says go (buildFix). The reward stays on hold.
 async function diagnosisRace(bounty, pain) {
   const field = bounty.competitors;
+  // Already diagnosed (e.g. reset by an older restart): reuse the grades.
+  if (correctFirst({ ...bounty, attempts: [] }).length) {
+    Object.assign(bounty, { status: "awaiting_go_ahead", attempts: [], winner: null });
+    return bounty;
+  }
   bounty.status = "diagnosing";
   emit("bounty.competing", { bountyId: bounty.id, message: `${field.length} model${field.length > 1 ? "s are" : " is"} diagnosing ${pain.testFile}. No fix is written until you pick the winner.` });
   const prompt = await diagnosisPrompt(pain);
