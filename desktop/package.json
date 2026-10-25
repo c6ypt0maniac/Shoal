@@ -1,0 +1,35 @@
+{
+  "name": "shoal-desktop",
+  "productName": "Shoal",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Shoal as a desktop app: runs the Shoal server locally and opens the platform in its own window",
+  "author": "Darshan Senthil Kumar",
+  "type": "module",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac",
+    "dist:linux": "electron-builder --linux"
+  },
+  "devDependencies": {
+    "electron": "^45.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.shoal.desktop",
+    "productName": "Shoal",
+    "directories": { "output": "release" },
+    "files": ["main.js", "preload.cjs", "splash.html", "package.json"],
+    "extraResources": [
+      { "from": "../server", "to": "server", "filter": ["**/*", "!.env", "!.env.*", "!.data", "!.workspace*", "!.repos"] },
+      { "from": "../web/dist", "to": "web/dist" }
+    ],
+    "win": { "target": ["nsis"] },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true },
+    "mac": { "target": ["dmg"], "category": "public.app-category.developer-tools" },
+    "linux": { "target": ["AppImage", "deb"], "category": "Development" }
+  }
+}

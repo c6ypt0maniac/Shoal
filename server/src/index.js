@@ -43,6 +43,10 @@ const BASE_URL = (
   process.env.SHOAL_PUBLIC_URL ||
   (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : `http://localhost:${PORT}`)
 ).replace(/\/$/, "");
+// Where Stripe sends people back to. With SHOAL_PUBLIC_URL set (the API
+// behind a Vercel rewrite) that's the site they're on; the request's own
+// host would be the API host. Otherwise, the host the request came to.
+const publicBase = (req) => (process.env.SHOAL_PUBLIC_URL ? BASE_URL : `${req.protocol}://${req.get("host")}`);
 // The website, when it's hosted separately (e.g. its own Vercel project):
 // those origins may call the API from the browser, with cookies.
 const WEB_ORIGINS = (process.env.SHOAL_WEB_ORIGINS ?? "").split(",").map((o) => o.trim().replace(/\/$/, "")).filter(Boolean);
@@ -576,7 +580,7 @@ app.post("/api/credits/buy", async (req, res) => {
   // credits. ("Buy" used to add them for free in simulated mode, which is how
   // a balance appeared from nowhere.)
   if (!stripeConfigured()) return res.status(409).json({ error: "Buying credits needs Stripe, which isn't set up on this server" });
-  const base = `${req.protocol}://${req.get("host")}`;
+  const base = publicBase(req);
   const checkoutUrl = await startCreditCheckout(dollars, {
     successUrl: `${base}/api/credits/return?session_id={CHECKOUT_SESSION_ID}`,
     cancelUrl: `${base}${dashboard("credits=cancelled", "billing")}`,
@@ -669,7 +673,7 @@ app.get("/api/billing", async (req, res) => res.json(billingFor((await signedInU
 // billing state at once when payments are simulated.
 app.post("/api/billing/setup", async (req, res) => {
   const user = await signedInUser(req);
-  const base = `${req.protocol}://${req.get("host")}`;
+  const base = publicBase(req);
   // Back to the page they started from (a platform view name).
   const view = /^[a-z]{1,20}$/.test(req.body?.from ?? "") ? req.body.from : "bounties";
   res.json(await startSetup(user.login, {
@@ -698,7 +702,7 @@ app.post("/api/bounties/:id/fund", async (req, res) => {
 });
 
 const checkoutUrls = (req, bounty) => {
-  const base = `${req.protocol}://${req.get("host")}`;
+  const base = publicBase(req);
   return {
     successUrl: `${base}/api/escrow/return?bounty=${bounty.id}&session_id={CHECKOUT_SESSION_ID}`,
     cancelUrl: `${base}${dashboard("funding=cancelled", "bounties")}`,

@@ -11,6 +11,9 @@
     "prestart": "npm run build",
     "start": "npm --prefix server start",
     "dev": "npm --prefix server run dev",
-    "dev:web": "npm --prefix web run dev"
+    "dev:web": "npm --prefix web run dev",
+    "desktop:install": "npm --prefix desktop install",
+    "desktop": "npm run build && npm --prefix desktop start",
+    "desktop:dist": "npm run build && npm --prefix desktop run dist"
   }
 }

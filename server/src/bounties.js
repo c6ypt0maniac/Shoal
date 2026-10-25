@@ -12,6 +12,8 @@
 //
 // Unlocking a sealed trial (unlock) skips the model call: the exact fix that
 // was proven lands, charged once at the price shown (api-trials.js).
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { AGENTS, diagnosisPrompt, practiceOnly, requestDiagnosis, requestModelFix } from "./agents.js";
 import { attemptFix } from "./competitors.js";
 import { checkCompetitors, defaultCompetitors, nameFor } from "./marketplace.js";
@@ -45,8 +47,16 @@ export function recoverInterrupted() {
       emit("error", { bountyId: bounty.id, message: `${bounty.title} was interrupted by a restart after its payment step (${bounty.escrow.status}). Check it by hand.` });
       continue;
     }
-    Object.assign(bounty, { status: "open", attempts: [], winner: null });
-    emit("bounty.interrupted", { bountyId: bounty.id, message: `${bounty.title} was interrupted by a server restart. The reward is still held; start the race again.` });
+    // Graded diagnoses survive a restart: go straight back to picking the
+    // model that writes the fix, instead of diagnosing again.
+    const diagnosed = correctFirst({ ...bounty, attempts: [] }).length > 0;
+    Object.assign(bounty, { status: diagnosed ? "awaiting_go_ahead" : "open", attempts: [], winner: null });
+    emit("bounty.interrupted", {
+      bountyId: bounty.id,
+      message: diagnosed
+        ? `${bounty.title} was interrupted by a server restart while the fix was being written. The reward is still held and the diagnoses are kept; run the fix again.`
+        : `${bounty.title} was interrupted by a server restart. The reward is still held; start the race again.`,
+    });
   }
 }
 
@@ -60,12 +70,13 @@ export function createBounty({ painId, reward, funding = "simulated", apiModel =
   const pain = state.pains.find((p) => p.id === painId);
   if (!pain) throw httpError(404, `Unknown pain ${painId}`);
   if (pain.healthy) throw httpError(400, `${pain.testFile} isn't flaky; nothing to fix`);
-  // A fix lands as a pull request: only on a GitHub repo you can push to
-  // that isn't archived. (The bundled demo repo is for trying Shoal out.)
-  const conn = state.connection;
-  if (conn.type === "github" && (!conn.canWrite || conn.archived)) {
-    throw httpError(403, `Bounties need a repo you can push to: ${conn.fullName} is ${conn.archived ? "archived" : "read-only for you"}`);
+  // The scan must be of the connected repo (a scan from another repo, e.g.
+  // a second server on the same database, names files this one doesn't have).
+  if (!existsSync(path.join(workspaceDir(), pain.testFile))) {
+    throw httpError(409, `${pain.testFile} isn't in ${state.connection.fullName}. Rescan the repo, then post the bounty.`);
   }
+  // Any repo works: on one you can't push to (or archived), the winning fix
+  // comes as a draft PR the team can read and download (surfacePullRequest).
   // Credit runs carry the estimated fix price (can be cents); bounties a reward.
   const practice = practiceOnly(state.connection.type);
   if (practice) throw httpError(409, practice);
@@ -150,7 +161,7 @@ export async function runBounty(bountyId) {
   const practice = practiceOnly(bounty.repo?.type);
   if (practice) throw httpError(409, practice);
   // On the bounty's own repo, whichever one is active now.
-  return inRepo(bounty, () => (bounty.unlock ? runUnlock(bounty, pain) : compete(bounty, pain)));
+  return inRepo(bounty, () => (bounty.unlock ? runUnlock(bounty, pain) : compete(bounty, pain))).catch((err) => crashed(bounty, err));
 }
 
 // Every competitor the team picked attempts the bounty at once, privately.
@@ -253,6 +264,11 @@ async function compete(bounty, pain) {
 // written until the team says go (buildFix). The reward stays on hold.
 async function diagnosisRace(bounty, pain) {
   const field = bounty.competitors;
+  // Already diagnosed (e.g. reset by an older restart): reuse the grades.
+  if (correctFirst({ ...bounty, attempts: [] }).length) {
+    Object.assign(bounty, { status: "awaiting_go_ahead", attempts: [], winner: null });
+    return bounty;
+  }
   bounty.status = "diagnosing";
   emit("bounty.competing", { bountyId: bounty.id, message: `${field.length} model${field.length > 1 ? "s are" : " is"} diagnosing ${pain.testFile}. No fix is written until you pick the winner.` });
   const prompt = await diagnosisPrompt(pain);
@@ -305,40 +321,44 @@ export async function buildFix(bountyId, model = null) {
   bounty.status = "competing";
   return inRepo(bounty, async () => {
     let lastFailure = null;
-    for (const d of [chosen, ...right.filter((x) => x !== chosen)]) {
-      const name = nameFor(d.model);
-      bounty.status = 'competing';
-      emit("bounty.building", { bountyId: bounty.id, agentId: d.model, message: `${name} is writing the fix for ${pain.testFile}` });
-      let fix;
-      try {
-        const out = await requestModelFix(d.model, bounty, pain, { diagnosis: d, lastFailure });
-        fix = out.fix;
-        bounty.apiCost += out.cost;
-      } catch (err) {
-        bounty.apiCost += err.cost ?? 0;
-        bounty.attempts.push({ agentId: d.model, passed: false, reason: `No fix delivered: ${err.message}` });
-        emit("work.error", { bountyId: bounty.id, agentId: d.model, message: `${name} didn't deliver a fix` });
-        continue;
+    try {
+      for (const d of [chosen, ...right.filter((x) => x !== chosen)]) {
+        const name = nameFor(d.model);
+        bounty.status = "competing";
+        emit("bounty.building", { bountyId: bounty.id, agentId: d.model, message: `${name} is writing the fix for ${pain.testFile}` });
+        let fix;
+        try {
+          const out = await requestModelFix(d.model, bounty, pain, { diagnosis: d, lastFailure });
+          fix = out.fix;
+          bounty.apiCost += out.cost;
+        } catch (err) {
+          bounty.apiCost += err.cost ?? 0;
+          bounty.attempts.push({ agentId: d.model, passed: false, reason: `No fix delivered: ${err.message}` });
+          emit("work.error", { bountyId: bounty.id, agentId: d.model, message: `${name} didn't deliver a fix` });
+          continue;
+        }
+        emit("work.submitted", { bountyId: bounty.id, agentId: d.model, files: fix.files.map((f) => f.path), message: `${name} submitted a patch: ${brief(fix.summary)}` });
+        bounty.status = "verifying";
+        const result = await verify({ bountyId: bounty.id, agentId: name, testFile: pain.testFile, files: fix.files, stableTestFiles: bounty.stableTestFiles, flakeRate: pain.flakeRate });
+        const entry = { agentId: d.model, summary: fix.summary, files: fix.files, linesChanged: await linesChanged(fix.files), passed: result.passed, reason: result.reason ?? null, failureLog: result.failureLog ?? null, runs: result.runs.map((r) => r.passed) };
+        bounty.attempts.push(entry);
+        if (!result.passed) { lastFailure = [result.reason, result.failureLog].filter(Boolean).join('\n'); continue; }
+        cardFor(d.model).verified += 1;
+        bounty.status = "judging";
+        const review = await judgeAttempt({ pain, files: fix.files, author: d.model });
+        entry.judges = review.judges;
+        bounty.apiCost += review.cost;
+        if (review.ok) {
+          emit("bounty.winner", { bountyId: bounty.id, agentId: d.model, message: `${name}'s fix verified and both judges passed it` });
+          return win(bounty, pain, { id: d.model, name, builder: providerOf(d.model) }, entry);
+        }
+        entry.passed = false;
+        entry.reason = `Verified, but the judges failed it: ${review.judges.filter((j) => !j.ok).map((j) => j.name).join(", ")}`;
       }
-      emit("work.submitted", { bountyId: bounty.id, agentId: d.model, files: fix.files.map((f) => f.path), message: `${name} submitted a patch: ${brief(fix.summary)}` });
-      bounty.status = "verifying";
-      const result = await verify({ bountyId: bounty.id, agentId: name, testFile: pain.testFile, files: fix.files, stableTestFiles: bounty.stableTestFiles, flakeRate: pain.flakeRate });
-      const entry = { agentId: d.model, summary: fix.summary, files: fix.files, linesChanged: await linesChanged(fix.files), passed: result.passed, reason: result.reason ?? null, failureLog: result.failureLog ?? null, runs: result.runs.map((r) => r.passed) };
-      bounty.attempts.push(entry);
-      if (!result.passed) { lastFailure = `${result.reason}\n${result.failureLog || ''}`; continue; }
-      cardFor(d.model).verified += 1;
-      bounty.status = "judging";
-      const review = await judgeAttempt({ pain, files: fix.files, author: d.model });
-      entry.judges = review.judges;
-      bounty.apiCost += review.cost;
-      if (review.ok) {
-        emit("bounty.winner", { bountyId: bounty.id, agentId: d.model, message: `${name}'s fix verified and both judges passed it` });
-        return win(bounty, pain, { id: d.model, name, builder: providerOf(d.model) }, entry);
-      }
-      entry.passed = false;
-      entry.reason = `Verified, but the judges failed it: ${review.judges.filter((j) => !j.ok).map((j) => j.name).join(", ")}`;
+      return fail(bounty, `No model's fix for ${pain.testFile} passed verification and both judges. Hold released, $0 charged.`);
+    } catch (err) {
+      return crashed(bounty, err);
     }
-    return fail(bounty, `No model's fix for ${pain.testFile} passed verification and both judges. Hold released, $0 charged.`);
   });
 }
 
@@ -351,7 +371,7 @@ async function runUnlock(bounty, pain) {
   const name = MODELS[bounty.apiModel].name;
   bounty.status = "verifying";
   const result = await verify({ bountyId: bounty.id, agentId: name, testFile: pain.testFile, files: trial.files, stableTestFiles: bounty.stableTestFiles, flakeRate: pain.flakeRate });
-  const entry = { agentId: bounty.apiModel, summary: trial.summary, files: trial.files, linesChanged: trial.linesChanged, passed: result.passed, reason: result.reason ?? null, runs: result.runs.map((r) => r.passed) };
+  const entry = { agentId: bounty.apiModel, summary: trial.summary, files: trial.files, linesChanged: trial.linesChanged, passed: result.passed, reason: result.reason ?? null, failureLog: result.failureLog ?? null, runs: result.runs.map((r) => r.passed) };
   bounty.attempts.push(entry);
   if (!result.passed) return fail(bounty, `${name}'s fix no longer passes on the current code (${result.reason}). Nothing charged.`);
   const won = await win(bounty, pain, { id: bounty.apiModel, name, builder: providerLabel(bounty.apiModel) }, entry);
@@ -466,6 +486,12 @@ export async function clawBack(bounty, reason) {
     message: `CLAWED BACK: ${entry?.agentName ?? bounty.winner}'s fix for ${bounty.testFile} regressed (${reason}). $${entry?.amount ?? 0} refunded to the team; the agent is paid $0.`,
   });
   return bounty;
+}
+
+// Something broke mid-race (a missing file, a tool error): the bounty fails
+// with the reason and the hold is released, instead of hanging forever.
+function crashed(bounty, err) {
+  return fail(bounty, `The race stopped: ${err.message}. Hold released, $0 charged.`);
 }
 
 async function fail(bounty, message) {

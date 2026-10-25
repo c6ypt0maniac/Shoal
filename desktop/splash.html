@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'" />
+  <title>Shoal</title>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: #d9e3dc; color: #334155; font: 15px system-ui, sans-serif; }
+    h1 { margin: 0; font-weight: 600; font-size: 28px; color: #0f172a; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #3f7a72; display: inline-block; margin-right: 8px; animation: pulse 1.2s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity: 0.3; } }
+  </style>
+</head>
+<body>
+  <h1>Shoal</h1>
+  <div><span class="dot"></span>Starting the local server…</div>
+</body>
+</html>
