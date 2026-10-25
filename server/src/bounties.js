@@ -27,6 +27,7 @@ import { openPullRequest } from "./github.js";
 import { chargeEscrow, newEscrow, refundEscrow, releaseEscrow } from "./escrow.js";
 import { cleanSurvivalDays, startSurvival } from "./survival.js";
 import { judgeAttempt } from "./proof.js";
+import { envLimit, mapLimit } from "./limit.js";
 
 const TAKE_RATE = 0.15;
 // Statuses where the bounty is finished, one way or another.
@@ -160,17 +161,19 @@ async function compete(bounty, pain) {
     }),
   );
 
-  // One at a time: verification runs the tests many times.
+  // A few at a time (each in its own sandbox): verification runs the tests
+  // many times, so too many at once would overload the machine and make
+  // timing-sensitive tests flakier. SHOAL_VERIFY_CONCURRENCY sets the limit.
   bounty.status = "verifying";
   const stableTestFiles = state.pains.filter((p) => p.healthy).map((p) => p.testFile);
-  for (const { id, fix, started } of fixes.filter(Boolean)) {
+  const attempts = await mapLimit(fixes.filter(Boolean), envLimit("SHOAL_VERIFY_CONCURRENCY", 2), async ({ id, fix, started }) => {
     const result = await verify({ bountyId: bounty.id, agentId: nameFor(id), testFile: pain.testFile, files: fix.files, stableTestFiles });
     const durationMs = Date.now() - started;
     if (result.passed) {
       cardFor(id).verified += 1;
       cardFor(id).verifiedMs += durationMs;
     }
-    bounty.attempts.push({
+    return {
       agentId: id,
       summary: fix.summary,
       files: fix.files,
@@ -179,8 +182,9 @@ async function compete(bounty, pain) {
       reason: result.reason ?? null,
       runs: result.runs.map((r) => r.passed),
       durationMs,
-    });
-  }
+    };
+  });
+  bounty.attempts.push(...attempts);
 
   const verified = bounty.attempts.filter((a) => a.passed);
   if (!verified.length) return fail(bounty, `No agent's fix for ${pain.testFile} passed verification. Hold released, $0 charged.`);

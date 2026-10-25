@@ -94,6 +94,24 @@ export async function canAccessRepo(fullName, userToken) {
   return ok;
 }
 
+// Deleting a Shoal account: take back the access the person granted on
+// GitHub, so Shoal no longer appears under their authorized apps and the
+// token stops working. Only the OAuth sign-in can be revoked this way.
+// Resolves with whether GitHub confirmed it.
+export async function revokeGrant() {
+  if (!oauthToken || !oauthConfigured()) return false;
+  const basic = Buffer.from(`${process.env.GITHUB_CLIENT_ID}:${process.env.GITHUB_CLIENT_SECRET}`).toString("base64");
+  const res = await fetch(`${API}/applications/${process.env.GITHUB_CLIENT_ID}/grant`, {
+    signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
+    method: "DELETE",
+    headers: { Accept: "application/vnd.github+json", Authorization: `Basic ${basic}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ access_token: oauthToken }),
+  }).catch(() => null);
+  return res?.status === 204;
+}
+
+export const signedInWithEnvToken = () => !oauthToken && Boolean(process.env.GITHUB_TOKEN);
+
 export function signOut() {
   oauthToken = null;
   cache.clear();
