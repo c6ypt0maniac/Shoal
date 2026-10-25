@@ -14,6 +14,7 @@
     "check:mcp": "node scripts/mcp-oauth-check.js && node scripts/judges-check.js && node scripts/proof-check.js && node scripts/api-trials-check.js",
     "check:survival": "node scripts/survival-check.js",
     "check:marketplace": "node scripts/marketplace-check.js",
+    "check:fix-review": "node --test scripts/fix-review-check.js",
     "check:supabase": "node --env-file=.env scripts/supabase-check.js"
   },
   "dependencies": {

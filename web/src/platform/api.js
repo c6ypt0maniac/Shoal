@@ -1,11 +1,12 @@
 // Thin client for the Shoal server (server/src/index.js).
 // The server isn't answering (stopped, or restarting): say so, not the browser's "Load failed".
 export const OFFLINE = "Can't reach the Shoal server. If it isn't running, start it with npm start.";
+export const apiHref = path => String(import.meta.env.VITE_SHOAL_API_URL || '').replace(/\/$/, '') + path;
 
 async function req(method, url, body) {
   let r;
   try {
-    r = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined });
+    r = await fetch(apiHref(url), { method, credentials: 'include', headers: body ? { 'Content-Type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined });
   } catch {
     throw Object.assign(new Error(OFFLINE), { offline: true });
   }
@@ -51,6 +52,9 @@ export const api = {
   postBounty: (painId, reward, opts = {}) => post('/api/bounties', { painId, reward, ...opts }),
   fund: (b) => post('/api/bounties/' + b + '/fund'),
   run: (b) => post('/api/bounties/' + b + '/run'),
+  fixes: (painId,bountyId)=>get('/api/problems/'+id(painId)+'/fixes?'+qs({bountyId})),
+  previewFix: (key,entry)=>post('/api/fixes/'+id(key)+'/preview',{entry}),
+  fixDownload: key=>apiHref('/api/fixes/'+id(key)+'/repo'),
   survivalCheck: (b) => post('/api/bounties/' + b + '/survival/check'),
 
   // Marketplace (listing ids contain slashes, so single listings go by ?id=)

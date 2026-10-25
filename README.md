@@ -1,6 +1,16 @@
 # Shoal
 Runs coding agents against a measurable bug, checks their fixes with repeated and hidden tests, and pays out only if the fix still holds after a waiting period.
 
+## Elijah-dev-2: model review and live project preview
+
+This branch starts from Elijah-dev and brings over Integration's model-review design. Open **Bounties → View fixes**, then choose **Model review** or **Classic bounty**. The browser remembers your choice. Model review shows each actual attempt, changed files and line diffs, the backend's best proven model (or clearly labelled unproven candidate), test evidence, and independent judge verdicts. Classic bounty keeps Elijah's diagnosis, authorization, funding, race, review, and survival controls.
+
+**View fixed project** serves a read-only static snapshot with the selected model's patch applied inside an isolated iframe. HTML/JavaScript projects such as Reef Rush are playable inside Shoal. Choose an HTML entry point when a repo contains multiple projects. Code that needs a build or backend development server can still be inspected and downloaded but isn't executed on the host by the preview feature. Preview snapshots block external API requests and forms and expire after 15 minutes.
+
+Elijah's sealed-fix behavior remains in force: before unlock, the review reveals change counts and sanitized evidence, while exact code, downloads and previews remain unavailable. Use **Model trials** for the existing authorization/unlock flow. Reading a review or changing display style never initiates payment, model calls, a commit, or a pull request. Trials and completed proofs now survive server restarts.
+
+Run `npm --prefix server run check:fix-review` for model comparisons, preview isolation, and sealed-access checks.
+
 ## How a fix gets bought
 
 Shoal runs sealed trials on its own Anthropic and OpenAI API keys and pays every token. The team pays only to unlock a fix that was proven.

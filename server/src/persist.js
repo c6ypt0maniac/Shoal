@@ -80,6 +80,8 @@ const VALUES = {
   source: { get: () => ({ dir: getSource().dir, testCommand: getSource().testCommand }), set: () => {} },
   sync: { get: () => ({ auto: state.sync?.auto ?? true }), set: (v) => (state.sync = { ...state.sync, auto: v.auto }) },
   modelCost: { get: () => state.modelCost, set: (v) => (state.modelCost = v ?? {}) },
+  trials: { get: () => state.trials, set: (v) => (state.trials = (v ?? []).map(t => t.status === 'verifying' ? { ...t, status: 'failed', reason: 'Verification was interrupted by a server restart. Run this model again.' } : t)) },
+  proofs: { get: () => Object.fromEntries(Object.entries(state.proofs).filter(([,p]) => p.status === 'done')), set: (v) => (state.proofs = v ?? {}) },
   credits: { get: () => state.credits, set: (v) => (state.credits = v) },
   billing: { get: () => state.billing, set: (v) => (state.billing = v ?? {}) },
   recentRepos: { get: () => state.recentRepos, set: (v) => (state.recentRepos = v ?? []) },
@@ -246,6 +248,8 @@ export async function loadState() {
     if (saved.connection) VALUES.connection.set(saved.connection);
     if (saved.pains) VALUES.pains.set(saved.pains);
     if (saved.sync) VALUES.sync.set(saved.sync);
+    if (saved.trials) VALUES.trials.set(saved.trials);
+    if (saved.proofs) VALUES.proofs.set(saved.proofs);
   }
   VALUES.modelCost.set(saved.modelCost);
   if (saved.credits) VALUES.credits.set(saved.credits);

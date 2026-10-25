@@ -8,6 +8,7 @@ import ShoreCard from './ShoreCard.jsx';
 import { Agents, CompetitorPicker, ListingDetail, PublishAgent, nameOf } from './Market.jsx';
 import { Repo, Setup } from './Repo.jsx';
 import Trials from './Trials.jsx';
+import FixReview from './FixReview.jsx';
 import { overlay, Browse, Empty, Group, Icon, ItemCard, Label, LIVE, Modal, STATUS, Tag, btn, card, field, ghost, money, primary, signInHref, tone } from './ui.jsx';
 
 // Messages for ?funding= / ?credits= when Stripe Checkout sends the team back.
@@ -247,7 +248,7 @@ function Bounties({ s, act, setOpen, setup, go, postBounty }) {
       meta={<div className="flex gap-1">{Array.from({ length: p.runs }, (_, i) => <span key={i} className={'h-2 flex-1 rounded-full ' + (i < p.failures ? 'bg-bad/75' : 'bg-accent/45')} />)}</div>}
       tags={<><Tag>{money(b ? b.reward : p.suggestedReward)} {b ? 'reward' : 'suggested'}</Tag><Tag>{p.hoursPerWeek} h/week lost</Tag>{b && <Tag>{b.competitors.length} competing</Tag>}</>}
       footL={b ? footer(b) : 'Not posted'}
-      footR={<button className={b ? ghost : primary} onClick={(e) => { e.stopPropagation(); b ? setOpen({ kind: 'bounty', id: b.id }) : postBounty(p.id); }}>{b ? (LIVE.includes(b.status) ? 'Watch race' : 'View') : 'Post bounty'}</button>} />
+      footR={<button className={b ? ghost : primary} onClick={(e) => { e.stopPropagation(); setOpen(b ? { kind: 'bounty', id: b.id } : { kind: 'pain', id: p.id }); }}>{b ? (LIVE.includes(b.status) ? 'Watch race' : 'View fixes') : 'View problem & fixes'}</button>} />
   );
   return (
     <Browse q={q} setQ={setQ} placeholder="Search test files" onRefresh={act(api.scan)} chips={chips} chip={chip} setChip={setChip}>
@@ -272,6 +273,8 @@ const ESCROW = { awaiting_funding: 'Waiting for funding', held: 'Held in escrow,
 
 // One open thing in a modal: a marketplace listing, a posted bounty, or a flaky test not posted yet.
 function Listing({ s, act, open, setOpen, postBounty }) {
+  const [reviewMode,setReviewMode]=useState(()=>{try{return localStorage.getItem('shoal.bounty-view')==='classic'?'classic':'review';}catch{return 'review';}});
+  const chooseView=value=>{setReviewMode(value);try{localStorage.setItem('shoal.bounty-view',value);}catch{}};
   const close = () => setOpen(null);
   if (open.kind === 'listing') return <Modal onClose={close}><ListingDetail s={s} act={act} id={open.id} onClose={close} /></Modal>;
   const b = open.kind === 'bounty' ? s.bounties.find((x) => x.id === open.id) : null;
@@ -281,6 +284,13 @@ function Listing({ s, act, open, setOpen, postBounty }) {
   const w = b?.winningAttempt, sv = b?.survival;
   return (
     <Modal onClose={close} wide>
+      <div className="flex flex-wrap gap-2 border-b border-ink/10 px-6 py-5 pr-16" role="group" aria-label="Bounty display style">
+        <button className={reviewMode==='review'?primary:ghost} aria-pressed={reviewMode==='review'} onClick={()=>chooseView('review')}>Model review</button>
+        <button className={reviewMode==='classic'?primary:ghost} aria-pressed={reviewMode==='classic'} onClick={()=>chooseView('classic')}>Classic bounty</button>
+      </div>
+      {reviewMode==='review'&&<FixReview key={b?.id||p.id} painId={b?.painId||p.id} bountyId={b?.id} events={s.events} onTrials={()=>{close();location.hash='trials';}}/>}
+      <details key={reviewMode} open={reviewMode==='classic'} className="border-t border-ink/15">
+      <summary className={'cursor-pointer px-8 py-5 text-[17px] font-medium '+(reviewMode==='classic'?'hidden':'')}>{b?'Bounty details, funding & race':'Problem details & post a bounty'}</summary>
       <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
         <div className="flex min-h-[340px] flex-col justify-center gap-4 bg-gradient-to-b from-white/60 to-accent/20 p-6">
           {b ? <><div className="text-sm font-medium text-muted">{LIVE.includes(b.status) ? 'Live race' : 'Race'}</div><Race bounty={b} events={s.events} names={name} /></> : <div className="flex flex-col items-center gap-4"><div className="flex w-[80%] gap-1">{Array.from({ length: p.runs }, (_, i) => <span key={i} className={'h-8 flex-1 rounded-md ' + (i < p.failures ? 'bg-bad/80' : 'bg-accent/45')} />)}</div><span className="text-sm text-muted">{p.failures} of {p.runs} scan runs failed</span></div>}
@@ -338,6 +348,7 @@ function Listing({ s, act, open, setOpen, postBounty }) {
           {b && <p className="m-0 text-sm text-muted">{ESCROW[b.escrow?.status] || b.escrow?.status}{b.escrow?.mode === 'stripe' ? ' · Stripe' + (b.escrow.live ? '' : ' test mode') : b.escrow?.mode === 'credits' ? ' · from credits' : ' · simulated'}.{['held', 'awaiting_funding'].includes(b.escrow?.status) ? ' No surviving fix, $0 charged.' : b.escrow?.status === 'charged' && b.status === 'surviving' ? ' Refunded if the fix regresses in its survival window.' : ''}</p>}
         </div>
       </div>
+      </details>
     </Modal>
   );
 }
