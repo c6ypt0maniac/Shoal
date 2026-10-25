@@ -1,7 +1,7 @@
 // Marketplace agents. Each one is a persona prompt on top of a model: Claude
 // (SHOAL_MODEL) when ANTHROPIC_API_KEY is set, otherwise OpenAI
-// (SHOAL_OPENAI_MODEL). The builder sets the strategy and pricing rules once,
-// then the agent bids and writes fixes on its own. Without an API key, canned
+// (SHOAL_OPENAI_MODEL). The builder sets the strategy once, then the agent
+// attempts bounties on its own. Agents never bid on price (see bounties.js). Without an API key, canned
 // responses from mock.js are used so the demo still runs end to end.
 //
 // Paid runs go through Shoal's own keys: ANTHROPIC_API_KEY for Claude models,
@@ -12,7 +12,7 @@ import OpenAI from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
 import { readRepoFile } from "./repo.js";
-import { mockBid, mockFix } from "./mock.js";
+import { mockFix } from "./mock.js";
 import { inScope } from "./scope.js";
 import { MODELS, costPerFix, tokenCost } from "./trials.js";
 
@@ -39,7 +39,6 @@ export const AGENTS = [
     name: "FlakeHunter",
     builder: "@retry-bros",
     tagline: "Cheapest green build in town",
-    pricing: "Bid low ($60-$130). Volume over quality.",
     strategy:
       "Get the failing test to go green as cheaply as possible. Your usual moves are adding retries, longer sleeps, or loosening assertions in the test file itself. You rarely touch application code.",
   },
@@ -48,7 +47,6 @@ export const AGENTS = [
     name: "RootCause",
     builder: "@aggie-devtools",
     tagline: "Fixes the bug, not the symptom",
-    pricing: "Bid $220-$380 depending on difficulty. Never undercut yourself.",
     strategy:
       "Find the real root cause of the flakiness in the application source and fix it properly. Never modify test files: the tests are the spec.",
   },
@@ -57,7 +55,6 @@ export const AGENTS = [
     name: "Speedy",
     builder: "@ship-it-sam",
     tagline: "Done before your coffee",
-    pricing: "Bid mid-range ($110-$200).",
     strategy:
       "Ship the quickest plausible patch. You go for the simplest change that looks like it should help, without deep investigation.",
   },
@@ -65,14 +62,7 @@ export const AGENTS = [
 
 export const getAgent = (id) => AGENTS.find((a) => a.id === id);
 
-const BidSchema = z.object({
-  bid: z.boolean(),
-  price: z.number(),
-  confidence: z.number(),
-  plan: z.string(),
-});
-
-const FixSchema = z.object({
+export const FixSchema = z.object({
   summary: z.string(),
   files: z.array(z.object({ path: z.string(), content: z.string() })),
 });
@@ -81,16 +71,19 @@ function systemPrompt(agent) {
   return [
     `You are ${agent.name}, an autonomous agent on Shoal, a marketplace where AI agents compete for bounties to fix engineering pain.`,
     `Your strategy: ${agent.strategy}`,
-    `Your pricing rules: ${agent.pricing}`,
-    "Stay in character: your bids and patches should reflect your strategy.",
+    "Stay in character: your patches should reflect your strategy.",
   ].join("\n");
 }
 
-// Only files the team shared are ever sent to an agent.
-async function repoContext(pain) {
+// Only files the team shared are ever sent to an agent: the failing test
+// and the code it imports.
+export async function contextFiles(pain) {
   const paths = [pain.testFile, ...pain.sourceFiles].filter(inScope);
-  const files = await Promise.all(paths.map(async (p) => `--- ${p} ---\n${await readRepoFile(p)}`));
-  return files.join("\n\n");
+  return Promise.all(paths.map(async (p) => ({ path: p, content: await readRepoFile(p) })));
+}
+
+async function repoContext(pain) {
+  return (await contextFiles(pain)).map((f) => `--- ${f.path} ---\n${f.content}`).join("\n\n");
 }
 
 async function ask(agent, prompt, schema, effort) {
@@ -124,41 +117,15 @@ async function askOpenAI(agent, prompt, schema, effort) {
   return response.output_parsed;
 }
 
-export async function requestBid(agent, bounty, pain) {
-  if (MOCK) return mockBid(agent, pain);
-  const prompt = [
-    `New bounty: "${bounty.title}". Maximum reward: $${bounty.reward}.`,
-    `Observed: ${pain.failures}/${pain.runs} runs of ${pain.testFile} failed. Estimated cost: ${pain.hoursPerWeek} dev-hours/week.`,
-    "You get paid only if your fix makes the test pass 10 runs in a row and the rest of the suite still passes.",
-    pain.sampleFailure ? `Sample failure output:\n${pain.sampleFailure}` : "",
-    `Repository files:\n${await repoContext(pain)}`,
-    `Decide whether to bid. price must be at most ${bounty.reward}. confidence is 0 to 1. plan is one or two sentences describing your fix.`,
-  ].join("\n\n");
-  return ask(agent, prompt, BidSchema, "low");
-}
-
 // Server-side refusal fallbacks ("default" routing); Haiku has none.
 const FALLBACK_MODELS = new Set(["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"]);
 
 // The paid run: the model the team approved after the trials, called through
 // the API with Shoal in control. Returns the fix and what the call cost.
 // In mock mode the winning trial patch stands in for the model's answer.
-export async function requestModelFix(model, bounty, pain, { trial, lastFailure }) {
-  if (MOCK) {
-    await new Promise((r) => setTimeout(r, 1500));
-    // Stand in with the model's expected cost so credit charges look real.
-    return { fix: { summary: trial.summary, files: trial.files }, cost: costPerFix(model) };
-  }
-  const prompt = [
-    `Fix the flaky test ${pain.testFile}: it failed ${pain.failures}/${pain.runs} runs.`,
-    pain.sampleFailure ? `Sample failure output:\n${pain.sampleFailure}` : "",
-    trial ? `In a trial run you proposed this fix, which passed verification: ${trial.summary}` : "",
-    lastFailure ? `Your previous attempt was rejected:\n${lastFailure}` : "",
-    `Repository files:\n${await repoContext(pain)}`,
-    "Fix the real cause in application code. Test files, test folders, CI config and package manifests are protected; patches that touch them are rejected.",
-    "It's accepted only if the test passes 10 runs in a row and every previously stable test still passes.",
-    "Return the complete new contents of every file you change (paths relative to the repo root). Only include files you actually change.",
-  ].join("\n\n");
+export async function requestModelFix(model, bounty, pain, { trial, lastFailure } = {}) {
+  if (MOCK) return mockModelFix(model, pain, trial);
+  const prompt = await fixPrompt(pain, { trial, lastFailure });
   const unavailable = modelUnavailable(model);
   if (unavailable) throw new Error(unavailable);
   if (MODELS[model].provider === "openai") return openaiFix(model, prompt);
@@ -177,7 +144,30 @@ export async function requestModelFix(model, bounty, pain, { trial, lastFailure 
   return { fix: response.parsed_output, cost };
 }
 
-const FIX_SYSTEM = "You are a senior engineer fixing a flaky test. Your patch is verified automatically before anyone pays for it.";
+// In mock mode a model stands in with its trial's patch, or (competing on a
+// bounty, with no trial) the demo repo's correct fix; with the model's
+// expected cost, so credit charges look real.
+async function mockModelFix(model, pain, trial) {
+  await new Promise((r) => setTimeout(r, 1500));
+  const fix = trial ? { summary: trial.summary, files: trial.files } : await mockFix(getAgent("rootcause"), pain);
+  return { fix, cost: MODELS[model] ? costPerFix(model) : 0.01 };
+}
+
+// The task every model gets, whoever runs it (Claude, OpenAI, OpenRouter).
+export async function fixPrompt(pain, { trial, lastFailure } = {}) {
+  return [
+    `Fix the flaky test ${pain.testFile}: it failed ${pain.failures}/${pain.runs} runs.`,
+    pain.sampleFailure ? `Sample failure output:\n${pain.sampleFailure}` : "",
+    trial ? `In a trial run you proposed this fix, which passed verification: ${trial.summary}` : "",
+    lastFailure ? `Your previous attempt was rejected:\n${lastFailure}` : "",
+    `Repository files:\n${await repoContext(pain)}`,
+    "Fix the real cause in application code. Test files, test folders, CI config and package manifests are protected; patches that touch them are rejected.",
+    "It's accepted only if the test passes 10 runs in a row and every previously stable test still passes.",
+    "Return the complete new contents of every file you change (paths relative to the repo root). Only include files you actually change.",
+  ].join("\n\n");
+}
+
+export const FIX_SYSTEM = "You are a senior engineer fixing a flaky test. Your patch is verified automatically before anyone pays for it.";
 
 // OpenAI's Responses API with structured output in the same FixSchema.
 // Exported for scripts/openai-smoke.js.
@@ -201,16 +191,34 @@ export async function openaiFix(model, prompt, { effort = "high" } = {}) {
   return { fix: response.output_parsed, cost };
 }
 
+// A proof judge through Shoal's API key: one question, a text answer (the
+// verdict JSON is parsed by proof.js). -> { text, cost }
+export async function judgeViaApi(model, prompt) {
+  const unavailable = modelUnavailable(model);
+  if (unavailable || MOCK) throw new Error(unavailable ?? "mock mode has no API judges");
+  if (MODELS[model].provider === "openai") {
+    const r = await openai.responses.create({ model, input: prompt, max_output_tokens: 16_000, ...(MODELS[model].reasoning ? { reasoning: { effort: "high" } } : {}), store: false });
+    return { text: r.output_text ?? "", cost: tokenCost(model, openaiUsage(r.usage)) };
+  }
+  const r = await client.messages.create({ model, max_tokens: 16_000, messages: [{ role: "user", content: prompt }] });
+  return { text: r.content.filter((b) => b.type === "text").map((b) => b.text).join(""), cost: tokenCost(model, r.usage) };
+}
+
 // OpenAI counts cached tokens inside input_tokens; tokenCost wants them apart.
 function openaiUsage(usage = {}) {
   const cached = usage.input_tokens_details?.cached_tokens ?? 0;
   return { input_tokens: (usage.input_tokens ?? 0) - cached, cache_read_input_tokens: cached, output_tokens: usage.output_tokens ?? 0 };
 }
 
-export async function requestFix(agent, bounty, pain, bid) {
+// One private attempt at a bounty. Other agents attempt it too, but nobody
+// sees anyone else's work; the winner is picked on verified track record.
+export async function requestFix(agent, bounty, pain) {
   if (MOCK) return mockFix(agent, pain);
   const prompt = [
-    `You won the bounty "${bounty.title}" at $${bid.price}. Your plan was: ${bid.plan}`,
+    `Bounty: "${bounty.title}". Reward: $${bounty.reward}.`,
+    `Observed: ${pain.failures}/${pain.runs} runs of ${pain.testFile} failed. Estimated cost: ${pain.hoursPerWeek} dev-hours/week.`,
+    `You're paid only if your fix makes the test pass 10 runs in a row with the rest of the suite still passing, AND it keeps passing for ${bounty.survivalDays} days on the team's new commits. A fix that regresses is clawed back and counts against your public scorecard.`,
+    "Other agents attempt this bounty privately too. Among verified fixes the winner is the agent with the best track record, never the cheapest.",
     pain.sampleFailure ? `Sample failure output:\n${pain.sampleFailure}` : "",
     `Repository files:\n${await repoContext(pain)}`,
     "Return the complete new contents of every file you change (paths relative to the repo root, e.g. src/cart.js). Only include files you actually change.",

@@ -191,7 +191,7 @@
     <section>
       <h2>Agent leaderboard</h2>
       <table>
-        <thead><tr><th>Agent</th><th>Wins/jobs</th><th>Rollbacks</th><th>Earned</th></tr></thead>
+        <thead><tr><th>Agent</th><th>Verified / attempts</th><th>Survived / wins</th><th>Clawbacks</th><th>Earned</th></tr></thead>
         <tbody id="agents"></tbody>
       </table>
     </section>
@@ -257,14 +257,16 @@ async function refresh() {
 
   $("agents").innerHTML = agents.map((a) => `<tr>
       <td><b>${esc(a.name)}</b><br><small>${esc(a.builder)}: ${esc(a.tagline)}</small></td>
-      <td>${a.wins}/${a.jobs}</td>
-      <td>${a.rollbacks} (${Math.round(a.rollbackRate * 100)}%)</td>
-      <td>$${a.earnings}</td>
+      <td>${a.verified}/${a.attempts}</td>
+      <td>${a.survived}/${a.wins}${a.pending ? ` <small>(${a.pending} in window)</small>` : ""}</td>
+      <td>${a.clawbacks}${a.clawbackRate != null ? ` (${Math.round(a.clawbackRate * 100)}%)` : ""}</td>
+      <td>$${a.earned}</td>
     </tr>`).join("");
 
   const s = settlement;
   $("settlement").innerHTML = [
-    ["Bounties settled", s.bountiesSettled], ["Bounties failed", s.bountiesFailed],
+    ["Cleared today", s.clearedToday.length], ["Clawed back today", s.clawedBackToday.length],
+    ["In survival window", `${s.inSurvival.length} ($${s.pendingPayouts})`], ["Bounties settled", s.bountiesSettled],
     ["In escrow now", "$" + s.heldInEscrow], ["Paid to agents", "$" + s.totalPaid],
     ["Platform revenue", "$" + s.platformRevenue],
     ["Dev-hours/week returned", s.hoursReturnedPerWeek], ["Top earner", s.topEarner ?? "-"],
@@ -660,11 +662,14 @@ get("/api/mcp").then((mcp) => {
 }).catch(() => {});
 
 function renderBounty(b) {
-  const bids = b.bids.map((bid) => `<li>${esc(agentNames[bid.agentId] ?? bid.agentId)}: <b>$${bid.price}</b>
-      (${Math.round(bid.confidence * 100)}% confident): ${esc(bid.plan)}</li>`).join("");
-  const attempts = b.attempts.map((a) => `<li>${a.passed ? "✅" : "❌"} ${esc(agentNames[a.agentId] ?? a.agentId)}:
-      ${esc(a.passed ? a.summary : a.reason)} ${a.runs?.length ? a.runs.map((ok) => (ok ? "🟢" : "🔴")).join("") : ""}</li>`).join("");
-  const canRun = b.status === "open" || b.status === "awarding";
+  // Only the winner's fix is shown; other attempts stay private.
+  const w = b.winningAttempt;
+  const won = w ? `<div>🏆 ${esc(agentNames[w.agentId] ?? w.agentId)}: ${esc(w.summary)} ${w.runs.map((ok) => (ok ? "🟢" : "🔴")).join("")}</div>` : "";
+  const field = b.competition?.attempts ? `<div class="hint">${b.competition.attempts} private attempt${b.competition.attempts > 1 ? "s" : ""} · ${b.competition.verified} verified</div>` : "";
+  const sv = b.survival;
+  const survival = sv ? `<div class="hint">Survival window: ${esc(sv.status)} · ${sv.checks.length} check${sv.checks.length === 1 ? "" : "s"}${sv.checks.length ? ` (last: ${sv.checks.at(-1).ok ? "still fixed" : "regressed"})` : ""} · ends ${esc(sv.endsAt.slice(0, 16).replace("T", " "))}${sv.reason ? ` · ${esc(sv.reason)}` : ""}
+      ${b.status === "surviving" ? `<button onclick="post('/api/bounties/${b.id}/survival/check')">Check now</button>` : ""}</div>` : "";
+  const canRun = b.status === "open";
   return `<div class="bounty">
       <span class="status ${b.status}">${b.status.replace("_", " ")}</span> <b>${esc(b.title)}</b>${b.escrow?.mode === "credits" ? "" : `: reward up to $${b.reward}`}
       ${b.apiModel ? `<span class="hint">· approved ${esc(agentNames[b.apiModel] ?? b.apiModel)} via ${b.apiModel.startsWith("claude-") ? "Claude" : "OpenAI"} API · API cost $${b.apiCost.toFixed(4)}</span>` : ""}
@@ -672,8 +677,8 @@ function renderBounty(b) {
       ${b.status === "awaiting_funding" ? `<button class="fund" onclick="fundBounty('${b.id}')">💳 Fund with Stripe</button>` : ""}
       ${escrowLine(b.escrow)}
       ${b.pullRequest ? `<a href="${esc(b.pullRequest.url)}" target="_blank">→ PR #${b.pullRequest.number}</a>` : ""}
-      ${bids ? `<div>Bids:<ul>${bids}</ul></div>` : ""}
-      ${attempts ? `<div>Attempts:<ul>${attempts}</ul></div>` : ""}
+      ${field}${won}${survival}
+      ${b.failures?.length ? `<div class="hint">Failed tries: ${b.failures.map(esc).join("; ")}</div>` : ""}
     </div>`;
 }
 
@@ -683,7 +688,8 @@ function escrowLine(e) {
   if (e.mode === "credits") {
     const text = {
       held: `🔒 About ${money(e.amount)} from credits, only if the fix is verified`,
-      charged: `💸 ${money(e.charged)} taken from credits`,
+      charged: `💸 ${money(e.charged)} taken from credits, refunded if the fix regresses`,
+      refunded: `↩️ ${money(e.refunded)} refunded to credits: the fix didn't survive`,
       released: `↩️ No verified fix: nothing taken from credits`,
       charge_failed: `⚠️ Fix verified but the credit charge failed`,
     }[e.status] ?? e.status;
@@ -692,7 +698,8 @@ function escrowLine(e) {
   const text = {
     awaiting_funding: `💳 Waiting for the team to fund $${e.amount}`,
     held: `🔒 $${e.amount} held in escrow, not charged yet`,
-    charged: `💸 Charged $${e.charged}${e.released ? `, $${e.released} released back` : ""}`,
+    charged: `💸 Charged $${e.charged}${e.released ? `, $${e.released} released back` : ""}, refunded if the fix regresses`,
+    refunded: `↩️ $${e.refunded} refunded: the fix didn't survive`,
     released: `↩️ Hold released: $0 charged`,
     charge_failed: `⚠️ Fix verified but the charge failed`,
   }[e.status] ?? e.status;
@@ -751,7 +758,7 @@ window.openBountyDialog = async (painId) => {
       <label for="bountyReward">Reward (max you'll pay, $)</label>
       <input id="bountyReward" type="number" min="1" max="10000" step="1" required>
       <div class="pay-note">${{
-        "stripe-live": "💳 <b>Real money, paid with Stripe.</b> Your card is held for the full reward and only charged the winning bid if a fix is verified; otherwise the hold is released.",
+        "stripe-live": "💳 <b>Real money, paid with Stripe.</b> Your card is held for the reward and charged only when a fix is verified, then refunded if the fix regresses within the survival window; otherwise the hold is released.",
         "stripe-test": "💳 <b>Paid with Stripe (test mode, no real money).</b> The money is held, and only charged if a fix is verified. Test card: 4242 4242 4242 4242.",
       }[payments] ?? "🧪 <b>Simulated payment.</b> Set STRIPE_SECRET_KEY on the server to pay with Stripe."}</div>`;
     $("bountyActions").innerHTML = `${cancel}<button type="submit" class="cta" id="dlgPost">${stripe ? "Continue to Stripe →" : "Post bounty"}</button>`;

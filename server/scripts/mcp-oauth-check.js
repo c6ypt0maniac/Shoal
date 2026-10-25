@@ -7,6 +7,8 @@ process.env.PORT = "4102";
 process.env.GITHUB_CLIENT_ID ??= "test-client";
 process.env.GITHUB_CLIENT_SECRET ??= "test-secret";
 process.env.SHOAL_MOCK = "1";
+// Its own data folder, so test bounties and credits never touch the real .data/.
+process.env.SHOAL_DATA_DIR = (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "shoal-check-"));
 
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (url, init) => {

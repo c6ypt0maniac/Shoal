@@ -3,7 +3,11 @@ import cors from "cors";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { refreshSources, scan } from "./scanner.js";
-import { collectBids, createBounty, getBounty, leaderboard, morningSettlement, runBounty } from "./bounties.js";
+import { createBounty, getBounty, leaderboard, morningSettlement, publicBounty, runBounty } from "./bounties.js";
+import { checkSurvivors } from "./survival.js";
+import { loadState, storageInfo } from "./persist.js";
+import { importOpenRouterModel, listing, listingExists, marketplace, ownerOf, publishAgent, refreshOpenRouter, removeListing, rotateSecret, updateAgent } from "./marketplace.js";
+import { createReview, deleteReview, replyToReview, reviewsFor, voteHelpful } from "./reviews.js";
 import { eventsAfter, emit } from "./events.js";
 import { state, resetState, DEMO_CONNECTION } from "./store.js";
 import { getStacks, isTestFile, listAllFiles, resetWorkspace, setSource, DEMO_REPO, WORKSPACE } from "./repo.js";
@@ -20,10 +24,11 @@ import { MODELS, costPerFix, overallPick, scoreboard, trialSummary } from "./tri
 import { PACKS, addCredits, balanceCents, creditsSummary, fixPriceCents } from "./credits.js";
 import { mountMcp } from "./mcp.js";
 import { proofFor, proveProblem, resetProofs } from "./proof.js";
-import { markConnected, setAutoSync, syncNow, syncStatus } from "./sync.js";
+import { markConnected, reapplyBoughtFixes, setAutoSync, syncNow, syncStatus } from "./sync.js";
 import { detectClaude, finishLogin, startLogin } from "./claude-runner.js";
 import { detectCodex, startCodexLogin } from "./codex-runner.js";
 import { startTrialRun, stopTrialRun, trialRun } from "./trial-runner.js";
+import { integrationStatus } from "./integrations.js";
 import {
   authorizeUrl, ciStats, cloneRepo, completeOAuth, getRepo, getViewer, hasToken, listRepos, oauthConfigured, parseRepo, repoFiles, signOut,
 } from "./github.js";
@@ -73,6 +78,8 @@ app.get("/api/health", (_req, res) =>
     mock: MOCK,
     // Which paid-run APIs Shoal has keys for.
     providers: { anthropic: Boolean(process.env.ANTHROPIC_API_KEY), openai: Boolean(process.env.OPENAI_API_KEY) },
+    // Which outside APIs have their keys set (npm run keys -- --check tests them).
+    integrations: integrationStatus(),
     githubToken: hasToken(),
     payments: paymentsMode(),
   }),
@@ -159,6 +166,15 @@ app.post("/api/auth/github/logout", (_req, res) => {
 
 const ROLES = ["team", "builder"];
 
+// Who's signed in: the dashboard's GitHub sign-in. Test scripts can play
+// several people with an X-Shoal-Test-User header, only when the server was
+// started with SHOAL_TEST_USERS=1, and never on Vercel.
+async function currentUser(req) {
+  const test = process.env.SHOAL_TEST_USERS === "1" && !process.env.VERCEL && req.get("x-shoal-test-user");
+  if (test) return { login: String(test) };
+  return getViewer().catch(() => null);
+}
+
 app.get("/api/me", async (_req, res) => {
   const viewer = await getViewer().catch(() => null);
   res.json({ viewer, oauth: oauthConfigured(), role: state.role });
@@ -189,7 +205,17 @@ app.post("/api/connect", async (req, res) => {
   }
 });
 
+// Shoal holds one repo at a time, so it can't switch away while it still
+// owes a team a survival verdict on this one.
+function assertNothingSurviving() {
+  const watched = state.bounties.filter((b) => b.status === "surviving");
+  if (watched.length) {
+    throw Object.assign(new Error(`${watched.length} fix${watched.length > 1 ? "es are" : " is"} still in the survival window on ${state.connection.fullName}. Wait for ${watched.length > 1 ? "them" : "it"} to settle first.`), { status: 409 });
+  }
+}
+
 async function connect(body, step, res) {
+  assertNothingSurviving();
   const fullName = parseRepo(body?.repo);
   step("repo", `Looking up ${fullName} on GitHub`);
   const repo = await getRepo(fullName);
@@ -225,6 +251,7 @@ async function connect(body, step, res) {
 }
 
 app.post("/api/connect/demo", async (req, res) => {
+  assertNothingSurviving();
   setSource(DEMO_REPO);
   await resetWorkspace();
   resetState();
@@ -265,11 +292,22 @@ app.get("/api/events", (_req, res) => {
 app.post("/api/scan", async (_req, res) => res.json(await scan()));
 app.get("/api/pains", (_req, res) => res.json(state.pains));
 
-app.get("/api/bounties", (_req, res) => res.json(state.bounties));
-app.get("/api/bounties/:id", (req, res) => res.json(getBounty(req.params.id)));
+app.get("/api/bounties", (_req, res) => res.json(state.bounties.map(publicBounty)));
+app.get("/api/bounties/:id", (req, res) => res.json(publicBounty(getBounty(req.params.id))));
 // Post a bounty. With Stripe set up, the reward is held via Checkout first:
 // the response carries checkoutUrl and the bounty runs once funding clears.
-app.post("/api/bounties", (req, res) => openBounty(req, res, { painId: req.body?.painId, reward: req.body?.reward }));
+// Body: { painId, reward, survivalDays?: 7 | 10 | 14, competitors?: [listing ids] }
+// competitors: who may compete (and see the shared code); default Shoal's
+// built-in agents. Any marketplace listing that's available can be picked.
+app.post("/api/bounties", async (req, res) =>
+  openBounty(req, res, {
+    painId: req.body?.painId,
+    reward: req.body?.reward,
+    survivalDays: req.body?.survivalDays,
+    competitors: req.body?.competitors,
+    postedBy: (await currentUser(req))?.login ?? null,
+  }),
+);
 
 // --- Model trials (MCP) and the approved API run --------------------------
 
@@ -341,16 +379,16 @@ app.post("/api/trials/approve", (req, res) => {
   }
   const unavailable = modelUnavailable(trial.model);
   if (unavailable) return res.status(503).json({ error: `${MODELS[trial.model].name} can't run yet: ${unavailable}` });
-  if (state.bounties.some((b) => b.painId === painId && b.apiModel && !["failed", "settled", "payment_failed"].includes(b.status))) {
+  if (state.bounties.some((b) => b.painId === painId && b.apiModel && !["failed", "settled", "clawed_back", "payment_failed"].includes(b.status))) {
     return res.status(409).json({ error: "An API fix for this problem is already running" });
   }
   const estimate = fixPriceCents(costPerFix(trial.model));
   if (estimate > balanceCents()) {
     return res.status(402).json({ error: `Not enough credits: this fix should cost about $${(estimate / 100).toFixed(2)}. Buy a credit pack first.` });
   }
-  const bounty = createBounty({ painId, reward: estimate / 100, funding: "credits", apiModel: trial.model, trialId: trial.id });
+  const bounty = createBounty({ painId, reward: estimate / 100, funding: "credits", apiModel: trial.model, trialId: trial.id, survivalDays: req.body?.survivalDays });
   background(() => runBounty(bounty.id));
-  res.status(202).json(bounty);
+  res.status(202).json(publicBounty(bounty));
 });
 
 // Shared paths are folders or single files; files have an extension.
@@ -426,7 +464,7 @@ async function openBounty(req, res, opts) {
       throw Object.assign(err, { status: 502 });
     }
   }
-  res.status(201).json({ ...bounty, checkoutUrl });
+  res.status(201).json({ ...publicBounty(bounty), checkoutUrl });
 }
 
 app.post("/api/bounties/:id/fund", async (req, res) => {
@@ -457,7 +495,14 @@ app.get("/api/escrow/return", async (req, res) => {
   }
 });
 
-app.post("/api/bounties/:id/bids", async (req, res) => res.json(await collectBids(req.params.id)));
+// Re-measure a fix in its survival window right now (normally after every
+// new commit and on a schedule; see survival.js).
+app.post("/api/bounties/:id/survival/check", async (req, res) => {
+  const bounty = getBounty(req.params.id);
+  if (bounty.status !== "surviving") return res.status(400).json({ error: "This bounty isn't in its survival window" });
+  await checkSurvivors({ trigger: "requested", bountyId: bounty.id });
+  res.json(publicBounty(bounty));
+});
 
 app.post("/api/bounties/:id/run", (req, res) => {
   const bounty = getBounty(req.params.id);
@@ -473,14 +518,57 @@ app.post("/api/demo", async (req, res) => {
   if (!pain) return res.status(400).json({ error: "No flaky tests left to fix" });
   const bounty = createBounty({ painId: pain.id, reward: req.body?.reward ?? 400 });
   background(() => runBounty(bounty.id));
-  res.status(202).json(bounty);
+  res.status(202).json(publicBounty(bounty));
 });
 
 app.get("/api/agents", (_req, res) => res.json(leaderboard()));
+
+// --- Marketplace -------------------------------------------------------------
+// Every agent and model a team can pick, with Shoal's scorecard, verified-
+// buyer ratings and (for models) OpenRouter's numbers. See marketplace.js
+// for the filters and sorts. Listing ids contain slashes
+// (openrouter:z-ai/glm-5.3), so single listings go by ?id=.
+app.get("/api/marketplace", async (req, res) => res.json(marketplace(req.query, await currentUser(req))));
+app.get("/api/marketplace/listing", async (req, res) => {
+  const user = await currentUser(req);
+  res.json({ ...listing(req.query.id, user), reviews: reviewsFor(req.query.id, req.query.reviewSort) });
+});
+// Import an OpenRouter model by id. Body: { id: "z-ai/glm-5.3" }
+app.post("/api/marketplace/openrouter", async (req, res) => {
+  const user = await currentUser(req);
+  res.status(201).json(await importOpenRouterModel(req.body?.id, { by: user?.login ?? null }));
+});
+app.post("/api/marketplace/openrouter/refresh", async (_req, res) => {
+  await refreshOpenRouter();
+  res.json({ ok: true });
+});
+// Builders publish agents with a webhook. The response has the signing
+// secret, shown this once. Body: { name, tagline, description, webhookUrl,
+// pains, languages }
+app.post("/api/marketplace/agents", async (req, res) => res.status(201).json(publishAgent(req.body ?? {}, await currentUser(req))));
+app.patch("/api/marketplace/agents", async (req, res) => res.json(updateAgent(req.query.id, req.body ?? {}, await currentUser(req))));
+app.post("/api/marketplace/agents/rotate-secret", async (req, res) => res.json(rotateSecret(req.query.id, await currentUser(req))));
+app.delete("/api/marketplace/listing", async (req, res) => {
+  removeListing(req.query.id, await currentUser(req));
+  res.json({ ok: true });
+});
+
+// Reviews: verified buyers only (see reviews.js).
+// Body: { listingId, bountyId, stars, body, aspects: { codeQuality, prClarity, speed } }
+app.post("/api/marketplace/reviews", async (req, res) => res.status(201).json(createReview(req.body ?? {}, await currentUser(req), listingExists)));
+app.delete("/api/marketplace/reviews/:id", async (req, res) => {
+  deleteReview(req.params.id, await currentUser(req));
+  res.json({ ok: true });
+});
+app.post("/api/marketplace/reviews/:id/reply", async (req, res) => res.json(replyToReview(req.params.id, req.body?.body, await currentUser(req), ownerOf)));
+app.post("/api/marketplace/reviews/:id/helpful", async (req, res) => res.json(voteHelpful(req.params.id, await currentUser(req), true)));
+app.delete("/api/marketplace/reviews/:id/helpful", async (req, res) => res.json(voteHelpful(req.params.id, await currentUser(req), false)));
+
 app.get("/api/ledger", (_req, res) => res.json(state.ledger));
 app.get("/api/settlement", (_req, res) => res.json(morningSettlement()));
 
 app.post("/api/reset", async (_req, res) => {
+  assertNothingSurviving();
   await resetWorkspace();
   resetState();
   emit("reset", { message: `Workspace restored to the original ${state.connection.fullName}` });
@@ -491,7 +579,11 @@ app.use((err, _req, res, _next) => {
   res.status(err.status ?? 500).json({ error: err.message });
 });
 
+// Pick up where the last run left off: the repo connection, and bounties
+// whose survival windows are still running (with their fixes re-applied).
+const restored = await loadState();
 await resetWorkspace();
+if (restored) await reapplyBoughtFixes();
 
 // On Vercel the platform serves the exported app; locally we listen.
 export default app;
@@ -503,6 +595,10 @@ if (!process.env.VERCEL) app.listen(PORT, () => {
       ? `MCP: ${BASE_URL}/mcp (ChatGPT, Codex and Claude sign in with GitHub)${process.env.SHOAL_AUTH_SECRET ? "" : "; set SHOAL_AUTH_SECRET so sign-ins survive restarts"}`
       : `MCP: claude mcp add --transport http shoal http://localhost:${PORT}/mcp (local only; set GITHUB_CLIENT_ID/SECRET for ChatGPT and Codex)`,
   );
+  const watching = state.bounties.filter((b) => b.status === "surviving").length;
+  const store = storageInfo();
+  console.log(`Storage: ${store.backend === "supabase" ? `Supabase (schema ${store.schema})` : `${store.file} (set SUPABASE_DB_URL for Supabase)`}`);
+  if (restored) console.log(`Restored ${state.connection.fullName}: ${state.bounties.length} bounties, ${watching} in their survival window`);
   console.log(`GitHub:${hasToken() ? "GITHUB_TOKEN set" : "no GITHUB_TOKEN (public repos read-only, no PRs)"}`);
   console.log(
     `Payments: ${{ "stripe-live": "Stripe LIVE escrow: REAL MONEY", "stripe-test": "Stripe TEST mode escrow" }[paymentsMode()] ?? (stripeKeyProblem() ? `${stripeKeyProblem()}; using simulated escrow` : "simulated escrow (set STRIPE_SECRET_KEY for Stripe)")}`,
