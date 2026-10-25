@@ -396,8 +396,11 @@ function Create({ s, act, mode, startPain, setMode, onPosted }) {
   };
   const onActive = (b) => (b.repo?.key ?? activeKey) === activeKey;
   const flaky = s.pains.filter((p) => !p.healthy && !s.bounties.some((b) => onActive(b) && (b.painId === p.id || b.testFile === p.testFile) && !['failed', 'clawed_back'].includes(b.status)));
-  const [painId, setPainId] = useState(startPain || '');
-  const pain = flaky.find((p) => p.id === painId) || flaky[0];
+  // No test picker: the scan already checked the whole repo, so the bounty
+  // goes to the flaky test that costs the most time (or the one it was opened
+  // from). Post again for the next.
+  const worst = [...flaky].sort((a, b) => b.hoursPerWeek - a.hoursPerWeek || b.failures / b.runs - a.failures / a.runs)[0];
+  const pain = flaky.find((p) => p.id === startPain) || worst;
   if (mode === 'agent') return <Modal onClose={close}><PublishAgent s={s} act={act} onDone={close} /></Modal>;
   return (
     <Modal onClose={close}>
@@ -418,7 +421,11 @@ function Create({ s, act, mode, startPain, setMode, onPosted }) {
         ) : activeBlocked ? null : flaky.length === 0 ? (
           <div className="flex flex-col gap-3 text-muted">{s.pains.length ? 'Every flaky test in this repo already has a bounty.' : scanning ? 'Scanning for flaky tests…' : 'No scan of this repo yet.'}{!s.pains.length && !scanning && <button className={primary + ' self-start'} onClick={act(api.scan)}>Scan for flaky tests</button>}</div>
         ) : (<>
-          <Label t="Which test?"><select className={field} value={pain?.id} onChange={(e) => setPainId(e.target.value)}>{flaky.map((p) => <option key={p.id} value={p.id}>{p.testFile} · {p.failures}/{p.runs} failed</option>)}</select></Label>
+          {pain && <div className="flex flex-col gap-1 rounded-xl border border-ink/15 bg-white/50 px-4 py-3">
+            <span className="text-sm text-muted">The scan found {flaky.length} flaky test{flaky.length === 1 ? '' : 's'} without a bounty. This one costs you the most:</span>
+            <span className="break-all font-mono text-[15px]">{pain.testFile}</span>
+            <span className="text-sm text-muted">{pain.failures}/{pain.runs} scan runs failed · {pain.hoursPerWeek} h/week lost{flaky.length > 1 ? ' · post again for the next one' : ''}</span>
+          </div>}
           {pain && <QuickPost key={pain.id} p={pain} s={s} act={act} onPosted={onPosted} />}
         </>)}
       </div>
