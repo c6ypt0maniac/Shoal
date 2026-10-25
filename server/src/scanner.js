@@ -15,8 +15,9 @@ const DOLLARS_PER_DEV_HOUR = 25;
 
 export async function scan() {
   emit("scan.started", { message: `Running each test file ${RUNS_PER_FILE}x to detect flakes` });
-  // Untested shared code gets tests written by Claude first, so there is something to run.
-  await generateTests().catch((err) => emit("scan.warning", { message: `Couldn't write tests for untested code: ${err.message}` }));
+  // Off by default. Set SHOAL_GENERATE_TESTS=1 to have Claude write tests for
+  // untested shared code before the scan.
+  if (process.env.SHOAL_GENERATE_TESTS === "1") await generateTests().catch((err) => emit("scan.warning", { message: `Couldn't write tests for untested code: ${err.message}` }));
   const sandbox = await createSandbox();
   try {
     // Only tests inside the folders the team shared with agents.

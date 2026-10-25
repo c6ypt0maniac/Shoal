@@ -30,6 +30,9 @@ const SHOAL_TOOLS = ["list_problems", "list_files", "read_file", "run_tests", "s
 const childEnv = () => {
   const env = { ...process.env };
   delete env.ANTHROPIC_API_KEY;
+  // A separate Claude Code login for Shoal, so it can use a different account
+  // than the `claude` signed in for your terminal.
+  if (process.env.SHOAL_CLAUDE_CONFIG_DIR) env.CLAUDE_CONFIG_DIR = process.env.SHOAL_CLAUDE_CONFIG_DIR;
   return env;
 };
 
@@ -179,7 +182,11 @@ export async function startTrialRun(baseUrl) {
   if (!info.installed) throw httpError(400, "Claude Code isn't installed on this machine");
   if (!info.loggedIn) throw httpError(400, "Sign in to Claude Code first");
   const flaky = state.pains.filter((p) => !p.healthy);
-  if (!flaky.length) throw httpError(400, "No flaky tests to try. Scan the repo first.");
+  if (!flaky.length) {
+    throw httpError(400, state.pains.length
+      ? `The scan ran ${state.pains.length} test file${state.pains.length === 1 ? "" : "s"} 10 times each and none failed, so there is nothing to fix. Try a repo with flaky tests.`
+      : "No scan results yet. Scan the repo first.");
+  }
   // Every flaky test is tried; none is skipped. If any test imports code the
   // team didn't share, stop and say so: agents must see all the code.
   const blind = flaky.filter((p) => p.hiddenSources?.length);
