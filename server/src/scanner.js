@@ -11,7 +11,10 @@ const RUNS_PER_FILE = 10;
 // Rough cost model, shown in the UI so judges can see the math.
 const CI_RUNS_PER_WEEK = 150;
 const HOURS_LOST_PER_FLAKE = 0.25; // rerun + "is it me?" investigation
-const DOLLARS_PER_DEV_HOUR = 25;
+// The reward Shoal suggests for a bounty: $1 per dev-hour the test wastes a
+// week, in $5 steps, between $10 and $50. A fix costs agents a few dollars of
+// API time at most, so the default stays modest; the team can raise it.
+export const suggestReward = (hoursPerWeek) => Math.min(50, Math.max(10, Math.round(hoursPerWeek / 5) * 5));
 
 export async function scan() {
   emit("scan.started", { message: `Running each test file ${RUNS_PER_FILE}x to detect flakes` });
@@ -83,7 +86,7 @@ export async function scan() {
         failures: r.failures,
         runs: r.runs,
         hoursPerWeek,
-        suggestedReward: Math.max(50, Math.round((hoursPerWeek * DOLLARS_PER_DEV_HOUR) / 10) * 10),
+        suggestedReward: suggestReward(hoursPerWeek),
         sampleFailure: r.sampleFailure,
         healthy: r.failures === 0,
         scannedAt: new Date().toISOString(),

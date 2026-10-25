@@ -15,6 +15,7 @@
 // The app works on the in-memory copy in store.js; changed rows are written
 // back every few seconds, and right away for money (credits.js awaits
 // saveState). One server instance at a time: two would overwrite each other.
+import { suggestReward } from "./scanner.js";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -74,7 +75,8 @@ const COLLECTIONS = {
 const VALUES = {
   connection: { get: () => state.connection, set: (v) => (state.connection = v) },
   // The last scan: the bounties page lists bounties under their flaky test.
-  pains: { get: () => state.pains, set: (v) => (state.pains = v ?? []) },
+  // Suggested rewards are recomputed, so a saved scan picks up a change to the formula.
+  pains: { get: () => state.pains, set: (v) => (state.pains = (v ?? []).map((p) => ({ ...p, suggestedReward: suggestReward(p.hoursPerWeek ?? 0) }))) },
   source: { get: () => ({ dir: getSource().dir, testCommand: getSource().testCommand }), set: () => {} },
   sync: { get: () => ({ auto: state.sync?.auto ?? true }), set: (v) => (state.sync = { ...state.sync, auto: v.auto }) },
   modelCost: { get: () => state.modelCost, set: (v) => (state.modelCost = v ?? {}) },
