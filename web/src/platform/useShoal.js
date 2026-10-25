@@ -3,13 +3,13 @@ import { api } from './api.js';
 
 // Polls the event log and refreshes server state when something relevant happens.
 export function useShoal() {
-  const [s, setS] = useState({ events: [], pains: [], bounties: [], agents: [], settlement: null, ledger: [], credits: null, connection: null, health: null, me: null });
+  const [s, setS] = useState({ events: [], pains: [], bounties: [], agents: [], market: [], settlement: null, ledger: [], credits: null, connection: null, health: null, me: null });
   const last = useRef(0);
   const refresh = useCallback(async () => {
-    const [pains, bounties, agents, settlement, ledger, credits, connection, health, me] = await Promise.all([
-      api.pains(), api.bounties(), api.agents(), api.settlement(), api.ledger(), api.credits().catch(() => null), api.connection(), api.health(), api.me().catch(() => null),
+    const [pains, bounties, agents, market, settlement, ledger, credits, connection, health, me] = await Promise.all([
+      api.pains(), api.bounties(), api.agents(), api.marketplace({ limit: 200 }).then((m) => m.items).catch(() => []), api.settlement(), api.ledger(), api.credits().catch(() => null), api.connection(), api.health(), api.me().catch(() => null),
     ]);
-    setS((p) => ({ ...p, pains, bounties, agents, settlement, ledger, credits, connection, health, me }));
+    setS((p) => ({ ...p, pains, bounties, agents, market, settlement, ledger, credits, connection, health, me }));
   }, []);
   useEffect(() => {
     let alive = true, t;
