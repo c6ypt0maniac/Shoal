@@ -8,7 +8,7 @@ import { useLayoutEffect, useRef, useState } from 'react';
 // platform, like Get started.
 
 const PAD = 56; // room around the link for the plank's ends and its shadow
-const END = 16; // how far the plank reaches past the logo on each side
+const END = 40; // how far the plank reaches past the name on each side
 const THICK = 5; // the plank's visible side
 
 // A plank around a w x h box: long and straight, with uneven, worn ends.
@@ -46,7 +46,7 @@ export default function Nav() {
         ref={link}
         href="/app"
         aria-label="Open the Shoal platform"
-        className="group pointer-events-auto relative flex -rotate-[1.5deg] items-center gap-2.5 whitespace-nowrap rounded-full px-4 py-[9px] text-[19px] font-semibold tracking-[-0.03em] text-ink outline-offset-8 transition-transform duration-700 hover:-translate-y-px hover:-rotate-[0.5deg] focus-visible:outline-2 focus-visible:outline-accent"
+        className="group pointer-events-auto relative flex -rotate-[1.5deg] items-center gap-2.5 whitespace-nowrap rounded-full px-3 py-[9px] text-[19px] font-semibold tracking-[-0.03em] text-ink outline-offset-8 transition-transform duration-700 hover:-translate-y-px hover:-rotate-[0.5deg] focus-visible:outline-2 focus-visible:outline-accent"
       >
         {size && (
           <svg
@@ -114,7 +114,7 @@ export default function Nav() {
             </g>
           </svg>
         )}
-        <img src="/logo-mark.png" alt="" aria-hidden="true" className="relative block h-[1.6em] w-auto" />
+        <span className="relative">Shoal</span>
       </a>
     </div>
   );

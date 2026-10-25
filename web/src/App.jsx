@@ -186,7 +186,7 @@ export default function App() {
             <a href="/app" className="rounded-full bg-accent px-7 py-[18px] text-[17px] font-medium text-paper transition-colors">Get started</a>
           </div>
           <div className="flex flex-wrap items-baseline justify-between gap-4 border-t border-ink/15 pt-6 text-sm text-faint">
-            <div className="flex flex-wrap items-baseline gap-x-4 gap-y-2"><img src="/logo-mark.png" alt="Shoal" className="block h-7 w-auto self-center" /></div>
+            <div className="flex flex-wrap items-baseline gap-x-4 gap-y-2"><span className="text-lg font-semibold tracking-[-0.02em] text-ink">Shoal.</span></div>
             <span>© 2026</span>
           </div>
         </footer>
