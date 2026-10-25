@@ -11,6 +11,8 @@ import { MODELS, pickForProblem } from './trials.js';
 import { diffFiles, proofFor } from './proof.js';
 import { nameFor } from './marketplace.js';
 import { zip } from './zip.js';
+import { isProtected } from './verifier.js';
+import { openPullRequest } from './github.js';
 import { MOCK } from './agents.js';
 import { isSealed, brief, publicLadder } from './api-trials.js';
 import { isActive } from './repos.js';
@@ -72,7 +74,7 @@ export async function reviewFor(painId, bountyId) {
     const safeText = value => r.locked ? brief(value) : value;
     const judges = (r.proof?.checks?.review?.judges || r.judges || []).map(j=>({model:j.model,name:j.name,status:j.status,ok:j.ok,via:j.via,summary:safeText(j.summary)}));
     const checks = Object.fromEntries(['stress','suite','rules','challenge'].map(k=>{const c=r.proof?.checks?.[k];return[k,c?{ok:c.ok,total:c.total,passed:c.passed}:null];}));
-    return { key:r.key,kind:r.kind,apiTrial:r.kind==='trial'&&r.apiCost!=null,locked:Boolean(r.locked),simulated:r.kind==='race'&&MOCK,model:r.model,name:MODELS[r.model]?.name||nameFor(r.model),status:r.status,passed:Boolean(r.passed),reason:safeText(r.reason||issue),failureLog:r.locked?null:(r.failureLog||null),summary:safeText(r.summary)||'No fix was delivered.',runs:r.runs||[],durationMs:r.durationMs??null,judges,proof:r.proof?{status:r.proof.status,verdict:r.proof.verdict,score:r.proof.score,failures:r.proof.failures?.map(safeText),checks}:null,changes,canPreview:files.length>0&&!issue&&!r.locked,recommended:best?.key===r.key };
+    return { key:r.key,kind:r.kind,pullRequest:r.pullRequest||null,canCreatePullRequest:!r.locked&&Boolean(r.passed)&&files.length>0&&!issue&&!(r.judges||[]).some(j=>j.ok===false)&&!(r.proof&&r.proof.verdict!=='safe'),apiTrial:r.kind==='trial'&&r.apiCost!=null,locked:Boolean(r.locked),simulated:r.kind==='race'&&MOCK,model:r.model,name:MODELS[r.model]?.name||nameFor(r.model),status:r.status,passed:Boolean(r.passed),reason:safeText(r.reason||issue),failureLog:r.locked?null:(r.failureLog||null),summary:safeText(r.summary)||'No fix was delivered.',runs:r.runs||[],durationMs:r.durationMs??null,judges,proof:r.proof?{status:r.proof.status,verdict:r.proof.verdict,score:r.proof.score,failures:r.proof.failures?.map(safeText),checks}:null,changes,canPreview:files.length>0&&!issue&&!r.locked,recommended:best?.key===r.key };
   }));
   if (best && winner && !proven && MOCK) { best.label = 'Simulated race winner'; best.reason = 'This race used simulated agents. Its result is not evidence of live model performance.'; }
   return { painId,testFile:pain.testFile,repository:bounty?.repo?.fullName||state.connection.fullName,best,attempts,execution:'api',ladder:active?publicLadder(painId):null,comparisonBase:'Compared with the connected repository source. A passed trial still needs its complete proof report.' };
@@ -142,3 +144,33 @@ export async function startPreview(key, entry) {
   return result;
 }
 export function closePreviews() { for (const v of previews.values()) { clearTimeout(v.timer); v.server.close(); } previews.clear(); }
+
+// Explicit user action: publish only the selected, unlocked, verified patch.
+const publishing = new Map();
+export function pullRequestInput(key) {
+  const fix = resolveFix(key);
+  if (!fix.passed || (state.proofs[fix.id]?.verdict && state.proofs[fix.id].verdict !== 'safe')) throw error(409, 'This fix must pass verification before opening a pull request');
+  if ((fix.judges||[]).some(j=>j.ok===false)) throw error(409, 'This fix failed independent judge review');
+  const files = patchFiles(fix);
+  if (!files.length || files.some(f => isProtected(f.path))) throw error(400, 'Only verified application source changes can be published');
+  const bounty = state.bounties.find(b => key.startsWith(b.id+'~'));
+  const repo = bounty?.repo || state.connection;
+  if (repo.type !== 'github' || !repo.canWrite) throw error(403, 'Connect a GitHub repository with write access to create a pull request');
+  const record = bounty ? bounty.attempts[Number(key.split('~')[1])] : state.trials.find(t => t.id === key);
+  const name = MODELS[fix.model]?.name || nameFor(fix.model);
+  const judges = state.proofs[fix.id]?.checks?.review?.judges || fix.judges || [];
+  return { repo, record, request: {
+    branch: 'shoal/review-'+createHash('sha256').update(key).digest('hex').slice(0,16),
+    title: '[Shoal] '+name+' fix for '+fix.testFile,
+    body: ['## Fix', fix.summary, '', '## Validation', `${(fix.runs||[]).filter(Boolean).length}/${(fix.runs||[]).length} test runs passed.`, judges.length ? judges.map(j=>`${j.name||j.model}: ${j.ok?'pass':'fail'}`).join('\n') : 'Independent judge review has not been recorded. This is a verified candidate, not a fully proven fix.', '', 'Created from the selected Shoal model attempt. Review these changes before merging.'].join('\n'),
+    files,
+  }};
+}
+export async function createFixPullRequest(key, publish = openPullRequest) {
+  if (publishing.has(key)) return publishing.get(key);
+  const input = pullRequestInput(key);
+  if (input.record.pullRequest?.url) return input.record.pullRequest;
+  const pending = publish(input.repo,input.request).then(pr => (input.record.pullRequest=pr));
+  publishing.set(key,pending);
+  try { return await pending; } finally { publishing.delete(key); }
+}

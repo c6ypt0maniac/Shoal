@@ -5,7 +5,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { state } from '../src/store.js';
 import { setSource } from '../src/repo.js';
-import { safeReviewPath, reviewFor, snapshotFor, startPreview, closePreviews, previewEntries } from '../src/fix-review.js';
+import { createFixPullRequest, pullRequestInput, safeReviewPath, reviewFor, snapshotFor, startPreview, closePreviews, previewEntries } from '../src/fix-review.js';
 
 const root = await mkdtemp(path.join(tmpdir(),'shoal-review-check-'));
 await mkdir(path.join(root,'buggy','src'),{recursive:true});
@@ -75,3 +75,18 @@ test('sealed fixes stay sealed in reviews, downloads, previews and bounty aliase
   assert.match((await snapshotFor('trial-review')).map.get('buggy/src/engine.js').toString(),/fixed/);
 });
 test.after(async()=>{closePreviews();await rm(root,{recursive:true,force:true});});
+
+test('pull requests publish the selected verified patch once and reject failed or sealed fixes',async()=>{
+  const previous=state.connection;
+  state.connection={type:'github',fullName:'owner/repo',defaultBranch:'main',canWrite:true,sharedPaths:[]};
+  let calls=0;
+  const publish=async(repo,request)=>{calls++;assert.equal(repo.fullName,'owner/repo');assert.match(request.files[0].content,/fixed/);assert.match(request.body,/not been recorded/);return {url:'https://github.com/owner/repo/pull/1',number:1};};
+  try {
+    assert.throws(()=>pullRequestInput('bounty-review~0'),e=>e.status===409);
+    const [a,b]=await Promise.all([createFixPullRequest('trial-review',publish),createFixPullRequest('trial-review',publish)]);
+    assert.equal(a.url,b.url);await createFixPullRequest('trial-review',publish);assert.equal(calls,1);
+    state.trials[0].sealed=true;delete state.trials[0].unlockedAt;
+    await assert.rejects(createFixPullRequest('trial-review',publish),e=>e.status===403);
+    state.trials[0].sealed=false;
+  } finally {state.connection=previous;delete state.trials[0].pullRequest;}
+});

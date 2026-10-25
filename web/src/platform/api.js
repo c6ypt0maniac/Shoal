@@ -53,6 +53,7 @@ export const api = {
   run: (b) => post('/api/bounties/' + b + '/run'),
   fixes: (painId,bountyId)=>get('/api/problems/'+id(painId)+'/fixes?'+qs({bountyId})),
   previewFix: (key,entry)=>post('/api/fixes/'+id(key)+'/preview',{entry}),
+  createFixPullRequest: key=>post('/api/fixes/'+id(key)+'/pull-request'),
   fixDownload: key=>apiHref('/api/fixes/'+id(key)+'/repo'),
   survivalCheck: (b) => post('/api/bounties/' + b + '/survival/check'),
 

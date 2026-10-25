@@ -31,7 +31,7 @@ import { authorizeFix, canStart, isSealed, ladderStatus, publicLadder, runSealed
 import { marginView } from "./spend.js";
 import { unlockPrice } from "./pricing.js";
 import { integrationStatus } from "./integrations.js";
-import { reviewFor, startPreview, downloadFix } from './fix-review.js';
+import { reviewFor, startPreview, downloadFix, createFixPullRequest } from './fix-review.js';
 import {
   authorizeUrl, getOAuthToken, ciStats, cloneRepo, completeOAuth, getRepo, getViewer, hasToken, listRepos, oauthConfigured, parseRepo, repoFiles, revokeGrant, signedInWithEnvToken, signOut,
 } from "./github.js";
@@ -416,6 +416,7 @@ app.post('/api/fixes/:key/preview',requireFixReviewUser,async(req,res)=>{
   if(process.env.VERCEL)return res.json({supported:false,message:'Run Shoal locally to preview this project. Code review and downloads remain available after unlock.'});
   res.json(await startPreview(req.params.key,req.body?.entry));
 });
+app.post('/api/fixes/:key/pull-request',requireFixReviewUser,async(req,res)=>{ const pr=await createFixPullRequest(req.params.key); await saveState(); res.json(pr); });
 app.get('/api/fixes/:key/repo',requireFixReviewUser,async(req,res)=>res.attachment(`shoal-${req.params.key.replace(/[^\w.-]/g,'-')}-fixed.zip`).type('application/zip').send(await downloadFix(req.params.key)));
 // Post a bounty. With Stripe set up, the reward is held via Checkout first:
 // the response carries checkoutUrl and the bounty runs once funding clears.
