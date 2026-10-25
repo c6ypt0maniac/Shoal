@@ -5,9 +5,9 @@
 // opening PRs needs a token with write access.
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { rm, mkdir, readdir } from "node:fs/promises";
-import { REPOS_DIR, sh } from "./repo.js";
-import { MANIFESTS, detectStacks, installCommand } from "./stack.js";
+import { rm, mkdir, readdir, readFile, access as exists } from "node:fs/promises";
+import { REPOS_DIR, listTestFiles, sh } from "./repo.js";
+import { MANIFESTS, detectStacks, installCommand, stackFor } from "./stack.js";
 
 const API = "https://api.github.com";
 
@@ -98,18 +98,21 @@ export async function canAccessRepo(fullName, userToken) {
 // GitHub, so Shoal no longer appears under their authorized apps and the
 // token stops working. Only the OAuth sign-in can be revoked this way.
 // Resolves with whether GitHub confirmed it.
-export async function revokeGrant() {
-  if (!oauthToken || !oauthConfigured()) return false;
+// token: the sign-in to revoke (by default the current one); pass it in when
+// revoking after signOut() has cleared it.
+export async function revokeGrant(token = oauthToken) {
+  if (!token || !oauthConfigured()) return false;
   const basic = Buffer.from(`${process.env.GITHUB_CLIENT_ID}:${process.env.GITHUB_CLIENT_SECRET}`).toString("base64");
   const res = await fetch(`${API}/applications/${process.env.GITHUB_CLIENT_ID}/grant`, {
     signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
     method: "DELETE",
     headers: { Accept: "application/vnd.github+json", Authorization: `Basic ${basic}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ access_token: oauthToken }),
+    body: JSON.stringify({ access_token: token }),
   }).catch(() => null);
   return res?.status === 204;
 }
 
+export const getOAuthToken = () => oauthToken;
 export const signedInWithEnvToken = () => !oauthToken && Boolean(process.env.GITHUB_TOKEN);
 
 export function signOut() {
@@ -275,31 +278,58 @@ export async function reinstall(dir, changed, onStep = () => {}) {
   }
 }
 
-// Shallow-clones the repo and installs each project's dependencies the way
-// its language does (npm, pip into a private venv, go mod, cargo, bundler,
-// composer, dotnet...). Returns the clone folder and a note per project.
-export async function cloneRepo(fullName, onStep = () => {}) {
+// Gets the repo onto disk and installs what its tests need, the way each
+// language does (npm, pip into a private venv, go mod, cargo, bundler,
+// composer, dotnet...). Returns the clone folder.
+// Fast paths: a repo already cloned here is updated with a fetch (and
+// reinstalled only where a manifest changed) instead of cloned again; only
+// projects that have tests get dependencies; and those installs run at once.
+export async function cloneRepo(fullName, onStep = () => {}, branch = null) {
   const dir = path.join(REPOS_DIR, fullName.replace("/", "__"));
-  await rm(dir, { recursive: true, force: true });
   await mkdir(REPOS_DIR, { recursive: true });
-  const auth = token() ? `x-access-token:${token()}@` : "";
-  const clone = await sh(`git clone --depth 1 "https://${auth}github.com/${fullName}.git" "${dir}"`, REPOS_DIR);
-  if (!clone.ok) throw new Error(`git clone failed: ${redact(clone.output).slice(-400)}`);
-
-  for (const stack of await detectStacks(dir)) {
-    const where = stack.root === "." ? "" : ` in ${stack.root}/`;
-    if (!stack.toolOk) {
-      onStep(`Can't install ${stack.def.language} dependencies${where}: ${stack.toolMessage}`);
-      continue;
+  if (branch && (await exists(path.join(dir, ".git")).then(() => true, () => false))) {
+    try {
+      const { changed } = await pullRepo(dir, fullName, branch);
+      onStep(changed.length ? `Updated the existing copy (${changed.length} files changed)` : "Already have the latest code");
+      await reinstall(dir, changed, onStep);
+      return dir;
+    } catch (err) {
+      onStep(`Couldn't update the existing copy (${err.message}); cloning again`);
     }
+  }
+  await rm(dir, { recursive: true, force: true });
+  const auth = token() ? `x-access-token:${token()}@` : "";
+  const clone = await sh(`git clone --depth 1 --single-branch "https://${auth}github.com/${fullName}.git" "${dir}"`, REPOS_DIR);
+  if (!clone.ok) throw new Error(`git clone failed: ${redact(clone.output).slice(-400)}`);
+  await installForTests(dir, onStep);
+  return dir;
+}
+
+// Installs dependencies for the projects that have tests (others aren't run,
+// so their installs are wasted time), all at once. An npm workspaces repo is
+// installed once at its root, which covers every workspace.
+async function installForTests(dir, onStep) {
+  const stacks = await detectStacks(dir);
+  const tests = await listTestFiles(dir).catch(() => []);
+  const needed = new Set(tests.map((f) => stackFor(stacks, f)).filter(Boolean));
+  const rootPkg = await readFile(path.join(dir, "package.json"), "utf8").then(JSON.parse, () => null);
+  if (rootPkg?.workspaces) {
+    for (const s of [...needed]) if (s.def.language === "JavaScript/TypeScript") needed.delete(s);
+    const root = stacks.find((s) => s.root === "." && s.def.language === "JavaScript/TypeScript");
+    if (root && tests.some((f) => stackFor(stacks, f)?.def.language === "JavaScript/TypeScript")) needed.add(root);
+  }
+  const skipped = stacks.filter((s) => !needed.has(s)).length;
+  if (skipped) onStep(`Skipping dependencies for ${skipped} project${skipped > 1 ? "s" : ""} without tests`);
+  await Promise.all([...needed].map(async (stack) => {
+    const where = stack.root === "." ? "" : ` in ${stack.root}/`;
+    if (!stack.toolOk) return onStep(`Can't install ${stack.def.language} dependencies${where}: ${stack.toolMessage}`);
     const cwd = path.join(dir, stack.root);
     const cmd = installCommand(stack, await readdir(cwd));
-    if (!cmd) continue;
+    if (!cmd) return;
     onStep(`Installing ${stack.def.language} dependencies${where}: ${cmd}`);
     const install = await sh(cmd, cwd, 600_000);
     if (!install.ok) onStep(`Dependency install${where} failed; some tests may fail for that reason: ${install.output.slice(-300)}`);
-  }
-  return dir;
+  }));
 }
 
 // Real CI telemetry: recent GitHub Actions runs grouped by workflow.

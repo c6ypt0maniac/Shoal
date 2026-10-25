@@ -1,134 +1,52 @@
-// Connecting a repo (GitHub or the bundled demo), choosing what agents can see,
-// and keeping the connection in sync (server/src/index.js, scope.js, sync.js).
-import { useEffect, useMemo, useState } from 'react';
+// Get started, and the connected repo: what agents can see and keeping it in
+// sync (server/src/index.js, scope.js, sync.js).
+import { useEffect, useState } from 'react';
 import { api } from './api.js';
-import { Tag, Toggle, card, field, ghost, primary, signInHref } from './ui.jsx';
+import { Tag, Toggle, card, ghost, primary } from './ui.jsx';
 
-const dirOf = (p) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '.');
 const label = (d) => (d === '.' ? 'Files in the repo root' : d + '/');
 const ago = (iso) => { if (!iso) return 'never'; const m = Math.round((Date.now() - Date.parse(iso)) / 60_000); return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : Math.round(m / 60) + ' h ago'; };
 
-// Folders agents may see. Each folder counts on its own on the server, so
-// ticking a folder ticks its subfolders too and every ticked folder is sent.
-// All ticked = the whole repo ([]).
-function FolderPicker({ files, hidden, setHidden }) {
-  const dirs = useMemo(() => {
-    const m = new Map();
-    for (const f of files) {
-      if (f.secret) continue;
-      const d = dirOf(f.path), row = m.get(d) ?? { files: 0, tests: 0 };
-      row.files += 1; if (f.test) row.tests += 1; m.set(d, row);
-    }
-    return [...m.entries()].sort(([a], [b]) => (a === '.' ? -1 : b === '.' ? 1 : a.localeCompare(b)));
-  }, [files]);
-  const secrets = files.filter((f) => f.secret).length;
-  const under = (d, x) => x === d || (d !== '.' && x.startsWith(d + '/'));
-  const toggle = (d) => setHidden((h) => { const n = new Set(h), on = n.has(d); for (const [x] of dirs) if (under(d, x)) on ? n.delete(x) : n.add(x); return n; });
-  const shown = dirs.filter(([d]) => !hidden.has(d)).reduce((n, [, r]) => n + r.files, 0);
-  return (
-    <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-muted">
-        <span>Agents can see {shown} of {files.length - secrets} files{secrets ? ' · ' + secrets + ' secret file' + (secrets === 1 ? '' : 's') + ' never shared' : ''}</span>
-        <span className="flex gap-3"><button className="cursor-pointer text-accent" onClick={() => setHidden(new Set())}>All</button><button className="cursor-pointer text-accent" onClick={() => setHidden(new Set(dirs.map(([d]) => d)))}>None</button></span>
-      </div>
-      <div className="flex max-h-[280px] flex-col overflow-y-auto rounded-xl border border-ink/15 bg-white/50">
-        {dirs.map(([d, r]) => (
-          <label key={d} className="flex cursor-pointer items-center gap-3 border-t border-ink/10 px-3 py-2 text-[15px] first:border-t-0" style={{ paddingLeft: 12 + (d === '.' ? 0 : d.split('/').length - 1) * 18 }}>
-            <input type="checkbox" className="size-4 accent-[#0A7470]" checked={!hidden.has(d)} onChange={() => toggle(d)} />
-            <span className="min-w-0 flex-1 truncate font-mono text-sm">{label(d)}</span>
-            <span className="shrink-0 text-sm tabular-nums text-muted">{r.files} file{r.files === 1 ? '' : 's'}{r.tests ? ' · ' + r.tests + ' test' + (r.tests === 1 ? '' : 's') : ''}</span>
-          </label>
-        ))}
-      </div>
-      <span className="text-sm text-muted">.env files, keys, certificates and secrets/ folders are never shared, even inside a ticked folder.</span>
-    </div>
-  );
-}
-
-function ConnectForm({ s, act }) {
-  const [problems, setProblems] = useState(null), [picked, setPicked] = useState(['flaky-tests']);
-  const [repos, setRepos] = useState(null), [repo, setRepo] = useState(''), [typed, setTyped] = useState('');
-  const [files, setFiles] = useState(null), [filesErr, setFilesErr] = useState(''), [hidden, setHidden] = useState(new Set());
-  const signedIn = Boolean(s.me?.viewer), source = typed.trim() || repo;
-  // The "scan" step comes after connect.done (the repo is connected by then), so it doesn't count.
-  const last = [...s.events].reverse().find((e) => /^connect\./.test(e.type) && e.step !== 'scan');
-  const connecting = last?.type === 'connect.step' ? last.message : '';
-  useEffect(() => { api.problems().then(setProblems).catch(() => setProblems([])); }, []);
-  useEffect(() => { if (signedIn && !repos) api.repos().then(setRepos).catch(() => setRepos([])); }, [signedIn, repos]);
-  // Load the file list for the folder picker once a repo is chosen.
-  useEffect(() => {
-    if (!source) { setFiles(null); return; }
-    let live = true;
-    setFiles(null); setFilesErr(''); setHidden(new Set());
-    const t = setTimeout(() => api.repoFiles(source === 'demo' ? 'demo' : source).then((r) => live && setFiles(r.files)).catch((e) => live && setFilesErr(e.message)), typed ? 600 : 0);
-    return () => { live = false; clearTimeout(t); };
-  }, [source]);
-  const sharedPaths = () => {
-    if (!files || !hidden.size) return [];
-    return [...new Set(files.filter((f) => !f.secret).map((f) => dirOf(f.path)))].filter((d) => !hidden.has(d));
-  };
-  const opts = () => ({ problems: picked.map((id) => ({ id })), sharedPaths: sharedPaths() });
-  return (
-    <div className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1.5 text-sm text-muted">What is slowing your team down?
-        <div className="flex flex-wrap gap-2">{(problems || []).map((p) => (
-          <button key={p.id} onClick={() => setPicked((x) => (x.includes(p.id) ? x.filter((y) => y !== p.id) : [...x, p.id]))} className={'cursor-pointer rounded-full border px-3 py-1.5 text-[15px] ' + (picked.includes(p.id) ? 'border-ink bg-ink text-paper' : 'border-ink/15 bg-white/60 text-ink')}>
-            {p.label}{!p.supported && <span className="opacity-60"> · soon</span>}
-          </button>
-        ))}</div>
-      </div>
-      <div className="flex flex-col gap-2">
-        {signedIn
-          ? <select className={field} value={repo} onChange={(e) => { setRepo(e.target.value); setTyped(''); }}><option value="">{repos ? 'Choose one of your repositories' : 'Loading repositories…'}</option>{(repos || []).map((r) => <option key={r.fullName} value={r.fullName}>{r.fullName}{r.private ? ' (private)' : ''}</option>)}</select>
-          : s.me?.oauth !== false && <a href={signInHref('setup')} className={primary + ' self-start text-paper hover:text-paper'}>Sign in with GitHub for private repos</a>}
-        <input className={field} value={typed} onChange={(e) => { setTyped(e.target.value); setRepo(''); }} placeholder={signedIn ? 'Or paste any owner/name or GitHub URL' : 'Public repo: owner/name or GitHub URL'} />
-        <button className={ghost + ' self-start'} onClick={() => { setRepo('demo'); setTyped(''); }}>Use the bundled demo repo instead</button>
-      </div>
-      {source && <div className="flex flex-col gap-2"><span className="text-sm font-medium text-muted">What agents can see in {source === 'demo' ? 'the demo repo' : source}</span>
-        {filesErr ? <span className="text-sm text-bad">Couldn't list files: {filesErr}</span> : files ? <FolderPicker files={files} hidden={hidden} setHidden={setHidden} /> : <span className="text-sm text-muted">Loading files…</span>}
-      </div>}
-      <button className={primary + ' self-start'} disabled={!source || !!connecting || (files && hidden.size && !sharedPaths().length)}
-        onClick={act(() => (source === 'demo' ? api.connectDemo(opts()) : api.connect(source, opts())))}>{connecting ? 'Connecting…' : 'Connect'}</button>
-      {connecting && <span className="text-sm text-muted">{connecting}</span>}
-      {last?.type === 'connect.failed' && <span className="text-sm text-bad">{last.message}</span>}
-    </div>
-  );
-}
-
-export function Setup({ s, act, steps, onPost, go }) {
+// Three steps: set up payments, find flaky tests, post a bounty.
+// steps: [payments ready, scanned, bounty posted]. Repos are picked and
+// switched on the Repository page, not here.
+export function Setup({ s, act, steps, onPost, go, pay, onExplore }) {
   const last = (re) => [...s.events].reverse().find((e) => re.test(e.type));
   const scanning = ['scan.started', 'scan.file'].includes(last(/^scan\./)?.type);
-  // Connecting again (to another repo) reopens the first step until a newer connect.done arrives.
-  const [changing, setChanging] = useState(null);
-  const done = last(/^connect\.done$/)?.id ?? 0;
-  useEffect(() => { if (changing !== null && done > changing) setChanging(null); }, [done, changing]);
-  steps = changing !== null ? [false, false, false] : steps;
   const cur = steps.findIndex((x) => !x);
   // What the last finished scan said, e.g. "No test files found in the shared code".
   const started = last(/^scan\.started$/)?.id ?? 0;
   const scanNote = !scanning && started && s.events.filter((e) => e.id > started && /^scan\.(warning|completed)$/.test(e.type)).map((e) => e.message);
+  // Payments skipped: the step counts as done, but a bounty still needs a card,
+  // so posting asks for one first.
+  const skipped = pay?.billing?.mode === 'stripe' && !pay.billing.ready && pay.billing.prompted;
+  const needsCard = pay?.billing?.mode === 'stripe' && !pay.billing.ready;
   const rows = [
-    ['Connect your code', 'Pick a GitHub repo, or try the bundled demo, and choose which folders agents can see.', <ConnectForm s={s} act={act} />],
-    ['Find flaky tests', 'Shoal runs every test file 10 times and prices each flaky one by the dev-hours it costs.', (
-      <div className="flex flex-col gap-2">
-        <button className={primary + ' self-start'} disabled={!steps[0] || scanning} onClick={act(api.scan)}>{scanning ? 'Scanning…' : 'Scan my tests'}</button>
-        {scanNote?.length > 0 && <span className="text-sm text-muted">Last scan: {scanNote.join('. ')}.{!s.pains.length && ' Shoal needs a repo with automated tests; try the demo repo to see it work.'}</span>}
+    ['Set up payments', "Save a card with Stripe once. Each bounty's reward is held on it and charged only when a fix is verified and survives. You can skip this for now, but you'll need a card to post a bounty.", (
+      <div className="flex flex-wrap items-center gap-3">
+        <button className={primary} disabled={!pay?.billing} onClick={act(() => pay.setup('setup'))}>Add a card with Stripe</button>
+        <button className="cursor-pointer text-[15px] text-muted underline" disabled={!pay?.billing} onClick={act(pay.later)}>Skip for now</button>
       </div>
     )],
-    ['Post your first bounty', "Set a reward and pick who competes. It's held, not charged, until a fix passes 10 runs in a row and survives.", <div className="flex flex-wrap gap-2"><button className={primary} disabled={!steps[1]} onClick={onPost}>Post a bounty</button><button className={ghost} disabled={!steps[1]} onClick={() => go('agents')}>Browse agents first</button><button className={ghost} disabled={!steps[1]} onClick={() => go('trials')}>Try models for free</button></div>],
+    ['Find flaky tests', 'Shoal runs every test file 10 times and prices each flaky one by the dev-hours it costs.', (
+      <div className="flex flex-col gap-2">
+        <button className={primary + ' self-start'} disabled={scanning} onClick={act(api.scan)}>{scanning ? 'Scanning…' : 'Scan for flaky tests'}</button>
+        {scanNote?.length > 0 && <span className="text-sm text-muted">Last scan: {scanNote.join('. ')}.</span>}
+      </div>
+    )],
+    ['Post your first bounty', "Set a reward and pick who competes. It's held, not charged, until a fix passes 10 runs in a row and survives.", <div className="flex flex-wrap gap-2"><button className={primary} disabled={!steps[1]} onClick={needsCard ? () => dispatchEvent(new Event('shoal:need-payment')) : onPost}>Post a bounty</button><button className={ghost} disabled={!steps[1]} onClick={() => { onExplore?.(); go('agents'); }}>Browse agents first</button><button className={ghost} disabled={!steps[1]} onClick={() => { onExplore?.(); go('trials'); }}>Try models for free</button></div>],
   ];
   return (
     <section className="flex flex-col gap-5">
       <h2 className="m-0 border-b border-ink/12 pb-3 text-[24px] font-semibold tracking-[-0.025em]">Setup</h2>
       <div className="flex gap-1">{steps.map((ok, i) => <span key={i} className={'h-1.5 flex-1 rounded-full ' + (ok ? 'bg-accent' : 'bg-ink/15')} />)}</div>
       {rows.map(([t, b, action], i) => (
-        <div key={t} className={card + (i === 0 && !steps[0] ? '' : ' xl:flex-row xl:items-center') + ' xl:gap-6 ' + (cur === i ? 'ring-2 ring-accent/50' : steps[i] ? '' : 'opacity-55')}>
+        <div key={t} className={card + ' xl:flex-row xl:items-center xl:gap-6 ' + (cur === i ? 'ring-2 ring-accent/50' : steps[i] ? '' : 'opacity-55')}>
           <span className={'flex size-12 shrink-0 items-center justify-center rounded-2xl text-lg font-semibold ' + (steps[i] ? 'bg-accent text-paper' : 'bg-white/70')}>{steps[i] ? '✓' : i + 1}</span>
           <div className="flex min-w-0 flex-1 flex-col gap-1"><div className="text-[20px] font-semibold tracking-[-0.02em]">{t}</div><div className="text-[15px] text-muted">{b}</div></div>
-          <div className={'min-w-0 ' + (i === 0 && !steps[0] ? '' : 'xl:max-w-[520px]')}>{steps[i] ? <span className="flex flex-wrap items-center gap-3 text-[15px] text-accent">Done{i === 0 && s.connection?.fullName ? ' · ' + s.connection.fullName : ''}{i === 0 && <button className="cursor-pointer text-muted underline" onClick={() => setChanging(done)}>Connect a different repo</button>}</span> : action}</div>
+          <div className="min-w-0 xl:max-w-[520px]">{steps[i] ? <span className="flex flex-wrap items-center gap-3 text-[15px] text-accent">{i === 0 && skipped ? '' : 'Done'}{i === 0 && pay?.billing?.card ? ' · ' + pay.billing.card.brand + ' •••• ' + pay.billing.card.last4 : ''}{i === 0 && skipped && <><span className="text-muted">Skipped: add a card before posting a bounty.</span><button className="cursor-pointer text-accent underline" onClick={act(() => pay.setup('setup'))}>Add a card</button></>}</span> : action}</div>
         </div>
       ))}
-      {changing !== null && <button className={ghost + ' self-start'} onClick={() => setChanging(null)}>Keep {s.connection?.fullName}</button>}
       {steps.every(Boolean) && <div className="glass rounded-2xl px-5 py-4">You're set up. <button className="cursor-pointer text-accent underline" onClick={() => go('bounties')}>Go to your bounties</button>.</div>}
     </section>
   );
@@ -136,6 +54,7 @@ export function Setup({ s, act, steps, onPost, go }) {
 
 export function Repo({ s, act, go }) {
   const c = s.connection || {}, sync = c.sync || {}, gh = c.type === 'github';
+
   const [ci, setCi] = useState(null);
   useEffect(() => { api.ci().then(setCi).catch(() => setCi([])); }, [c.fullName]);
   const hiddenSources = [...new Set(s.pains.flatMap((p) => p.hiddenSources || []))];
@@ -146,7 +65,8 @@ export function Repo({ s, act, go }) {
       <H>Connected</H>
       <div className={card}>
         <div className="flex items-start justify-between gap-4"><div className="flex min-w-0 flex-col"><span className="truncate text-[21px] font-semibold">{c.fullName || 'Nothing connected'}</span><span className="text-[15px] text-muted">{gh ? 'GitHub' + (c.defaultBranch ? ' · ' + c.defaultBranch : '') + (c.private ? ' · private' : '') : 'Bundled demo repo'}{c.head ? ' · ' + c.head.sha.slice(0, 7) + ' ' + c.head.message : ''}</span></div>
-          <button className={ghost} onClick={() => go('setup')}>Change</button></div>
+</div>
+        <span className="text-sm text-muted">The repo is chosen when you post a bounty: the Post a bounty form starts with it.</span>
         <div className="flex flex-wrap gap-2">
           <Tag>{s.pains.length} test files scanned</Tag><Tag>{s.pains.filter((p) => !p.healthy).length} flaky</Tag>
           {gh && <Tag tone={c.canWrite ? 'ok' : undefined}>{c.canWrite ? 'Can open PRs' : 'Read-only, no PRs'}</Tag>}

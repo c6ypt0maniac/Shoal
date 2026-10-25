@@ -9,6 +9,7 @@
 import { emit } from "./events.js";
 import { state } from "./store.js";
 import { getSource, resetWorkspace, sh, writeFiles, WORKSPACE } from "./repo.js";
+import { isActive } from "./repos.js";
 import { headSha, pullRepo, reinstall } from "./github.js";
 import { inScope, isSecret } from "./scope.js";
 import { scan } from "./scanner.js";
@@ -101,8 +102,9 @@ export async function syncNow({ source = "manual" } = {}) {
 // Fixes the team bought live in the workspace, not on GitHub until their PR
 // merges. Put them back unless the same files changed upstream. Also called
 // at startup, after the workspace is rebuilt from the clone.
+// Only the active repo's: other repos' fixes live in their own copies (repos.js).
 export async function reapplyBoughtFixes(changed = []) {
-  for (const b of state.bounties.filter((b) => ["surviving", "settled"].includes(b.status))) {
+  for (const b of state.bounties.filter((b) => ["surviving", "settled"].includes(b.status) && isActive(b))) {
     const files = b.attempts.find((a) => a.passed && a.agentId === b.winner)?.files ?? [];
     const clash = files.filter((f) => changed.includes(f.path)).map((f) => f.path);
     if (clash.length) {

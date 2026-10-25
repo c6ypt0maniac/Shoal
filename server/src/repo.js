@@ -6,13 +6,15 @@ import { cp, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile, mkdir
 import { lstatSync } from "node:fs";
 import { SKIP_DIRS, commandFor, detectStacks, isTestPath, parseResults, sourcesFor, stackFor } from "./stack.js";
 import { exec } from "node:child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const DEMO_REPO = path.resolve(here, "../../demo-repo");
-export const REPOS_DIR = path.resolve(here, "../.repos");
+// SHOAL_REPOS_DIR: where clones go (default server/.repos), e.g. for a test server.
+export const REPOS_DIR = path.resolve(here, "..", process.env.SHOAL_REPOS_DIR || ".repos");
 // SHOAL_WORKSPACE lets a second server (e.g. a preview) run without
 // clobbering the main one's checkout.
 export const WORKSPACE = path.resolve(here, "..", process.env.SHOAL_WORKSPACE || ".workspace");
@@ -26,7 +28,24 @@ export function setSource(dir, testCommand) {
 }
 
 export const getSource = () => source;
-export const getStacks = () => source.stacks;
+
+// Which repo a piece of work is about. Normally the active one (connected on
+// the Repository page), but each bounty keeps its own repo: its race,
+// verification, survival checks and PR run inside withRepo(thatRepo, ...)
+// (see repos.js), and every helper below then reads that repo's working copy
+// and runs its tests, without each caller passing it along.
+const current = new AsyncLocalStorage();
+const ctx = () => current.getStore() ?? { workspace: WORKSPACE, stacks: source.stacks, testCommand: source.testCommand };
+export const withRepo = (repo, fn) => current.run(repo, fn);
+export const workspaceDir = () => ctx().workspace;
+export const getStacks = () => ctx().stacks;
+
+// A working copy of `from` at `to` (dependencies linked), and how its tests run.
+export async function buildWorkspace(from, to) {
+  await rm(to, { recursive: true, force: true });
+  await copyTree(from, to);
+  return detectStacks(to);
+}
 
 // Fresh working copy of the source, then learn how its tests run.
 export async function resetWorkspace() {
@@ -66,7 +85,7 @@ async function copyTree(from, to) {
 export const isTestFile = (relPath) => isTestPath(relPath);
 
 // Every test file in the repo, as posix paths relative to root.
-export async function listTestFiles(dir = WORKSPACE, rel = "") {
+export async function listTestFiles(dir = workspaceDir(), rel = "") {
   const found = [];
   for (const entry of await readdir(path.join(dir, rel), { withFileTypes: true })) {
     if (SKIP_DIRS.has(entry.name)) continue;
@@ -89,15 +108,15 @@ export async function listAllFiles(dir, rel = "") {
   return found;
 }
 
-export function readRepoFile(relPath, dir = WORKSPACE) {
+export function readRepoFile(relPath, dir = workspaceDir()) {
   return readFile(path.join(dir, relPath), "utf8");
 }
 
 // Every local source file a test depends on, in whatever language: imports are
 // followed through the files they import too (a bug can sit several files away
 // from the test). See sourcesFor in stack.js.
-export async function sourcesForTest(testFile, dir = WORKSPACE) {
-  return sourcesFor(stackFor(source.stacks, testFile), testFile, dir, await listAllFiles(dir));
+export async function sourcesForTest(testFile, dir = workspaceDir()) {
+  return sourcesFor(stackFor(getStacks(), testFile), testFile, dir, await listAllFiles(dir));
 }
 
 // Installed dependencies are linked into sandboxes, not copied: copying a
@@ -107,6 +126,7 @@ export async function sourcesForTest(testFile, dir = WORKSPACE) {
 export const DEPENDENCY_DIRS = new Set(["node_modules", ".venv", "venv", ".shoal-venv"]);
 
 export async function createSandbox() {
+  const WORKSPACE = workspaceDir();
   const dir = await mkdtemp(path.join(tmpdir(), "shoal-sandbox-"));
   const linked = [];
   const filter = (src) => {
@@ -148,14 +168,15 @@ export function sh(command, cwd, timeout = 120_000) {
 // trimmed log. A test whose toolchain is missing fails with a clear reason
 // rather than looking like a broken test.
 export async function runTestOnce(dir, testFiles) {
+  const { testCommand, stacks } = ctx();
   const files = testFiles ? [testFiles].flat() : await listTestFiles(dir);
-  if (source.testCommand) {
-    const { ok, output } = await sh([source.testCommand, ...files.map((f) => JSON.stringify(f))].join(" "), dir, 120_000);
+  if (testCommand) {
+    const { ok, output } = await sh([testCommand, ...files.map((f) => JSON.stringify(f))].join(" "), dir, 120_000);
     return { passed: ok, log: output.slice(-1500) };
   }
   const groups = new Map();
   for (const f of files) {
-    const stack = stackFor(source.stacks, f);
+    const stack = stackFor(stacks, f);
     if (!groups.has(stack)) groups.set(stack, []);
     groups.get(stack).push(f);
   }
@@ -183,8 +204,9 @@ export async function runTestOnce(dir, testFiles) {
 // One test file with per-test results where the framework reports them:
 // { passed, log, results: { testName: passed } | null }.
 export async function runTestDetail(dir, testFile) {
-  const stack = stackFor(source.stacks, testFile);
-  if (source.testCommand || !stack?.toolOk) return { ...(await runTestOnce(dir, testFile)), results: null };
+  const { testCommand, stacks } = ctx();
+  const stack = stackFor(stacks, testFile);
+  if (testCommand || !stack?.toolOk) return { ...(await runTestOnce(dir, testFile)), results: null };
   const { cmd, cwd } = commandFor(stack, [testFile], { detail: true });
   const run = await sh(cmd, path.join(dir, cwd), 180_000);
   return { passed: run.ok, log: run.output.slice(-3000), results: parseResults(stack, run.output) };

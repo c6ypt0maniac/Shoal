@@ -1,8 +1,16 @@
 // Thin client for the Shoal server (server/src/index.js).
+// The server isn't answering (stopped, or restarting): say so, not the browser's "Load failed".
+export const OFFLINE = "Can't reach the Shoal server. If it isn't running, start it with npm start.";
+
 async function req(method, url, body) {
-  const r = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined });
+  let r;
+  try {
+    r = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined });
+  } catch {
+    throw Object.assign(new Error(OFFLINE), { offline: true });
+  }
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.error || r.statusText);
+  if (!r.ok) throw Object.assign(new Error(data.error || r.statusText), { data });
   return data;
 }
 const get = (u) => req('GET', u), post = (u, b) => req('POST', u, b ?? {}), patch = (u, b) => req('PATCH', u, b ?? {}), del = (u) => req('DELETE', u);
@@ -15,6 +23,12 @@ export const api = {
   setRole: (role) => post('/api/me/role', { role }),
   signOut: () => post('/api/auth/github/logout'),
   deleteAccount: () => del('/api/me'),
+
+  // Saved payment method (set up once, used for every bounty)
+  billing: () => get('/api/billing'),
+  setupBilling: (from) => post('/api/billing/setup', { from }),
+  billingLater: () => post('/api/billing/later'),
+  removeBilling: () => del('/api/billing'),
   mcp: () => get('/api/mcp'),
 
   // Repo connection

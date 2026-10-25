@@ -170,23 +170,54 @@ function BuilderTools({ d, act, onSecret, reload }) {
   );
 }
 
-const SecretBox = ({ secret }) => (
-  <div className="flex flex-col gap-2 rounded-xl border border-accent/40 bg-accent/10 p-4">
-    <span className="text-sm font-medium">Signing secret, shown only this once</span>
-    <div className="flex gap-2"><code className="min-w-0 flex-1 break-all rounded-lg bg-white/70 px-3 py-2 text-sm">{secret}</code><button className={ghost} onClick={() => navigator.clipboard?.writeText(secret)}>Copy</button></div>
-    <span className="text-sm text-muted">Shoal signs every webhook request with it: <code>X-Shoal-Signature: v1=HMAC-SHA256("timestamp.body")</code> plus <code>X-Shoal-Timestamp</code>. Verify both before trusting a request.</span>
-  </div>
-);
+// The agent's signing secret, shown once. Copy says it worked; the technical
+// details are tucked away for whoever writes the webhook.
+function SecretBox({ secret }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(secret); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { setCopied(false); }
+  };
+  return (
+    <div className="flex flex-col gap-3 rounded-2xl border border-[#6B5432]/20 bg-white/45 p-4">
+      <span className="text-[15px] font-semibold">Signing secret</span>
+      <div className="flex gap-2">
+        <code className="min-w-0 flex-1 select-all break-all rounded-xl border border-[#6B5432]/15 bg-white/80 px-3 py-2.5 font-mono text-sm">{secret}</code>
+        <button className={(copied ? primary : ghost) + ' shrink-0'} onClick={copy}>{copied ? 'Copied ✓' : 'Copy'}</button>
+      </div>
+      <span className="text-sm text-[#6B5432]">Copy it now: Shoal won't show it again. Your webhook uses it to check that requests really come from Shoal. Lost it? Make a new one from Your agents.</span>
+      <details className="text-sm text-[#6B5432]">
+        <summary className="cursor-pointer select-none font-medium">How to check a request</summary>
+        <p className="mb-0 mt-2">Each request has an <code>X-Shoal-Timestamp</code> header and an <code>X-Shoal-Signature</code> header of the form <code>v1=&lt;HMAC-SHA256 of "timestamp.body"&gt;</code>, keyed with this secret. Compute the same HMAC and compare; reject old timestamps.</p>
+      </details>
+    </div>
+  );
+}
+
+// The webhook address as the server will read it (https:// added when left
+// out), and what's wrong with it, if anything.
+function checkWebhook(raw) {
+  let text = raw.trim();
+  if (!text) return { url: '', problem: null };
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) text = (/^(localhost|127\.0\.0\.1)(:|\/|$)/.test(text) ? 'http://' : 'https://') + text;
+  let u;
+  try { u = new URL(text); } catch { return { url: text, problem: "That isn't a web address. Use something like https://agent.example.com/shoal" }; }
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname);
+  if (!local && !u.hostname.includes('.')) return { url: text, problem: 'Use a full domain, like agent.example.com' };
+  if (u.protocol !== 'https:' && !(u.protocol === 'http:' && local)) return { url: text, problem: 'The address must start with https://' };
+  return { url: u.href, problem: null };
+}
 
 export function PublishAgent({ s, act, onDone }) {
   const [f, setF] = useState({ name: '', tagline: '', description: '', webhookUrl: '', languages: '' });
   const [pains, setPains] = useState(['flaky-tests']), [secret, setSecret] = useState(null);
+  const [busy, setBusy] = useState(false), [err, setErr] = useState('');
+  const hook = checkWebhook(f.webhookUrl);
   const set = (k) => (e) => setF((x) => ({ ...x, [k]: e.target.value }));
   if (secret) return (
     <div className="flex flex-col gap-5 p-8">
       <h2 className="m-0 text-[26px] font-semibold tracking-[-0.03em]">{f.name} is live</h2>
       <SecretBox secret={secret} />
-      <span className="text-[15px] text-muted">Shoal POSTs each bounty to your webhook with the failing test and the code it imports. Reply 200 with {'{ summary, files: [{ path, content }] }'} before the deadline.</span>
+      <span className="text-[15px] text-[#6B5432]">When a team picks your agent, Shoal sends the bounty to your webhook: the failing test and the code it uses. Your agent replies with the fixed files before the deadline.</span>
       <button className={primary + ' self-start'} onClick={onDone}>Done</button>
     </div>
   );
@@ -200,14 +231,23 @@ export function PublishAgent({ s, act, onDone }) {
       </div>
       <Label t="One-line pitch"><input className={field} value={f.tagline} onChange={set('tagline')} placeholder="Fixes races in async code" /></Label>
       <Label t="How it fixes tests"><textarea rows="4" className={field + ' resize-y'} value={f.description} onChange={set('description')} placeholder="Finds the race condition in the app code. Never touches the tests." /></Label>
-      <Label t="Webhook URL (https)"><input className={field} value={f.webhookUrl} onChange={set('webhookUrl')} placeholder="https://agent.example.com/shoal" /></Label>
+      <Label t="Webhook URL (https)">
+        <input className={field + (hook.problem ? ' border-bad/60' : '')} value={f.webhookUrl} onChange={set('webhookUrl')} placeholder="https://agent.example.com/shoal" inputMode="url" autoComplete="off" spellCheck="false" />
+        {hook.problem ? <span className="text-sm text-bad">{hook.problem}</span> : hook.url && hook.url !== f.webhookUrl.trim() && <span className="text-sm text-muted">Will be saved as {hook.url}</span>}
+      </Label>
       <div className="flex flex-col gap-1.5 text-sm text-muted">What it fixes
         <div className="flex flex-wrap gap-2">{Object.entries(PAINS).map(([id, lbl]) => <button key={id} onClick={() => setPains((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]))} className={'cursor-pointer rounded-full border px-3 py-1.5 text-[15px] ' + (pains.includes(id) ? 'border-ink bg-ink text-paper' : 'border-ink/15 bg-white/60 text-ink')}>{lbl}</button>)}</div>
       </div>
-      <button className={primary} disabled={!f.name.trim() || !f.webhookUrl.trim() || !pains.length} onClick={act(async () => {
-        const r = await api.publishListing({ ...f, pains, languages: f.languages.split(',').map((x) => x.trim()).filter(Boolean) });
-        setSecret(r.signingSecret);
-      })}>Publish</button>
+      {/* Errors from the server show here, in the form, not at the top of the page. */}
+      {err && <span className="text-sm text-bad">{err}</span>}
+      <button className={primary} disabled={busy || !f.name.trim() || !hook.url || !!hook.problem || !pains.length} onClick={async () => {
+        setBusy(true); setErr('');
+        try {
+          const r = await api.publishListing({ ...f, webhookUrl: hook.url, pains, languages: f.languages.split(',').map((x) => x.trim()).filter(Boolean) });
+          setSecret(r.signingSecret);
+          await s.refresh?.();
+        } catch (e) { setErr(e.message); } finally { setBusy(false); }
+      }}>{busy ? 'Publishing…' : 'Publish'}</button>
       <span className="text-sm text-muted">Agents can never edit tests, CI config or package manifests, and only see code from teams that pick them.</span>
     </div>
   );

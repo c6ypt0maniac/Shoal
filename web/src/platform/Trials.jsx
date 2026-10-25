@@ -30,13 +30,17 @@ function Runner({ id, title, info, act, reload }) {
 }
 
 export default function Trials({ s, act, go }) {
-  const [t, setT] = useState(null), [claude, setClaude] = useState(null), [codex, setCodex] = useState(null), [mcp, setMcp] = useState(null), [n, setN] = useState(0);
+  const [t, setT] = useState(null), [loadErr, setLoadErr] = useState(null), [claude, setClaude] = useState(null), [codex, setCodex] = useState(null), [mcp, setMcp] = useState(null), [n, setN] = useState(0);
   const reloadApps = (fresh = true) => { api.claude(fresh).then(setClaude).catch(() => setClaude({ installed: false })); api.codex(fresh).then(setCodex).catch(() => setCodex({ installed: false })); };
   useEffect(() => { reloadApps(false); api.mcp().then(setMcp).catch(() => {}); }, []);
   // Trials, proofs and runs report progress as events; refetch when they arrive.
-  useEffect(() => { const h = setTimeout(() => api.trials().then(setT).catch(() => {}), 150); return () => clearTimeout(h); }, [s.events.length, n]);
-  if (!s.pains.some((p) => !p.healthy)) return <Empty>No flaky tests yet. <button className="cursor-pointer text-accent underline" onClick={() => go('setup')}>Connect and scan a repo</button> first.</Empty>;
-  if (!t) return <div className="text-muted">Loading…</div>;
+  useEffect(() => { const h = setTimeout(() => api.trials().then((x) => { setT(x); setLoadErr(null); }, (e) => setLoadErr(e.message)), 150); return () => clearTimeout(h); }, [s.events.length, n]);
+  // Couldn't load: try again every few seconds, so it recovers once the server is back.
+  useEffect(() => { if (!loadErr) return; const h = setTimeout(() => setN((x) => x + 1), 4000); return () => clearTimeout(h); }, [loadErr, n]);
+  if (!s.pains.some((p) => !p.healthy)) return <Empty>No flaky tests yet. <button className="cursor-pointer text-accent underline" onClick={() => go('setup')}>Scan for flaky tests</button> first.</Empty>;
+  if (!t) return loadErr
+    ? <Empty>{loadErr} <button className="cursor-pointer text-accent underline" onClick={() => setN((x) => x + 1)}>Retry</button></Empty>
+    : <div className="text-muted">Loading…</div>;
   const run = t.run, running = run?.status === 'running';
   const ready = [claude?.loggedIn && 'claude', codex?.loggedIn && 'codex'].filter(Boolean);
   const balance = Number(s.credits?.balance ?? 0);

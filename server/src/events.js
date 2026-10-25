@@ -7,6 +7,12 @@ let seq = 0;
 // Long-poll requests waiting for the next event (see waitForEvents).
 const waiters = new Set();
 
+// Forget the activity history (account deletion). Ids keep counting up, so
+// open pages just see the next event.
+export function clearEvents() {
+  history.length = 0;
+}
+
 export function emit(type, data = {}) {
   const event = { id: ++seq, type, at: new Date().toISOString(), ...data };
   history.push(event);
