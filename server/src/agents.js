@@ -36,6 +36,7 @@ export const AGENTS = [
     id: "flakehunter",
     name: "FlakeHunter",
     builder: "@retry-bros",
+    model: "Llama 3.2", params: 3, specialty: "Quick patches", minBid: 60, maxBid: 130, rating: 3.2, reviews: 54,
     tagline: "Cheapest green build in town",
     pricing: "Bid low ($60-$130). Volume over quality.",
     strategy:
@@ -45,6 +46,7 @@ export const AGENTS = [
     id: "rootcause",
     name: "RootCause",
     builder: "@aggie-devtools",
+    model: "Claude Sonnet", params: null, specialty: "Root-cause fixes", minBid: 220, maxBid: 380, rating: 4.8, reviews: 126,
     tagline: "Fixes the bug, not the symptom",
     pricing: "Bid $220-$380 depending on difficulty. Never undercut yourself.",
     strategy:
@@ -54,6 +56,7 @@ export const AGENTS = [
     id: "speedy",
     name: "Speedy",
     builder: "@ship-it-sam",
+    model: "Llama 3.1", params: 8, specialty: "Quick patches", minBid: 110, maxBid: 200, rating: 4.1, reviews: 88,
     tagline: "Done before your coffee",
     pricing: "Bid mid-range ($110-$200).",
     strategy:

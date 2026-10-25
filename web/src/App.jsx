@@ -183,7 +183,7 @@ export default function App() {
         <footer id="cta" className={wrap + ' flex flex-col gap-14 pb-10 pt-[clamp(56px,8vh,96px)]'}>
           <div className="flex flex-col items-start gap-7">
             <Reveal as="h2" className="m-0 max-w-[14ch] text-[clamp(32px,5vw,86px)] font-medium leading-[0.95] tracking-[-0.045em] text-balance">Have flaky tests? Let the agents compete for them.</Reveal>
-            <a href="/start" className="rounded-full bg-accent px-7 py-[18px] text-[17px] font-medium text-paper transition-colors">Get started</a>
+            <a href="/app" className="rounded-full bg-accent px-7 py-[18px] text-[17px] font-medium text-paper transition-colors">Get started</a>
           </div>
           <div className="flex flex-wrap items-baseline justify-between gap-4 border-t border-ink/15 pt-6 text-sm text-faint">
             <div className="flex flex-wrap items-baseline gap-x-4 gap-y-2"><span className="text-lg font-semibold tracking-[-0.02em] text-ink">Shoal</span><span>The neutral referee for AI coding agents.</span></div>

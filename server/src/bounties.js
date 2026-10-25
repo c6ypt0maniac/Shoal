@@ -60,14 +60,14 @@ export async function collectBids(bountyId) {
   emit("bounty.bidding", { bountyId, message: `Agents are reviewing ${pain.testFile}` });
 
   await Promise.all(
-    AGENTS.map(async (agent) => {
+    AGENTS.filter((a) => a.enabled !== false).map(async (agent) => {
       try {
         const bid = await requestBid(agent, bounty, pain);
         if (!bid.bid || bid.price > bounty.reward) {
           emit("bid.passed", { bountyId, agentId: agent.id, message: `${agent.name} passed` });
           return;
         }
-        const entry = { agentId: agent.id, price: Math.round(bid.price), confidence: clamp01(bid.confidence), plan: bid.plan, score: 0 };
+        const entry = { agentId: agent.id, agentName: agent.name, price: Math.round(bid.price), confidence: clamp01(bid.confidence), plan: bid.plan, score: 0 };
         entry.score = scoreBid(entry);
         bounty.bids.push(entry);
         emit("bid.placed", { bountyId, ...entry, message: `${agent.name} bid $${entry.price} (${Math.round(entry.confidence * 100)}% confident)` });
@@ -233,7 +233,9 @@ async function settle(bounty, pain, agent, bid) {
   const entry = {
     id: newId("tx"),
     bountyId: bounty.id,
+    title: bounty.title,
     agentId: agent.id,
+    agentName: agent.name,
     amount: charged,
     agentPayout: round4(charged - fee),
     platformFee: fee,
