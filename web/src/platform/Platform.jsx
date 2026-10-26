@@ -23,7 +23,7 @@ const NAV = [
 const TITLES = {
   account: ['Profile', 'Your GitHub account and role'],
   billing: ['Credits & billing', 'Your card for bounties, and credit packs for API fixes. Rewards are held, never charged until a fix is verified.'],
-  setup: ['Get started', 'Choose a repository, find flaky tests, and post your first bounty.'],
+  setup: ['Get started', 'Three steps to your first bounty. Pick or switch repos on the Repository page.'],
   repo: ['Repository', 'What agents can see, and how Shoal stays in sync'],
   activity: ['Activity', 'Every attempt, green run, rejection and payout'],
   bounties: ['Bounties', 'Flaky tests from your repo, priced by the dev-hours they cost'],

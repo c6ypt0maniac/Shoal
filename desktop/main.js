@@ -199,34 +199,12 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-// GitHub sign-in runs in the user's browser, where they're already signed in
-// to GitHub and social logins (Google, Apple) can finish. The token lands on
-// this server either way, so reload the window once the server has it.
-const isSignInStart = (url) => baseUrl && url.startsWith(`${baseUrl}/api/auth/github`) && !url.includes("/callback") && !url.includes("/logout");
-
-async function reloadAfterSignIn(timeoutMs = 5 * 60_000) {
-  const until = Date.now() + timeoutMs;
-  while (Date.now() < until) {
-    await new Promise((r) => setTimeout(r, 1500));
-    try {
-      if ((await (await fetch(`${baseUrl}/api/github/me`)).json()).viewer) return mainWindow?.loadURL(`${baseUrl}/app`);
-    } catch {}
-  }
-}
-
-// Anything that isn't the app itself, GitHub or Stripe checkout opens in the browser.
+// Anything that isn't the app itself, GitHub sign-in or Stripe checkout opens in the browser.
 app.on("web-contents-created", (_e, contents) => {
   contents.on("will-navigate", (event, url) => {
     if (isSignIn(url)) {
       event.preventDefault();
       return signInInBrowser();
-    }
-    if (isSignInStart(url)) {
-      event.preventDefault();
-      shell.openExternal(url);
-      reloadAfterSignIn();
-      return;
-    }
     }
     if (isAppUrl(url) || url.startsWith("file:") || /^https:\/\/(github\.com|checkout\.stripe\.com)\//.test(url)) return;
     event.preventDefault();
