@@ -2,14 +2,50 @@
 // sync (server/src/index.js, scope.js, sync.js).
 import { useEffect, useState } from 'react';
 import { api } from './api.js';
-import { Tag, Toggle, card, ghost, primary } from './ui.jsx';
+import { Tag, Toggle, card, field, ghost, primary } from './ui.jsx';
 
 const label = (d) => (d === '.' ? 'Files in the repo root' : d + '/');
 const ago = (iso) => { if (!iso) return 'never'; const m = Math.round((Date.now() - Date.parse(iso)) / 60_000); return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : Math.round(m / 60) + ' h ago'; };
 
+// Available both during setup and later from the Repository page.
+function RepositoryActions({ s }) {
+  const c = s.connection || {};
+  const [choosing,setChoosing] = useState(false), [repos,setRepos] = useState(null), [selected,setSelected] = useState(''), [custom,setCustom] = useState('');
+  const [busy,setBusy] = useState(''), [error,setError] = useState(''), [note,setNote] = useState('');
+  const latestScan = [...s.events].reverse().find(e => /^scan\.(started|file|completed|error)$/.test(e.type));
+  const scanning = ['scan.started','scan.file'].includes(latestScan?.type);
+  const active = c.type === 'github' ? c.fullName : 'demo';
+  useEffect(()=>{if(!choosing)return;let live=true;setRepos(null);api.repos().then(r=>{if(live)setRepos(r);},e=>{if(live){setRepos([]);setError(e.message);}});return()=>{live=false;};},[choosing]);
+  const choices = [...new Set([...(active !== 'demo' ? [active] : []), ...(c.recent||[]).filter(r=>r.type==='github').map(r=>r.fullName), ...(repos||[]).filter(r=>!r.archived).map(r=>r.fullName)])].filter(Boolean);
+  const change = async e => {
+    e.preventDefault();const target=selected==='custom'?custom.trim():selected;
+    if(!target)return;setBusy('connect');setError('');setNote('Connecting and checking the repository…');
+    try {await(target==='demo'?api.connectDemo():api.connect(target));await s.refresh();setChoosing(false);setNote('Repository connected. Scanning its tests…');if(target==='demo'){await api.scan();await s.refresh();setNote('Repository connected and scan finished.');}}
+    catch(e){setError(e.message);setNote('');}finally{setBusy('');}
+  };
+  const findTests = async () => {
+    setBusy('scan');setError('');setNote(c.type==='github'?'Checking GitHub for new tests…':'Scanning repository tests…');
+    try {
+      if(c.type==='github'){
+        const before=c.sync?.syncedAt;const synced=await api.sync();
+        if(synced.waiting||synced.syncing)throw new Error(synced.waiting?'Wait for '+synced.waiting+' to finish, then scan again.':'Repository sync is already running. Try again when it finishes.');
+        // Pulling a new commit already scans it; otherwise request a fresh scan.
+        if(!synced.syncedAt||synced.syncedAt===before)await api.scan();
+      }else await api.scan();
+      await s.refresh();setNote('Scan finished. New failing tests appear in Bounties.');
+    }catch(e){setError(e.message);setNote('');}finally{setBusy('');}
+  };
+  return <div className={card}>
+    <div className="flex flex-wrap items-center justify-between gap-4"><div className="min-w-0"><div className="text-sm text-muted">Current repository</div><div className="break-all text-xl font-semibold">{c.fullName||'Bundled demo repo'}</div></div><div className="flex flex-wrap gap-2"><button className={ghost} disabled={Boolean(busy)||scanning} onClick={()=>{setChoosing(v=>!v);setSelected(active);setError('');}}>{choosing?'Cancel change':'Change repository'}</button><button className={primary} disabled={Boolean(busy)||scanning} onClick={findTests}>{busy==='scan'||scanning?'Finding flaky tests…':'Find new flaky tests'}</button></div></div>
+    <p className="m-0 text-sm text-muted">Add or update tests in your repository, then scan again. Shoal checks the latest GitHub code and runs each shared test file 10 times. Existing bounties stay with their original repository.</p>
+    {choosing&&<form onSubmit={change} className="flex flex-col gap-3 border-t border-ink/15 pt-4"><label className="flex flex-col gap-2 text-sm">Choose a repository<select className={field} value={selected} disabled={Boolean(busy)} onChange={e=>setSelected(e.target.value)}><option value="demo">Bundled demo repo</option>{choices.map(r=><option key={r} value={r}>{r}</option>)}<option value="custom">Connect another GitHub repository…</option></select></label>{repos===null&&<span className="text-sm text-muted">Loading your repositories…</span>}{selected==='custom'&&<label className="flex flex-col gap-2 text-sm">GitHub repository<input className={field} placeholder="owner/repository or GitHub URL" value={custom} required disabled={Boolean(busy)} onChange={e=>setCustom(e.target.value)}/></label>}<button type="submit" className={primary+' self-start'} disabled={Boolean(busy)||selected===active||(selected==='custom'&&!custom.trim())}>{busy==='connect'?'Connecting…':'Connect repository & scan'}</button></form>}
+    {error&&<p role="alert" className="m-0 text-sm text-bad">{error}</p>}
+    {(scanning||note)&&<p role="status" className="m-0 text-sm text-muted">{scanning?latestScan.message:note}</p>}
+  </div>;
+}
+
 // Three steps: set up payments, find flaky tests, post a bounty.
-// steps: [payments ready, scanned, bounty posted]. Repos are picked and
-// switched on the Repository page, not here.
+// steps: [payments ready, scanned, bounty posted].
 export function Setup({ s, act, steps, onPost, go, pay, onExplore }) {
   const last = (re) => [...s.events].reverse().find((e) => re.test(e.type));
   const scanning = ['scan.started', 'scan.file'].includes(last(/^scan\./)?.type);
@@ -39,6 +75,7 @@ export function Setup({ s, act, steps, onPost, go, pay, onExplore }) {
   return (
     <section className="flex flex-col gap-5">
       <h2 className="m-0 border-b border-ink/12 pb-3 text-[24px] font-semibold tracking-[-0.025em]">Setup</h2>
+      <RepositoryActions s={s}/>
       <div className="flex gap-1">{steps.map((ok, i) => <span key={i} className={'h-1.5 flex-1 rounded-full ' + (ok ? 'bg-accent' : 'bg-ink/15')} />)}</div>
       {rows.map(([t, b, action], i) => (
         <div key={t} className={card + ' xl:flex-row xl:items-center xl:gap-6 ' + (cur === i ? 'ring-2 ring-accent/50' : steps[i] ? '' : 'opacity-55')}>
@@ -63,10 +100,11 @@ export function Repo({ s, act, go }) {
   return (
     <section className="flex flex-col gap-5">
       <H>Connected</H>
+      <RepositoryActions s={s}/>
       <div className={card}>
         <div className="flex items-start justify-between gap-4"><div className="flex min-w-0 flex-col"><span className="truncate text-[21px] font-semibold">{c.fullName || 'Nothing connected'}</span><span className="text-[15px] text-muted">{gh ? 'GitHub' + (c.defaultBranch ? ' · ' + c.defaultBranch : '') + (c.private ? ' · private' : '') : 'Bundled demo repo'}{c.head ? ' · ' + c.head.sha.slice(0, 7) + ' ' + c.head.message : ''}</span></div>
 </div>
-        <span className="text-sm text-muted">The repo is chosen when you post a bounty: the Post a bounty form starts with it.</span>
+        <span className="text-sm text-muted">Change the repository above, or choose one when posting a bounty.</span>
         <div className="flex flex-wrap gap-2">
           <Tag>{s.pains.length} test files scanned</Tag><Tag>{s.pains.filter((p) => !p.healthy).length} flaky</Tag>
           {gh && <Tag tone={c.canWrite ? 'ok' : undefined}>{c.canWrite ? 'Can open PRs' : 'Read-only, no PRs'}</Tag>}
