@@ -42,7 +42,7 @@ const get = (p, user) => call("GET", p, null, user);
 const post = (p, body, user) => call("POST", p, body ?? {}, user);
 const waitFor = async (id, statuses) => {
   for (let i = 0; i < 300; i++) {
-    const b = (await get(`/api/bounties/${id}`)).json;
+    const b = (await get(`/api/bounties/${id}`, TEAM)).json;
     if (statuses.includes(b.status)) return b;
     await new Promise((r) => setTimeout(r, 1000));
   }
@@ -72,8 +72,11 @@ const webhook = createServer((req, res) => {
 await new Promise((r) => webhook.listen(4112, r));
 
 console.log("Scanning the demo repo...");
-await post("/api/scan");
-const cart = (await get("/api/pains")).json.find((p) => p.testFile === "test/cart.test.js");
+// The team: every user has their own workspace, so it scans, posts and
+// runs its bounty as one user.
+const TEAM = "team-alice";
+await post("/api/scan", {}, TEAM);
+const cart = (await get("/api/pains", TEAM)).json.find((p) => p.testFile === "test/cart.test.js");
 
 // --- Publishing ------------------------------------------------------------------
 const anon = await post("/api/marketplace/agents", { name: "Fixer", webhookUrl: "http://localhost:4112/shoal" });
@@ -95,7 +98,7 @@ const unknown = await post("/api/bounties", { painId: cart.id, reward: 300, comp
 check("unknown competitor refused", unknown.status === 404, unknown.json.error);
 const b1 = (await post("/api/bounties", { painId: cart.id, reward: 300, competitors: [agentId, "flakehunter"] }, "team-alice")).json;
 check("bounty records the team's picks", JSON.stringify(b1.competitors) === JSON.stringify([agentId, "flakehunter"]) && b1.postedBy === "team-alice");
-await post(`/api/bounties/${b1.id}/run`);
+await post(`/api/bounties/${b1.id}/run`, {}, TEAM);
 let bounty = await waitFor(b1.id, ["surviving", "failed"]);
 check("picked competitors competed", bounty.competition.attempts === 2, JSON.stringify(bounty.competition));
 check("builder agent got signed, fresh requests", received.length === 1 && received[0].signed && received[0].fresh);
@@ -108,11 +111,12 @@ check("both judges reviewed the winner (Claude + OpenAI)", judges.length === 2 &
 const early = await post("/api/marketplace/reviews", { listingId: agentId, bountyId: b1.id, stars: 5, body: "Great" }, "team-alice");
 check("no review during the survival window", early.status === 409, early.json.error);
 await new Promise((r) => setTimeout(r, 1500));
-bounty = (await post(`/api/bounties/${b1.id}/survival/check`)).json;
+bounty = (await post(`/api/bounties/${b1.id}/survival/check`, {}, TEAM)).json;
 check("fix survived -> settled", bounty.status === "settled", bounty.status);
 
 const stranger = await post("/api/marketplace/reviews", { listingId: agentId, bountyId: b1.id, stars: 1, body: "meh" }, "random-bob");
-check("only the team that posted the bounty can review", stranger.status === 403, stranger.json.error);
+// Another user can't see the bounty at all (each user has their own).
+check("only the team that posted the bounty can review", [403, 404].includes(stranger.status), stranger.json.error);
 const wrong = await post("/api/marketplace/reviews", { listingId: "flakehunter", bountyId: b1.id, stars: 1 }, "team-alice");
 check("only the winner can be reviewed", wrong.status === 403, wrong.json.error);
 const badStars = await post("/api/marketplace/reviews", { listingId: agentId, bountyId: b1.id, stars: 6 }, "team-alice");

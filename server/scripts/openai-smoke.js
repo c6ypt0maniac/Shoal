@@ -13,6 +13,9 @@ if (!process.env.OPENAI_API_KEY) {
   process.exit(1);
 }
 const { openaiFix } = await import("../src/agents.js");
+// The server never reads model keys from the environment; this local script
+// hands its key over the same way a user's request does.
+const { withKeys } = await import("../src/user-keys.js");
 
 const args = process.argv.slice(2);
 const named = args.filter((a) => !a.startsWith("--"));
@@ -36,7 +39,7 @@ const results = await Promise.all(
   models.map(async (model) => {
     const started = Date.now();
     try {
-      const { fix, cost } = await openaiFix(model, PROMPT, { effort: "low" });
+      const { fix, cost } = await withKeys({ openai: process.env.OPENAI_API_KEY }, () => openaiFix(model, PROMPT, { effort: "low" }));
       const fixed = fix.files.some((f) => f.path.endsWith("add.js") && /a\s*\+\s*b/.test(f.content));
       return { model, ok: fixed, cost, secs: (Date.now() - started) / 1000, note: fixed ? fix.summary : `unexpected fix: ${JSON.stringify(fix).slice(0, 120)}` };
     } catch (err) {

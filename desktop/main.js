@@ -1,9 +1,9 @@
 // Shoal's desktop app: starts the Shoal server inside Electron's main process
 // (or uses the one already running on port 4000) and opens it in a window.
 // Works on Windows, macOS and Linux.
-import { app, BrowserWindow, Menu, shell, dialog } from "electron";
+import { app, BrowserWindow, Menu, shell, dialog, session } from "electron";
 import { createServer } from "node:net";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, watch } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -95,17 +95,83 @@ async function waitForHealth(timeoutMs = 30_000) {
 
 const isAppUrl = (url) => baseUrl && url.startsWith(baseUrl);
 
-// GitHub sign-in runs in the system browser: Google (and the other single
-// sign-on providers GitHub hands off to) refuse to sign in inside an app
-// window, which leaves a blank "Redirecting to Google" page. The browser
-// signs in against the same Shoal server, which keeps the sign-in, and ends
-// on its "you're signed in" page (/signed-in), not the website. Meanwhile
-// the window checks /api/me until someone is signed in, then opens the platform.
+// GitHub sign-in runs in a small window of the app's own, so the app can
+// close it the moment GitHub sends it back to Shoal's "you're signed in"
+// page (/signed-in), then open the platform; no browser tab is left behind.
+// Google, Apple and company single sign-on refuse to sign in inside an app
+// window (a blank "Redirecting to Google" page), so if sign-in leaves GitHub
+// for one of them, the window closes and sign-in continues in the system
+// browser instead (signInInBrowser). Either way the Shoal server keeps the
+// sign-in.
 const isSignIn = (url) => /\/api\/auth\/github(\?|$)/.test(url) || /^https:\/\/github\.com\/login/.test(url);
+const SIGN_IN_URL = () => `${baseUrl}/api/auth/github?return=${encodeURIComponent("/signed-in")}`;
+let signInWindow = null;
 let waitingForSignIn = null;
 
+function signIn() {
+  if (signInWindow) return signInWindow.focus();
+  clearInterval(waitingForSignIn);
+  signInWindow = new BrowserWindow({
+    width: 520,
+    height: 720,
+    parent: mainWindow ?? undefined,
+    modal: process.platform !== "darwin" && Boolean(mainWindow),
+    title: "Sign in with GitHub",
+    backgroundColor: "#ffffff",
+    autoHideMenuBar: true,
+    show: false,
+    webPreferences: { contextIsolation: true, sandbox: true },
+  });
+  const win = signInWindow;
+  win.once("ready-to-show", () => win.show());
+  win.on("closed", () => (signInWindow = null));
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/.test(url)) shell.openExternal(url);
+    return { action: "deny" };
+  });
+  // GitHub and Shoal stay in the window; anything else is a single sign-on
+  // provider, which only works in the browser.
+  const follow = (event, url) => {
+    if (isShoalHost(url) && new URL(url).pathname === "/signed-in") {
+      if (/[?&]github_error=/.test(url)) return; // the page explains; the user closes it
+      event.preventDefault();
+      win.close();
+      return openPlatform();
+    }
+    if (isShoalHost(url) || /^https:\/\/github\.com\//.test(url)) return;
+    event.preventDefault();
+    win.close();
+    signInInBrowser();
+  };
+  win.webContents.on("will-navigate", follow);
+  win.webContents.on("will-redirect", follow);
+  win.loadURL(SIGN_IN_URL());
+}
+
+// Shoal itself, however GitHub's callback names it: this app's server,
+// localhost or 127.0.0.1 (the OAuth App may be registered with either), or
+// SHOAL_PUBLIC_URL.
+function isShoalHost(url) {
+  try {
+    const { origin, hostname } = new URL(url);
+    return isAppUrl(url) || hostname === "localhost" || hostname === "127.0.0.1" || (process.env.SHOAL_PUBLIC_URL && origin === new URL(process.env.SHOAL_PUBLIC_URL).origin);
+  } catch {
+    return false;
+  }
+}
+
+function openPlatform() {
+  if (!mainWindow) createWindow();
+  mainWindow.loadURL(`${baseUrl}/app`);
+  mainWindow.show();
+  mainWindow.focus();
+  app.focus({ steal: true });
+}
+
+// The browser fallback: it ends on /signed-in too, while the app checks
+// /api/me until someone is signed in, then opens the platform.
 function signInInBrowser() {
-  shell.openExternal(`${baseUrl}/api/auth/github?return=${encodeURIComponent("/signed-in")}`);
+  shell.openExternal(SIGN_IN_URL());
   clearInterval(waitingForSignIn);
   const started = Date.now();
   waitingForSignIn = setInterval(async () => {
@@ -114,11 +180,7 @@ function signInInBrowser() {
       const me = await (await fetch(`${baseUrl}/api/me`)).json();
       if (!me.viewer) return;
       clearInterval(waitingForSignIn);
-      if (!mainWindow) createWindow();
-      mainWindow.loadURL(`${baseUrl}/app`);
-      mainWindow.show();
-      mainWindow.focus();
-      app.focus({ steal: true });
+      openPlatform();
     } catch {}
   }, 2000);
 }
@@ -139,7 +201,7 @@ function createWindow() {
 
   // Links meant for a new tab (PRs, CLI sign-in pages) open in the browser.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (isSignIn(url)) signInInBrowser();
+    if (isSignIn(url)) signIn();
     else if (/^https?:/.test(url)) shell.openExternal(url);
     return { action: "deny" };
   });
@@ -176,7 +238,25 @@ app.on("second-instance", () => {
   mainWindow.focus();
 });
 
+// In development, rebuilding the website (npm run build) reloads the window,
+// so the app always shows the current web/dist.
+function reloadOnRebuild() {
+  const dist = path.join(root, "web", "dist");
+  if (app.isPackaged || !existsSync(dist)) return;
+  let timer = null;
+  watch(dist, (_e, file) => {
+    if (!/\.html$/.test(file ?? "")) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      const contents = mainWindow?.webContents;
+      if (contents && isAppUrl(contents.getURL())) contents.reloadIgnoringCache();
+    }, 500);
+  });
+}
+
 app.whenReady().then(async () => {
+  // Never show pages from an older build of the website.
+  await session.defaultSession.clearCache();
   buildMenu();
   createWindow();
   try {
@@ -200,11 +280,13 @@ app.on("window-all-closed", () => {
 });
 
 // Anything that isn't the app itself, GitHub sign-in or Stripe checkout opens in the browser.
+// The sign-in window handles its own navigation (signIn).
 app.on("web-contents-created", (_e, contents) => {
   contents.on("will-navigate", (event, url) => {
+    if (contents === signInWindow?.webContents) return;
     if (isSignIn(url)) {
       event.preventDefault();
-      return signInInBrowser();
+      return signIn();
     }
     if (isAppUrl(url) || url.startsWith("file:") || /^https:\/\/(github\.com|checkout\.stripe\.com)\//.test(url)) return;
     event.preventDefault();

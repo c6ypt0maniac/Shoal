@@ -15,6 +15,7 @@ export const tone = (status) => (status === 'settled' ? 'ok' : ['failed', 'clawe
 export const PATHS = {
   user: 'M10 10a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm-6 7c.6-3 3-4.5 6-4.5s5.4 1.5 6 4.5',
   card: 'M3 5.5h14v9H3zM3 8.5h14',
+  key: 'M7 13a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm2.5-3.5H17M14.5 9.5v3M17 9.5v2.5',
   play: 'M5 4l11 6-11 6z',
   repo: 'M5 3h9a1 1 0 0 1 1 1v12H6a1 1 0 0 1-1-1zM5 13.5h10M8 6h4',
   pulse: 'M2 10h4l2-5 4 10 2-5h4',
@@ -25,9 +26,12 @@ export const PATHS = {
   search: 'M9 15a6 6 0 1 0 0-12 6 6 0 0 0 0 12Zm4.5-1.5L17 17',
   refresh: 'M16 7a6.5 6.5 0 0 0-11.5-1.5M4 3v3h3M4 13a6.5 6.5 0 0 0 11.5 1.5M16 17v-3h-3',
   star: 'M10 2.8l2.2 4.6 5 .7-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5L2.8 8.1l5-.7z',
+  bookmark: 'M5.5 3h9v14.5L10 14l-4.5 3.5z',
+  trash: 'M4 6h12M8 6V4h4v2M5.5 6l.8 10.2a1 1 0 0 0 1 .8h5.4a1 1 0 0 0 1-.8L14.5 6',
   chip: 'M6 6h8v8H6zM8 3v3M12 3v3M8 14v3M12 14v3M3 8h3M3 12h3M14 8h3M14 12h3',
   menu: 'M3 5.5h14M3 10h14M3 14.5h14',
   close: 'M5 5l10 10M15 5L5 15',
+  help: 'M10 17.5a7.5 7.5 0 1 0 0-15 7.5 7.5 0 0 0 0 15ZM7.8 7.8a2.3 2.3 0 1 1 3.2 2.1c-.6.3-1 .8-1 1.5v.4M10 14.2v.3',
   flask: 'M8 2.5h4M8.5 2.5v5L4 16a1 1 0 0 0 .9 1.5h10.2a1 1 0 0 0 .9-1.5l-4.5-8.5v-5M6 12.5h8',
 };
 export const Icon = ({ n, size = 20, fill = 'none', className = '' }) => (
@@ -61,7 +65,7 @@ export function Browse({ label = 'Browse', q, setQ, placeholder, onRefresh, chip
 export const Group = ({ title, children }) => (
   <div className="flex flex-col gap-4"><div className="text-[17px] font-semibold">{title}</div><div className="grid grid-cols-1 gap-4 md:grid-cols-2">{children}</div></div>
 );
-export const Tag = ({ children, tone }) => <span className={'rounded-full px-3 py-1 text-[13.5px] tabular-nums ' + (tone === 'bad' ? 'bg-bad/12 text-bad' : tone === 'ok' ? 'bg-accent/15 text-accent' : 'bg-ink/7 text-ink')}>{children}</span>;
+export const Tag = ({ children, tone, title }) => <span title={title} className={'rounded-full px-3 py-1 text-[13.5px] tabular-nums ' + (tone === 'bad' ? 'bg-bad/12 text-bad' : tone === 'ok' ? 'bg-accent/15 text-accent' : 'bg-ink/7 text-ink')}>{children}</span>;
 export const Empty = ({ children }) => <div className="glass col-span-full rounded-[20px] p-8 text-center text-muted">{children}</div>;
 export function Toggle({ on, onChange, label }) {
   return (
@@ -87,7 +91,7 @@ export function ItemCard({ icon, toggle, title, by, meta, tags, body, footL, foo
       {meta}
       {tags && <div className="flex flex-wrap gap-2">{tags}</div>}
       {body && <p className="m-0 line-clamp-3 text-[15px] text-muted">{body}</p>}
-      <div className="mt-auto flex items-center justify-between gap-3 pt-2"><span className="text-[15px] text-muted">{footL}</span>{footR}</div>
+      <div className="mt-auto flex flex-wrap items-center justify-between gap-x-3 gap-y-2 pt-2"><span className="text-[15px] text-muted">{footL}</span><div className="flex flex-wrap gap-2">{footR}</div></div>
     </div>
   );
 }

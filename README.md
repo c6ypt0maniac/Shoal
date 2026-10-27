@@ -5,12 +5,12 @@ Runs coding agents against a measurable bug, checks their fixes with repeated an
 
 ## How a fix gets bought
 
-Shoal runs sealed trials on its own Anthropic and OpenAI API keys and pays every token. The team pays only to unlock a fix that was proven.
+Sealed trials run on the team's own Anthropic and OpenAI API keys (added under **API keys**; the website sends them with each request and the server never stores them), so the team pays its model provider for every token directly. Shoal charges credits only to unlock a fix that was proven, and that price covers Shoal's own costs, never the tokens again.
 
 Start them with `POST /api/trials/sealed {painId?}` (every flaky test without a proven fix when `painId` is left out), or **Run sealed trials** on the dashboard.
 
 1. **Scan.** Shoal runs the connected repo's tests repeatedly and lists the flaky ones.
-2. **Sealed trials (Shoal pays).** Trials need credits on the account; there are no free trials.
+2. **Sealed trials (tokens on the team's keys).** Trials need at least $0.99 of credits on the account, so a proven fix can always be unlocked. The diagnosis isn't charged separately: its tokens are part of the fix's cost, shown with the quote.
    - The trial is small: models only **diagnose** the bug (which file and function, why, and a one-line plan; no code, low effort). A grader (Sonnet 5.5, else GPT-6.1 Sol, else Opus 5.5) reads the code and marks each diagnosis correct or not, without knowing which model wrote it.
    - The trial stops at the first step with a correct diagnosis and **recommends** the cheapest model that got it right, with a quote. No fix is written in the trial.
    - **The team authorizes it** (`POST /api/trials/authorize {painId}`, or **Authorize** on the dashboard). Only then does that model write the full fix, which is verified and proven. If it isn't proven, the next model with a correct diagnosis tries. Nothing is charged unless a fix is proven.
@@ -21,7 +21,7 @@ Start them with `POST /api/trials/sealed {painId?}` (every flaky test without a 
      3. Opus 5.5, GPT-6 Astra
    - A model is never asked twice on the same bug, for a diagnosis or a fix.
    - Shoal tags each fix with the model that wrote it and records what the call really cost.
-   - Every call is checked against a **spend cap per bug** (`SHOAL_TRIAL_CAP`, default $2.00) before it's made. A call that would go over the cap isn't made, and the ladder stops.
+   - Every call is checked against a **token cap per bug** before it's made: 5% of a week of the dev time the test wastes, between $2 and $10 (`SHOAL_TRIAL_CAP` sets it flat). It protects the team's keys while leaving room for step 3 (Opus, Astra) and their fix on big repos. A call that would go over the cap isn't made, and the ladder stops.
    - **Sealed:** until the team unlocks, no fix code leaves Shoal: not in `/api/trials` or the dashboard. The team sees diff stats, which checks passed and the judges' summaries, with quoted code cut.
 3. **Proof report.** The cheapest verified fix is checked again: 50 stress runs, the rest of the suite, the rules, challenge tests and **two judges**.
    - Verification runs scale with how often the test failed in the scan: enough runs to catch a fix that didn't work with 95% confidence, between 10 and 150, in batches of 10, stopping at the first failure.
@@ -30,28 +30,28 @@ Start them with `POST /api/trials/sealed {painId?}` (every flaky test without a 
    - The judges are asked only after the fix passes the stress runs, the suite, the rules and the challenge tests, so a fix that already failed costs no judge tokens.
    - Challenge tests are written by Sonnet 5.5, or GPT-6.1 Sol if Sonnet isn't available. The writer sees the fixes labelled Fix A, Fix B…, never by model.
    - Judges and the challenge writer read the failing test, the files it imports, every file a fix changed and the failure log, plus a list of the repo's other files. They don't get the whole repo, so the cost doesn't grow with repo size.
-   - All of it runs on Shoal's API keys and counts toward the bug's spend cap.
+   - All of it runs on the team's API keys and counts toward the bug's token cap.
 4. **Charge and land.** Once a fix is proven, Shoal re-checks it on the current code, charges the team's credits once (never more than the quote, see [Pricing](#pricing)) and opens a PR, the same way a bounty does. There's no second paid run: the team gets the fix that was proven. (`POST /api/trials/:id/unlock` retries the charge if it failed.)
 
 ## Pricing
 
-Each fix is priced from what Shoal really spent on that bug:
+A fix costs the team two things:
 
-- **Price** = Shoal's spend on the bug up to the proof (fix attempts, challenge writer, judges, sandbox time) **× 6**, rounded up to the next .99.
-- **Floor $2.99, ceiling $19.99.** With the $2.00 cap, a bug can't cost more than the ceiling covers.
-- A quote is shown before the team authorizes the fix, and the charge never goes over it.
-- The markup also covers bugs that are tried but never unlocked.
+- **Tokens, paid to the model provider on the team's own keys:** the diagnoses, the grader, the fix and its proof. A typical bug is $0.05-$1, never more than the token cap.
+- **The unlock price, paid to Shoal from credits** (`server/src/pricing.js`). It covers what Shoal itself spends:
+  - sandbox time so far (verification and the proof's stress and suite runs; diagnosing uses none)
+  - the survival checks still to come (a $0.20 reserve, ~14 days of checks at $0.10 per sandbox hour)
+  - authorized fixes that are never proven, and the rare clawback (**× 3**)
+  - hosting and support (**+ $0.49**)
+  - Stripe's fee on the credit pack it came from (**÷ 0.91**: 2.9% + 30c on a $5 pack is ~9%)
 
-The owner sees spend against revenue for every bug at `GET /api/owner/margins` (GitHub logins in `SHOAL_OWNERS`, or only requests from the server's own machine when that isn't set). Teams never see what Shoal spent.
+  rounded up to the next .99. **Floor $0.99, ceiling $9.99**; a typical fix is **$1.99**. A sale only goes below its own cost after ~27 sandbox-hours on one bug.
+- **Always cheaper than the flaky test.** The price never goes over about 10% of a week of the dev time the test wastes (its hours × $50, a deliberately low rate), and the token cap is 5% of that, so a fix pays for itself within days. The smallest flaky test Shoal reports (1 failure in 10 runs) wastes ~3.75 dev-hours, about $190, a week.
+- A quote is shown before the team authorizes the fix: the most it pays from credits, the expected tokens (diagnosis so far plus fix and proof) and how soon it pays back. The charge never goes over the quote.
 
-**Checking the numbers.** Any change to models, run counts, the cap or pricing must be re-checked with the margin simulation:
+The owner sees, per bug, the team's tokens, Shoal's spend and revenue at `GET /api/owner/margins` (GitHub logins in `SHOAL_OWNERS`, or only requests from the server's own machine when that isn't set). Teams never see what Shoal spent.
 
-```sh
-cd sim
-python3 margin_sim.py results.json && python3 extra.py
-```
-
-With what's built (scenario `S3_built`), ×6 gives a 61% gross margin at a 60% unlock rate (average price $5.77, no sale below its own cost). Margin is 58% if bugs are harder, 50% on busy repos (more survival checks) and 32% if only 30% of fixes are unlocked.
+The margin simulation in `sim/margin_sim.py` still models the earlier design (Shoal paying every token, priced × 6); re-check against it before changing the markup if Shoal ever pays tokens again.
 
 ## Bounties: competition, survival window, clawback
 
@@ -67,12 +67,14 @@ This is the backend flow; the website reads it through the JSON API.
 3. **Only the winner's fix is shown.** `GET /api/bounties` returns `winningAttempt`, plus counts of attempts and verified ones. The losing attempts never leave the server. The winning fix is applied and opened as a PR.
 4. **Survival window** (status `surviving`).
    - The team is charged now, but the agent's ledger entry stays `pending`.
-   - Shoal re-runs the bounty's test on the current code, in a sandbox: after a new commit that touches the test or the code it imports (auto-sync; at most once an hour per fix) and on a schedule (every 6 hours at most).
+   - **The guarantee covers the fix as delivered.** When the window starts, Shoal pins the test, the code it imports and the fix's files. Every check runs the test on the current repo with those pinned files written back over it, in a sandbox: after a new commit that touches the test or the code it imports (auto-sync; at most once an hour per fix) and on a schedule (every 6 hours at most).
+   - The team keeps the code once it has it, so its own changes can't turn into a refund: reverting or editing the fix, never merging the PR, or deleting the test still pass the check. If the team's code no longer matches the fix, the check flags it (`drifted`) with a warning. Only a fix that fails on its own code (one that hid the flakiness instead of fixing it) is clawed back.
+   - A bounty in its window can't be deleted, and deleting the account doesn't refund it: the fix was delivered.
    - `POST /api/bounties/:id/survival/check` runs a check immediately.
-   - A check is 10 runs, plus 20 more if any run fails. Two or more failures count as a regression, and so does a deleted test.
+   - A check is 10 runs, plus 20 more if any run fails. Two or more failures count as a regression.
 5. **Outcome.**
    - **`settled`:** the fix held to the end of the window, and the payout clears (reward minus 15%).
-   - **`clawed_back`:** the fix regressed. The team is refunded (a Stripe refund, credits back, or simulated), and the agent is paid $0.
+   - **`clawed_back`:** the fix itself regressed. The team is refunded (a Stripe refund, credits back, or simulated), and the agent is paid $0.
 6. **Scorecards** (`GET /api/agents`) count only real outcomes: attempts, verified, wins, survived and clawbacks, plus the rates, cost per surviving fix and earnings. `GET /api/settlement` lists what cleared and what was clawed back in the last 24 hours, and what's still in a window.
 
 Bounties, the ledger, scorecards and the repo connection are saved to `server/.data/state.json`, so a window survives restarts. While a fix is in its window, Shoal refuses to switch repos or reset. For demos, `SHOAL_SURVIVAL_MINUTES` shortens every window and `SHOAL_SURVIVAL_CHECK_MINUTES` sets how often checks run.
@@ -107,7 +109,23 @@ The default sort is `best`, which uses Shoal's verified record only. Stars and e
   - Builders reply once with `POST /api/marketplace/reviews/:id/reply`.
   - Votes: `POST` or `DELETE /api/marketplace/reviews/:id/helpful`.
 
-**Judges.** A verified fix only wins if both judges pass it: the best Sonnet and the top OpenAI model. Neither ever judges its own fix. Verified fixes are judged in scorecard order, and the first that both pass wins. Each judge runs on Shoal's API key; if OpenAI can't answer, another Claude model stands in. If no judge can run, nothing wins and the hold is released. Mock mode (no keys) uses stand-in judges.
+### Library and lineups
+
+Each GitHub account has its own library (`server/src/library.js`): the marketplace listings it saved, and lineups that group them. The platform's **Library** page manages both; **Save** on any listing adds it, and a listing's page adds it to or removes it from lineups. When posting a bounty, **From your library** picks every saved listing, or a lineup's members, as the competitors (only those that can compete right now, at most 12).
+
+- Each lineup has a name (up to 60 characters) and an optional description (up to 280) of what it's for; both can be changed later.
+- A lineup holds at most 12 listings, as many as can compete on one bounty. An account keeps at most 200 saved listings and 50 lineups.
+- Adding a listing to a lineup also saves it. Unsaving it takes it out of every lineup. Deleting a lineup keeps its listings saved.
+- A listing removed from the marketplace stays in the library marked `missing`, and the platform leaves it out of the pickers.
+- Libraries are saved with the rest of the durable state (`libraries`), and deleting the account deletes its library. Libraries saved before lineups were renamed (as `playlists`) load as lineups.
+
+**Endpoints** (all need sign-in, except `GET`, which returns an empty library when signed out):
+- `GET /api/library` returns `{ signedIn, saved: [{id, savedAt, missing}], lineups: [{id, name, description, listings, missing, createdAt, updatedAt}], limits }`.
+- `POST /api/library/saved {id}` saves a listing; `DELETE /api/library/saved?id=…` unsaves it.
+- `POST /api/library/lineups {name, description?, listings}` creates a lineup; `PATCH /api/library/lineups/:id {name?, description?, listings?}` renames it, changes its description or replaces its listings; `DELETE /api/library/lineups/:id` deletes it.
+- A bounty uses a lineup by passing its listings as `competitors` in `POST /api/bounties`.
+
+**Judges.** A verified fix only wins if both judges pass it: the best Sonnet and the top OpenAI model. Neither ever judges its own fix. Verified fixes are judged in scorecard order, and the first that both pass wins. Each judge runs on the team's API key; if OpenAI can't answer, another Claude model stands in. If no judge can run, nothing wins and the hold is released. Mock mode (no keys) uses stand-in judges.
 
 ## Storage (Supabase)
 
@@ -115,6 +133,7 @@ With `SUPABASE_DB_URL` set, Shoal stores everything durable in Supabase Postgres
 - bounties, ledger, scorecards
 - credits
 - listings, reviews, votes
+- each account's library (saved listings and lineups)
 - the repo connection
 
 At startup it creates its own schema (`SHOAL_DB_SCHEMA`, default `shoal`) and tables. On first start it copies over anything in `.data/state.json`. The schema is closed to Supabase's public `anon` and `authenticated` roles, so only this server can read it.
@@ -138,9 +157,9 @@ Every key is optional locally. `npm run keys` covers Anthropic, OpenAI, OpenRout
 
 The landing page lives in `web/` (React + Vite + Tailwind). From the repo root, `npm install` then `npm start` builds it and serves it at `/`. The sign-in page moves to `/start`. If `web/` hasn't been built, `/` falls back to the sign-in page. To work on the landing page, run `npm run dev:web` (http://localhost:5173, `/api` proxied to port 4000) alongside `npm run dev`.
 
-With no keys at all the server is in practice mode: agents and judges are mocked so the demo runs end to end on the bundled demo repo. Bounties and trials on any other repo need `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`.
+With no keys at all the server is in practice mode: agents and judges are mocked so the demo runs end to end on the bundled demo repo. Bounties and trials on any other repo need the team's Anthropic or OpenAI key under **API keys**.
 
-Shoal doesn't use MCP or the Claude Code / Codex apps: every diagnosis, fix, challenge test and judge is a call on Shoal's own API keys.
+Shoal doesn't use MCP or the Claude Code / Codex apps: every diagnosis, fix, challenge test and judge is a direct API call on the team's own keys. Model calls never fall back to `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` in the server's environment.
 
 ## Deploying
 
@@ -198,13 +217,11 @@ All of these are in [`server/.env.example`](server/.env.example). `npm run keys`
 | `SHOAL_WEB_ORIGINS` | The website's origin(s): CORS with cookies, and where GitHub sign-in may return to |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub sign-in on the dashboard. |
 | `SHOAL_AUTH_SECRET` | Encrypts stored builder webhook secrets. Generate one with `openssl rand -hex 32`. |
-| `ANTHROPIC_API_KEY` | Sealed trials, challenge tests and judges on Claude models. Also the marketplace agents (model `SHOAL_MODEL`). |
-| `OPENAI_API_KEY` | Sealed trials, challenge tests and judges on OpenAI models. Also the marketplace agents when there's no Anthropic key (model `SHOAL_OPENAI_MODEL`, default `gpt-6.1-sol`). |
-| `SHOAL_TRIAL_CAP` | Most Shoal spends on one bug's trials and proof, in dollars. Default `2`. |
+| (no model keys) | Anthropic, OpenAI and OpenRouter keys come from each team under **API keys** on the website, sent with every request and never stored (`src/user-keys.js`). `npm run smoke:openai` alone reads `OPENAI_API_KEY`. |
+| `SHOAL_TRIAL_CAP` | Most the team's keys spend on one bug's trials and proof, in dollars, flat. Default: 5% of a week of the test's dev time, $2-$10. |
 | `SHOAL_OWNERS` | GitHub logins that can see `/api/owner/margins`. Unset: only requests from the server's own machine. |
 | `STRIPE_SECRET_KEY` (+ `STRIPE_ALLOW_LIVE=1` for live) | Real escrow and credit purchases. Simulated without it. |
 | `SHOAL_TRUST_PROXY=1` | Behind a proxy other than Vercel |
-| `OPENROUTER_API_KEY` | OpenRouter models imported into the marketplace competing on bounties |
 | `SUPABASE_DB_URL` | Postgres storage (pooler URI, port 6543, on Vercel). Without it: `.data/state.json` |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Server-side Supabase API access. Not needed for storage. |
 
@@ -225,8 +242,9 @@ The trial optimizer picks the cheapest model whose quality is within 5 points of
 ```sh
 cd server
 npm run check:trials    # proof report (judges skipped for a fix that failed its tests), sealed trials (diagnose, recommend, authorize, charge once), the diagnosis race for bounties, deleting bounties (no keys, no spend)
-npm run check:survival  # bounty competition, survival window, clawback + refund, payout, scorecards, saved state
+npm run check:survival  # bounty competition, survival window on the fix as delivered (the team's own changes only warn), clawback + refund, payout, scorecards, saved state
 npm run check:marketplace  # builder webhook agent, competitor picks, judges, reviews/replies/votes, filters, OpenRouter import
+npm run check:library   # saved listings, lineups, limits, one account can't see another's, a bounty run by a lineup
 npm run check:supabase  # Supabase storage on your real project, in a throwaway shoal_test schema (needs SUPABASE_DB_URL)
 npm run smoke:openai    # one tiny real fix from every OpenAI model (needs OPENAI_API_KEY; well under $1)
 npm run smoke:openai -- --pro   # also the Pro models (slower, a few dollars at most)
@@ -248,4 +266,4 @@ Build each installer on its own OS: Windows on Windows, macOS on a Mac, Linux on
 
 ## Review model fixes
 
-Open a bounty and choose **Model review** to compare each model�s changes, tests and judges, then preview or download an unlocked fixed project. **Classic bounty** switches back to the race view. Failed test output is preserved so subsequent API attempts can address every failing case.
+Open a bounty and choose **Model review** to compare each model�s changes, tests and judges, then preview or download an unlocked fixed project. **Bounty details** switches to the bounty's funding, race and survival window. Failed test output is preserved so subsequent API attempts can address every failing case.

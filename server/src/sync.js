@@ -8,8 +8,8 @@
 // imported code changed (survival.js). Nothing happens mid-run: while a trial, proof or fix is in progress
 // the sync waits and runs right after.
 import { emit } from "./events.js";
-import { state } from "./store.js";
-import { getSource, resetWorkspace, sh, writeFiles, WORKSPACE } from "./repo.js";
+import { state, scoped, withWorkspace, workspaces } from "./store.js";
+import { getSource, resetWorkspace, sh, workspaceDir, writeFiles } from "./repo.js";
 import { isActive } from "./repos.js";
 import { headSha, pullRepo, reinstall } from "./github.js";
 import { inScope, isSecret } from "./scope.js";
@@ -18,7 +18,8 @@ import { isProving } from "./proof.js";
 import { checkSurvivors, isCheckingSurvival } from "./survival.js";
 
 const CHECK_EVERY_MS = 60_000;
-let syncing = false;
+// Per user: is their check running (store.js scoped).
+const flags = () => scoped("sync", () => ({ syncing: false }));
 
 const short = (sha) => (sha ? sha.slice(0, 7) : "?");
 const dirOf = (p) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : ".");
@@ -42,7 +43,7 @@ export async function markConnected(dir) {
 }
 
 export function syncStatus() {
-  return { ...state.sync, head: state.connection.head ?? null, newPaths: state.connection.newPaths ?? [], syncing };
+  return { ...state.sync, head: state.connection.head ?? null, newPaths: state.connection.newPaths ?? [], syncing: flags().syncing };
 }
 
 export function setAutoSync(on) {
@@ -54,14 +55,14 @@ export function setAutoSync(on) {
 export async function syncNow({ source = "manual" } = {}) {
   const conn = state.connection;
   if (conn.type !== "github") throw httpError(400, "Only GitHub repos can sync. The demo repo doesn't change.");
-  if (syncing) return syncStatus();
+  if (flags().syncing) return syncStatus();
   const reason = busy();
   if (reason) {
     state.sync.waiting = reason;
     if (source === "manual") emit("sync.waiting", { message: `Sync will run as soon as ${reason.replace(/^a /, "the ")} finishes` });
     return syncStatus();
   }
-  syncing = true;
+  flags().syncing = true;
   try {
     const head = await headSha(conn.fullName, conn.defaultBranch, { fresh: true });
     state.sync.checkedAt = new Date().toISOString();
@@ -97,7 +98,7 @@ export async function syncNow({ source = "manual" } = {}) {
     emit("sync.error", { message: `Sync failed: ${state.sync.error}${source === "auto" ? " (retrying in a minute)" : ""}` });
     throw err;
   } finally {
-    syncing = false;
+    flags().syncing = false;
   }
 }
 
@@ -112,7 +113,7 @@ export async function reapplyBoughtFixes(changed = []) {
     if (clash.length) {
       emit("sync.step", { message: `${b.title}: ${clash.join(", ")} also changed on GitHub, so the bought fix wasn't re-applied. Check its pull request.` });
     } else if (files.length) {
-      await writeFiles(WORKSPACE, files);
+      await writeFiles(workspaceDir(), files);
     }
   }
 }
@@ -137,10 +138,23 @@ function unsharedNewPaths(changed) {
 }
 
 // Background check. Also catches up on a sync that had to wait.
-setInterval(() => {
-  if (state.connection.type !== "github" || !state.connection.head || syncing) return;
-  if (!state.sync?.auto && !state.sync?.waiting) return;
-  syncNow({ source: "auto" }).catch(() => {});
+// Every open workspace in turn, one at a time, so many users' syncs don't
+// all pull and rescan at once.
+let ticking = false;
+setInterval(async () => {
+  if (ticking) return;
+  ticking = true;
+  try {
+    for (const ws of workspaces()) {
+      await withWorkspace(ws, async () => {
+        if (state.connection.type !== "github" || !state.connection.head || flags().syncing) return;
+        if (!state.sync?.auto && !state.sync?.waiting) return;
+        await syncNow({ source: "auto" }).catch(() => {});
+      });
+    }
+  } finally {
+    ticking = false;
+  }
 }, CHECK_EVERY_MS).unref();
 
 // Node's fetch says only "fetch failed"; the reason is in err.cause.

@@ -61,16 +61,18 @@ try {
   check("server starts on Supabase", /Storage: Supabase \(schema shoal_test\)/.test(logs), logs.match(/Storage: .*/)?.[0]);
 
   console.log("Scanning the demo repo and running a bounty...");
-  await call("POST", "/api/scan", {});
-  const cart = (await call("GET", "/api/pains")).json.find((p) => p.testFile === "test/cart.test.js");
+  // Every user has their own workspace: the team scans, posts and runs as one.
+  const TEAM = "team-alice";
+  await call("POST", "/api/scan", {}, TEAM);
+  const cart = (await call("GET", "/api/pains", null, TEAM)).json.find((p) => p.testFile === "test/cart.test.js");
   const bounty = (await call("POST", "/api/bounties", { painId: cart.id, reward: 300, competitors: ["rootcause", "flakehunter"] }, "team-alice")).json;
-  await call("POST", `/api/bounties/${bounty.id}/run`, {});
+  await call("POST", `/api/bounties/${bounty.id}/run`, {}, TEAM);
   for (let i = 0; i < 120; i++) {
-    if ((await call("GET", `/api/bounties/${bounty.id}`)).json.status === "surviving") break;
+    if ((await call("GET", `/api/bounties/${bounty.id}`, null, TEAM)).json.status === "surviving") break;
     await new Promise((r) => setTimeout(r, 1000));
   }
   await new Promise((r) => setTimeout(r, 1500));
-  const settled = (await call("POST", `/api/bounties/${bounty.id}/survival/check`, {})).json;
+  const settled = (await call("POST", `/api/bounties/${bounty.id}/survival/check`, {}, TEAM)).json;
   check("bounty settled", settled.status === "settled", settled.status);
   const review = await call("POST", "/api/marketplace/reviews", { listingId: "rootcause", bountyId: bounty.id, stars: 4, body: "Solid fix", aspects: { codeQuality: 5 } }, "team-alice");
   check("review saved", review.status === 201, review.json.error);
@@ -81,13 +83,17 @@ try {
   await stop();
 
   const tables = (await db.query("select table_name from information_schema.tables where table_schema = $1 order by 1", [SCHEMA])).rows.map((r) => r.table_name);
-  check("tables created", ["bounties", "kv", "ledger", "listings", "review_votes", "reviews", "scorecards"].every((t) => tables.includes(t)), tables.join(", "));
+  check("tables created", ["bounties", "kv", "ledger", "listings", "review_votes", "reviews", "scorecards", "sessions", "user_kv"].every((t) => tables.includes(t)), tables.join(", "));
   const count = async (t) => Number((await db.query(`select count(*) from ${SCHEMA}.${t}`)).rows[0].count);
   check("rows written", (await count("bounties")) === 1 && (await count("ledger")) === 1 && (await count("reviews")) === 1 && (await count("review_votes")) === 1 && (await count("listings")) === 1, `bounties ${await count("bounties")}, ledger ${await count("ledger")}, reviews ${await count("reviews")}, votes ${await count("review_votes")}, listings ${await count("listings")}`);
-  const row = (await db.query(`select status, winner, data->>'reward' as reward from ${SCHEMA}.bounties`)).rows[0];
-  check("bounty columns filled", row.status === "settled" && row.winner === "rootcause" && row.reward === "300", JSON.stringify(row));
+  const row = (await db.query(`select status, winner, owner, data->>'reward' as reward from ${SCHEMA}.bounties`)).rows[0];
+  check("bounty columns filled, with its owner", row.status === "settled" && row.winner === "rootcause" && row.reward === "300" && row.owner === TEAM, JSON.stringify(row));
+  const ledgerOwner = (await db.query(`select owner from ${SCHEMA}.ledger`)).rows[0]?.owner;
+  check("ledger row has its owner", ledgerOwner === TEAM, ledgerOwner);
+  const userKv = (await db.query(`select key from ${SCHEMA}.user_kv where owner = $1 order by 1`, [TEAM])).rows.map((r) => r.key);
+  check("the team's connection, scan etc. in user_kv", ["connection", "pains", "source"].every((k) => userKv.includes(k)), userKv.join(", "));
   const kv = (await db.query(`select key from ${SCHEMA}.kv order by 1`)).rows.map((r) => r.key);
-  check("connection, credits etc. in kv", ["connection", "credits", "source"].every((k) => kv.includes(k)), kv.join(", "));
+  check("no per-user values in the shared kv", !kv.some((k) => ["connection", "pains", "source", "credits"].includes(k)), kv.join(", "));
   const dup = await db.query(`insert into ${SCHEMA}.reviews (id, data, listing_id, bounty_id, reviewer, stars) values ('x', '{}', 'rootcause', $1, 'eve', 5)`, [bounty.id]).then(() => "inserted", (e) => e.code);
   check("database enforces one review per bounty", dup === "23505", dup);
   const stars = await db.query(`insert into ${SCHEMA}.reviews (id, data, listing_id, bounty_id, reviewer, stars) values ('y', '{}', 'rootcause', 'other', 'eve', 9)`).then(() => "inserted", (e) => e.code);
@@ -97,8 +103,10 @@ try {
 
   logs = "";
   await start();
-  check("restart restores from Supabase", /Restored .*1 bounties/.test(logs), logs.match(/Restored .*/)?.[0]);
-  const back = (await call("GET", `/api/bounties/${bounty.id}`)).json;
+  const back = (await call("GET", `/api/bounties/${bounty.id}`, null, TEAM)).json;
+  check("restart restores the team's workspace from Supabase", back.status === "settled", back.status ?? back.error);
+  const stranger = await call("GET", `/api/bounties/${bounty.id}`, null, "someone-else");
+  check("another user can't see the team's bounty", stranger.status === 404, String(stranger.status));
   const listing = (await call("GET", "/api/marketplace/listing?id=rootcause")).json;
   check("bounty, scorecard and review back", back.status === "settled" && listing.shoal.survived === 1 && listing.rating.average === 4 && listing.reviews[0]?.helpful === 1, JSON.stringify({ status: back.status, survived: listing.shoal.survived, rating: listing.rating.average }));
   const glm = await call("GET", "/api/marketplace/listing?id=openrouter:z-ai/glm-5.3");

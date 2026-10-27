@@ -8,11 +8,13 @@
   "type": "module",
   "main": "main.js",
   "scripts": {
+    "prestart": "npm --prefix ../web run build",
     "start": "electron .",
+    "predist": "npm --prefix ../web run build",
     "dist": "electron-builder",
-    "dist:win": "electron-builder --win",
-    "dist:mac": "electron-builder --mac",
-    "dist:linux": "electron-builder --linux"
+    "dist:win": "npm run predist && electron-builder --win",
+    "dist:mac": "npm run predist && electron-builder --mac",
+    "dist:linux": "npm run predist && electron-builder --linux"
   },
   "devDependencies": {
     "electron": "^45.0.0",

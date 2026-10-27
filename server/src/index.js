@@ -7,30 +7,32 @@ import { refreshSources, scan } from "./scanner.js";
 import { buildFix, createBounty, getBounty, leaderboard, morningSettlement, publicBounty, recoverInterrupted, runBounty } from "./bounties.js";
 import { checkSurvivors } from "./survival.js";
 import { loadState, saveState, storageInfo } from "./persist.js";
-import { importOpenRouterModel, listing, listingExists, marketplace, ownerOf, publishAgent, refreshOpenRouter, removeListing, rotateSecret, updateAgent } from "./marketplace.js";
+import { importOpenRouterModel, listing, listingExists, marketplace, ownerOf, publishAgent, refreshOpenRouter, removeListing, rotateSecret, updateAgent, avatarImage } from "./marketplace.js";
 import { createReview, deleteReview, replyToReview, reviewsFor, voteHelpful } from "./reviews.js";
+import { createPod, deletePod, forgetLibrary, libraryFor, saveListing, unsaveListing, updatePod, favoriteListing } from "./library.js";
 import { clearEvents, eventsAfter, emit, waitForEvents } from "./events.js";
-import { state, resetState, resetRepoState, DEMO_CONNECTION } from "./store.js";
+import { state, resetState, resetRepoState, DEMO_CONNECTION, LOCAL, currentWorkspace, onOpen, openWorkspace, setGuest, withWorkspace } from "./store.js";
+import { SESSION_DAYS, createSession, endSession, endSessionsFor, latestToken, sessionFor } from "./sessions.js";
 import { isActive, recentRepos, rememberRepo, unpark, wipeParked } from "./repos.js";
-import { getStacks, isTestFile, listAllFiles, resetWorkspace, setSource, DEMO_REPO, REPOS_DIR, WORKSPACE } from "./repo.js";
+import { activeDir, getStacks, isTestFile, listAllFiles, resetWorkspace, setSource, userDirs, DEMO_REPO } from "./repo.js";
 import { describeStack } from "./stack.js";
 import { zip } from "./zip.js";
 import { readFile, rm } from "node:fs/promises";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { describeFile } from "./describe.js";
-import { confirmCreditPurchase, confirmFunding, holdWithSavedCard, paymentsMode, refundEscrow, releaseEscrow, startCheckout, startCreditCheckout, stripe, stripeConfigured, stripeKeyProblem } from "./escrow.js";
+import { confirmFunding, holdWithSavedCard, paymentsMode, releaseEscrow, startCheckout, stripe, stripeConfigured, stripeKeyProblem } from "./escrow.js";
 import { billingFor, dismissPrompt, finishSetup, forgetBilling, removeCard, savedCard, startSetup } from "./billing.js";
 import { isProtected } from "./verifier.js";
 import { PROBLEMS, cleanProblems, cleanSharedPaths, isSecret } from "./scope.js";
-import { AGENTS, MOCK, modelUnavailable } from "./agents.js";
+import { AGENTS, isMock, modelUnavailable } from "./agents.js";
 import { MODELS, costPerFix, overallPick, scoreboard, trialSummary } from "./trials.js";
-import { PACKS, addCredits, balanceCents, creditsSummary, fixPriceCents, isCreditAmount } from "./credits.js";
 import { proofFor, proveProblem, resetProofs } from "./proof.js";
 import { markConnected, reapplyBoughtFixes, setAutoSync, syncNow, syncStatus } from "./sync.js";
 import { authorizeFix, canStart, isSealed, ladderStatus, publicLadder, runSealedTrials, sealProof, sealTrial } from "./api-trials.js";
 import { marginView } from "./spend.js";
-import { unlockPrice } from "./pricing.js";
-import { integrationStatus } from "./integrations.js";
+import { overLimit, useOnce } from "./usage.js";
+import { checkModelKey, integrationStatus, MODEL_KEYS } from "./integrations.js";
+import { keyFor, keysMiddleware, keyStatus } from "./user-keys.js";
 import { reviewFor, startPreview, downloadFix, createFixPullRequest } from './fix-review.js';
 import {
   authorizeUrl, getOAuthToken, ciStats, cloneRepo, completeOAuth, getRepo, getViewer, hasToken, listRepos, oauthConfigured, parseRepo, repoFiles, revokeGrant, signedInWithEnvToken, signOut,
@@ -39,29 +41,72 @@ import {
 const PORT = Number(process.env.PORT) || 4000;
 // Where this server is reachable from outside: OAuth redirects are built
 // from it. On Vercel it defaults to the production domain.
-const BASE_URL = (
-  process.env.SHOAL_PUBLIC_URL ||
-  (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : `http://localhost:${PORT}`)
-).replace(/\/$/, "");
-// Where Stripe sends people back to. With SHOAL_PUBLIC_URL set (the API
-// behind a Vercel rewrite) that's the site they're on; the request's own
-// host would be the API host. Otherwise, the host the request came to.
-const publicBase = (req) => (process.env.SHOAL_PUBLIC_URL ? BASE_URL : `${req.protocol}://${req.get("host")}`);
-// The website, when it's hosted separately (e.g. its own Vercel project):
-// those origins may call the API from the browser, with cookies.
+const PUBLIC_URL = (process.env.SHOAL_PUBLIC_URL || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "")).replace(/\/$/, "");
+// Where people are sent back to (GitHub sign-in, Stripe): SHOAL_PUBLIC_URL,
+// else the site the request came through. Behind the website's Vercel proxy
+// (web/middleware.js, with trust proxy) that's the site's own domain.
+const publicBase = (req) => PUBLIC_URL || (req ? `${req.protocol}://${req.host}` : `http://localhost:${PORT}`);
+// Other origins that may call the API from the browser, with cookies. Not
+// needed when the website forwards /api/* here (same origin), so unset means
+// none: no other site can drive someone's Shoal session.
 const WEB_ORIGINS = (process.env.SHOAL_WEB_ORIGINS ?? "").split(",").map((o) => o.trim().replace(/\/$/, "")).filter(Boolean);
 
 const app = express();
 // Behind Vercel's (or any) proxy, trust X-Forwarded-* for the client IP and https.
 if (process.env.VERCEL || process.env.SHOAL_TRUST_PROXY === "1") app.set("trust proxy", 1);
-app.use(WEB_ORIGINS.length ? cors({ origin: WEB_ORIGINS, credentials: true }) : cors());
+if (WEB_ORIGINS.length) app.use(cors({ origin: WEB_ORIGINS, credentials: true }));
 // Gzip pages, scripts and JSON (the platform's JavaScript shrinks to about a
 // third). Not event streams: those are streamed and must not be buffered.
 app.use(compression({ filter: (req, res) => !/event-stream/.test(res.getHeader("Content-Type") ?? "") && compression.filter(req, res) }));
 // Trial patches carry whole files, so allow more than the 100kb default.
 // Not the Stripe webhook: its signature is checked against the raw body.
 const json = express.json({ limit: "2mb" });
-app.use((req, res, next) => (req.path === "/api/stripe/webhook" ? next() : json(req, res, next)));
+// Publishing an agent can carry a code bundle (up to 4 MB zipped, as base64).
+const agentJson = express.json({ limit: "6mb" });
+app.use((req, res, next) => (req.path === "/api/stripe/webhook" ? next() : req.path === "/api/marketplace/agents" ? agentJson(req, res, next) : json(req, res, next)));
+// The user's own model API keys, from request headers (user-keys.js).
+app.use(keysMiddleware);
+
+// --- Who's asking: sessions and workspaces ---------------------------------
+// Every request runs in its user's workspace (store.js): a GitHub sign-in's
+// session cookie, or (check scripts only) an X-Shoal-Test-User header. With
+// neither: on a local server, the local user; deployed, an empty stand-in
+// that can only read the public parts (the marketplace, health, sign-in).
+const COOKIE = "shoal_session";
+const deployed = process.env.NODE_ENV === "production";
+const testUsers = () => process.env.SHOAL_TEST_USERS === "1" && !process.env.VERCEL && !deployed;
+const cookieOf = (req) => {
+  for (const part of String(req.get("cookie") ?? "").split(";")) {
+    const [k, ...v] = part.trim().split("=");
+    if (k === COOKIE) return decodeURIComponent(v.join("="));
+  }
+  return null;
+};
+const setCookie = (res, value, maxAgeDays) =>
+  res.append("Set-Cookie", `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.round(maxAgeDays * 86400)}${deployed ? "; Secure" : ""}`);
+
+// What signed-out visitors may still do on a deployed server.
+const OPEN_TO_ALL = [/^\/api\/auth\//, /^\/api\/stripe\/webhook$/, /^\/api\/keys\/check$/];
+
+app.use(async (req, res, next) => {
+  try {
+    const test = testUsers() && req.get("x-shoal-test-user");
+    const session = test ? null : sessionFor(cookieOf(req));
+    const login = test ? String(test) : session?.login;
+    if (!login) {
+      const guest = currentWorkspace();
+      if (guest.unsaved && req.path.startsWith("/api/") && !["GET", "HEAD", "OPTIONS"].includes(req.method) && !OPEN_TO_ALL.some((re) => re.test(req.path))) {
+        return res.status(401).json({ error: "Sign in with GitHub first" });
+      }
+      return next();
+    }
+    const ws = await openWorkspace(login);
+    if (session?.token) ws.token = session.token;
+    withWorkspace(ws, next);
+  } catch (err) {
+    next(err);
+  }
+});
 
 
 // Long-running steps run in the background; the dashboard follows along on
@@ -97,15 +142,35 @@ app.use(express.static(PUBLIC_DIR, { index: false }));
 const cacheAssets = (res, file) => file.includes(`${path.sep}assets${path.sep}`) && res.set("Cache-Control", "public, max-age=31536000, immutable");
 if (hasLanding) app.use(express.static(WEB_DIR, { index: false, setHeaders: cacheAssets }));
 
+// Settings a deployed server is missing, in plain words. Logged at startup and
+// listed on /api/health so a half-configured deploy is obvious.
+function deployProblems() {
+  const out = [];
+  if (!oauthConfigured()) out.push("GitHub sign-in isn't set up: set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET");
+  if (!deployed) return out;
+  if (!process.env.SHOAL_PUBLIC_URL) out.push("SHOAL_PUBLIC_URL isn't set: GitHub sign-in and Stripe return to whatever host the request came through; set it to the website's URL");
+  if (!process.env.SUPABASE_DB_URL) out.push(`SUPABASE_DB_URL isn't set: state is kept in ${storageInfo().file ?? "a local file"}, which most hosts wipe on every deploy`);
+  if (process.env.GITHUB_TOKEN) out.push("GITHUB_TOKEN is set but ignored in production: remove it");
+  if (!process.env.SHOAL_AUTH_SECRET) out.push("SHOAL_AUTH_SECRET isn't set: nobody can sign in (sessions are stored encrypted with it), and builder webhook agents can't be published");
+  if (!stripeConfigured()) out.push(stripeKeyProblem() ?? "STRIPE_SECRET_KEY isn't set: payments are simulated");
+  return out;
+}
+
+// Checks the keys the user sent (headers), live and free. Nothing is stored.
+app.post("/api/keys/check", async (_req, res) =>
+  res.json(Object.fromEntries(await Promise.all(MODEL_KEYS.map(async (m) => [m.id, { name: m.name, turnsOn: m.turnsOn, where: m.where, ...(await checkModelKey(m.id, keyFor(m.id))) }])))),
+);
+
 app.get("/api/health", (_req, res) =>
   res.json({
     ok: true,
-    mock: MOCK,
-    // Which paid-run APIs Shoal has keys for.
-    providers: { anthropic: Boolean(process.env.ANTHROPIC_API_KEY), openai: Boolean(process.env.OPENAI_API_KEY) },
+    mock: isMock(),
+    // Which model APIs this request brought the user's keys for.
+    providers: keyStatus(),
     // Which outside APIs have their keys set (npm run keys -- --check tests them).
     integrations: integrationStatus(),
     githubToken: hasToken(),
+    setup: deployProblems(),
     payments: paymentsMode(),
     // Demo mode: every survival window lasts this many minutes (survival.js).
     survivalMinutes: Number(process.env.SHOAL_SURVIVAL_MINUTES) > 0 ? Number(process.env.SHOAL_SURVIVAL_MINUTES) : null,
@@ -146,10 +211,11 @@ app.get("/api/repo-files", async (req, res) => {
 app.get("/api/problems", (_req, res) => res.json(Object.entries(PROBLEMS).map(([id, p]) => ({ id, ...p }))));
 
 // Sign in with GitHub: redirect to GitHub's login/consent page, then GitHub
-// redirects back to the callback with a one-time code. Always built from
-// BASE_URL, never the host the page was opened on: GitHub only accepts the
-// callback registered on the OAuth App, so 127.0.0.1 vs localhost must not matter.
-const callbackUrl = () => `${BASE_URL}/api/auth/github/callback`;
+// redirects back to the callback with a one-time code. Built from
+// SHOAL_PUBLIC_URL when set (GitHub only accepts the callback registered on
+// the OAuth App, so 127.0.0.1 vs localhost must not matter), else from the
+// site the request came through.
+const callbackUrl = (req) => `${publicBase(req)}/api/auth/github/callback`;
 
 // Only same-site paths or the website's own origins, so the redirect can't
 // be pointed at another site.
@@ -184,9 +250,20 @@ app.get("/api/auth/github", (req, res) => {
 app.get("/api/auth/github/callback", async (req, res) => {
   let returnTo = "/";
   try {
-    returnTo = safeReturn(await completeOAuth({ code: req.query.code, state: req.query.state, callbackUrl: callbackUrl(req) }));
-    const viewer = await getViewer();
-    emit("auth.signed_in", { message: `Signed in to GitHub as @${viewer.login}` });
+    const signedIn = await completeOAuth({ code: req.query.code, state: req.query.state, callbackUrl: callbackUrl(req) });
+    returnTo = safeReturn(signedIn.returnTo);
+    // A local server has one user (the desktop app signs in through the
+    // system browser, whose cookie its window never sees), so a sign-in
+    // there is the local user's. Deployed, it's that GitHub login's own.
+    const owner = deployed ? signedIn.login : LOCAL;
+    setCookie(res, createSession(owner, signedIn.token), SESSION_DAYS);
+    const ws = await openWorkspace(owner);
+    ws.token = signedIn.token;
+    withWorkspace(ws, () => {
+      emit("auth.signed_in", { message: `Signed in to GitHub as @${signedIn.login}` });
+      // Warm the caches now so the pages after sign-in don't wait on GitHub.
+      listRepos().catch(() => {});
+    });
     res.redirect(withQuery(returnTo, "github=signed-in"));
   } catch (err) {
     res.redirect(withQuery(returnTo, `github_error=${encodeURIComponent(err.message)}`));
@@ -199,9 +276,10 @@ const withQuery = (url, query) => {
   return `${base}${base.includes("?") ? "&" : "?"}${query}${hash ? `#${hash}` : ""}`;
 };
 
-app.post("/api/auth/github/logout", (_req, res) => {
+app.post("/api/auth/github/logout", (req, res) => {
+  endSession(cookieOf(req));
+  setCookie(res, "", 0);
   signOut();
-  state.role = null;
   emit("auth.signed_out", { message: "Signed out of GitHub" });
   res.json({ ok: true });
 });
@@ -214,7 +292,7 @@ app.post("/api/auth/github/logout", (_req, res) => {
 app.delete("/api/me", async (req, res) => {
   const user = await currentUser(req);
   if (!user) return res.status(401).json({ error: "Sign in to delete your account" });
-  const testUser = process.env.SHOAL_TEST_USERS === "1" && !process.env.VERCEL && req.get("x-shoal-test-user");
+  const testUser = testUsers() && req.get("x-shoal-test-user");
   if (signedInWithEnvToken() && !testUser) {
     return res.status(400).json({ error: "This server signs in with GITHUB_TOKEN from server/.env, not a GitHub sign-in. Remove it from .env to sign out." });
   }
@@ -223,9 +301,10 @@ app.delete("/api/me", async (req, res) => {
   // fresh start. The wipe itself is in memory and saved before answering;
   // the slow, outside parts (Stripe, deleting the clone, revoking GitHub
   // access) run right after, in the background, so this answers quickly.
-  // Money is settled, not dropped: held rewards are released and a fix still
-  // in its survival window is refunded, so nothing is charged after you leave.
-  const settle = state.bounties.filter((b) => b.escrow?.status === "held" || (b.escrow?.status === "charged" && b.status === "surviving"));
+  // Money is settled, not dropped: held rewards are released, so nothing is
+  // charged after you leave. A fix already delivered isn't refunded: the team
+  // keeps its code (survival.js).
+  const settle = state.bounties.filter((b) => b.escrow?.status === "held");
   const listings = state.listings.filter((l) => (l.owner ?? l.addedBy) === login).map((l) => l.id);
   const removed = { listings: listings.length, reviews: state.reviews.length, bounties: state.bounties.length };
   // Every repo's copy goes: clones and the parked working copies (repos.js).
@@ -234,32 +313,43 @@ app.delete("/api/me", async (req, res) => {
   setSource(DEMO_REPO);
   await resetWorkspace();
   resetState();
+  // This user's workspace, back to a fresh start.
   Object.assign(state, {
     connection: DEMO_CONNECTION,
     ci: [],
     sync: { auto: true, checkedAt: null, syncedAt: null, waiting: null, error: null },
-    modelCost: {},
-    agents: {},
-    listings: [],
-    reviews: [],
-    reviewVotes: [],
-    credits: null,
     role: null,
+    usage: {},
     recentRepos: [],
+    trialSpend: {},
   });
+  // Their part of the shared marketplace: their listings (and those
+  // listings' scorecards and reviews), their reviews, replies and votes.
+  // Everyone else's stays.
+  const gone = new Set(listings);
+  state.listings = state.listings.filter((l) => !gone.has(l.id));
+  for (const id of gone) delete state.agents[id];
+  state.reviews = state.reviews.filter((r) => r.reviewer !== login && !gone.has(r.listingId));
+  for (const r of state.reviews) if (r.reply?.by === login) r.reply = null;
+  const kept = new Set(state.reviews.map((r) => r.id));
+  state.reviewVotes = state.reviewVotes.filter((v) => v.voter !== login && kept.has(v.reviewId));
+  removed.reviews -= state.reviews.length;
   delete state.billing[login];
+  forgetLibrary(login);
   clearEvents();
   signOut();
+  endSessionsFor(login);
+  setCookie(res, "", 0);
   await saveState();
-  emit("auth.account_deleted", { message: `Account deleted: everything was wiped (${removed.bounties} bounties, ${removed.listings} listings, ${removed.reviews} reviews, the repo connection and credits)` });
+  emit("auth.account_deleted", { message: `Account deleted: everything was wiped (${removed.bounties} bounties, ${removed.listings} listings, ${removed.reviews} reviews and the repo connection)` });
   res.json({ ok: true, removed });
 
   // Afterwards, in parallel: release/refund held money, delete the Stripe
   // customer, the clone on disk, and Shoal's access on GitHub.
   Promise.allSettled([
-    ...settle.map((b) => (b.escrow.status === "held" ? releaseEscrow(b) : refundEscrow(b)).catch((err) => emit("escrow.error", { bountyId: b.id, message: `Couldn't release or refund ${b.id} after deleting the account: ${err.message}. Do it by hand in Stripe.` }))),
+    ...settle.map((b) => releaseEscrow(b).catch((err) => emit("escrow.error", { bountyId: b.id, message: `Couldn't release ${b.id} after deleting the account: ${err.message}. Do it by hand in Stripe.` }))),
     forgetBilling(login, billing),
-    rm(REPOS_DIR, { recursive: true, force: true }),
+    ...userDirs().map((dir) => rm(dir, { recursive: true, force: true })),
     wipeParked(),
     revokeGrant(token),
   ]).then(() => console.log(`Finished cleaning up after @${login}'s account deletion`));
@@ -273,13 +363,15 @@ const ROLES = ["team", "builder"];
 // several people with an X-Shoal-Test-User header, only when the server was
 // started with SHOAL_TEST_USERS=1, and never on Vercel.
 async function currentUser(req) {
-  const test = process.env.SHOAL_TEST_USERS === "1" && !process.env.VERCEL && req.get("x-shoal-test-user");
+  const test = testUsers() && req.get("x-shoal-test-user");
   if (test) return { login: String(test) };
   return getViewer().catch(() => null);
 }
 
-app.get("/api/me", async (_req, res) => {
-  const viewer = await getViewer().catch(() => null);
+app.get("/api/me", async (req, res) => {
+  // A check script's test user counts as signed in, so it can drive the platform pages.
+  const test = testUsers() && req.get("x-shoal-test-user");
+  const viewer = test ? { login: String(test), name: String(test), avatarUrl: null, via: "test" } : await getViewer().catch(() => null);
   res.json({ viewer, oauth: oauthConfigured(), role: state.role });
 });
 
@@ -417,7 +509,10 @@ app.get("/api/events", (_req, res) => {
   res.end("retry: 600000\n\n");
 });
 
-app.post("/api/scan", async (_req, res) => res.json(await scan()));
+app.post("/api/scan", async (_req, res) => {
+  useOnce("scans");
+  res.json(await scan());
+});
 app.get("/api/pains", (_req, res) => res.json(state.pains));
 
 app.get("/api/bounties", (_req, res) => res.json(state.bounties.map(publicBounty)));
@@ -459,9 +554,7 @@ app.get("/api/trials", (_req, res) =>
     problems: trialSummary().map((p) => {
       const proof = proofFor(p.painId);
       const sealed = isSealed(state.trials.find((t) => t.id === proof.proven?.trialId));
-      // A sealed fix's price is set when it's proven; shown before unlocking.
-      const fixPrice = !proof.proven ? null : sealed ? (ladderStatus(p.painId)?.price ?? unlockPrice(p.painId)) : fixPriceCents(costPerFix(proof.proven.model)) / 100;
-      return { ...p, proof: sealProof(proof), fixPrice, sealed, ladder: publicLadder(p.painId) };
+      return { ...p, proof: sealProof(proof), sealed, ladder: publicLadder(p.painId) };
     }),
     // Sealed trials: file paths and size only, until unlocked (api-trials.js).
     trials: state.trials.slice(0, 40).map(sealTrial),
@@ -486,19 +579,21 @@ app.get("/api/trials/:id/repo", async (req, res) => {
   if (!trial) return res.status(404).json({ error: "No such trial" });
   if (isSealed(trial)) return res.status(403).json({ error: "This fix is sealed: unlock it to see the code" });
   const fixed = new Map(trial.files.map((f) => [f.path, f.content]));
-  const paths = [...new Set([...(await listAllFiles(WORKSPACE)), ...fixed.keys()])].filter((p) => !isSecret(p));
-  const files = await Promise.all(paths.map(async (p) => ({ path: p, data: fixed.get(p) ?? (await readFile(path.join(WORKSPACE, p))) })));
+  const dir = activeDir();
+  const paths = [...new Set([...(await listAllFiles(dir)), ...fixed.keys()])].filter((p) => !isSecret(p));
+  const files = await Promise.all(paths.map(async (p) => ({ path: p, data: fixed.get(p) ?? (await readFile(path.join(dir, p))) })));
   const name = `${(state.connection.fullName ?? "repo").replace(/[^\w.-]+/g, "-")}-fixed-by-${(MODELS[trial.model]?.name ?? "agent").replace(/\s+/g, "-")}.zip`;
   res.attachment(name).type("application/zip").send(zip(files));
 });
 
-// Sealed trials on Shoal's API keys (api-trials.js): the step ladder for one
+// Sealed trials on the team's API keys (api-trials.js): the step ladder for one
 // flaky test, or every flaky test with no proven fix yet when painId is
-// left out. Needs credits. Runs in the background; follow it on /api/events.
+// left out. Free, within the account's daily trial limit (usage.js). Runs
+// in the background; follow it on /api/events.
 app.post("/api/trials/sealed", (req, res) => {
   const painId = req.body?.painId;
-  const noCredits = canStart();
-  if (noCredits) return res.status(402).json({ error: noCredits });
+  const limited = canStart();
+  if (limited) return res.status(429).json({ error: limited });
   const ids = painId ? [painId] : state.pains.filter((p) => !p.healthy && !proofFor(p.id).proven && !["running", "awaiting_authorization", "fixing"].includes(ladderStatus(p.id)?.status)).map((p) => p.id);
   if (!ids.length) return res.status(400).json({ error: "No flaky test is waiting for trials. Scan the repo first." });
   if (painId && !state.pains.some((p) => p.id === painId)) return res.status(404).json({ error: `Unknown problem ${painId}` });
@@ -509,19 +604,17 @@ app.post("/api/trials/sealed", (req, res) => {
 });
 
 // The team's go-ahead for the model the trial recommended: it writes the fix
-// now; proven, credits are charged (never more than the quote shown) and the
-// fix lands as a PR. Runs in the background (api-trials.js authorizeFix).
+// now; proven, the fix lands as a PR, free. Runs in the background (api-trials.js authorizeFix).
 app.post("/api/trials/authorize", async (req, res) => {
   const painId = req.body?.painId;
   const ladder = ladderStatus(painId);
   if (ladder?.status !== "awaiting_authorization") return res.status(409).json({ error: "There's no recommended model waiting for your go-ahead on this test" });
-  if (Math.round(ladder.quote * 100) > balanceCents()) return res.status(402).json({ error: `Not enough credits: this fix costs up to $${ladder.quote.toFixed(2)}. Add credits first.` });
   const postedBy = (await currentUser(req))?.login ?? null;
   background(() => authorizeFix(painId, { survivalDays: req.body?.survivalDays, postedBy }));
   res.status(202).json(publicLadder(painId));
 });
 
-// Unlock a sealed, proven fix (if the charge after authorizing failed): charges credits once at the price shown, then
+// Unlock a sealed, proven fix (if landing it after authorizing failed): free;
 // the exact fix that was proven lands as a PR (bounties.js runUnlock). No
 // second paid run.
 app.post("/api/trials/:id/unlock", async (req, res) => {
@@ -532,9 +625,7 @@ app.post("/api/trials/:id/unlock", async (req, res) => {
   if (state.bounties.some((b) => b.trialId === trial.id && !["failed", "payment_failed"].includes(b.status))) {
     return res.status(409).json({ error: "This fix is already being unlocked" });
   }
-  const price = ladderStatus(trial.painId)?.price ?? unlockPrice(trial.painId);
-  if (Math.round(price * 100) > balanceCents()) return res.status(402).json({ error: `Not enough credits: unlocking costs $${price.toFixed(2)}. Add credits first.` });
-  const bounty = createBounty({ painId: trial.painId, reward: price, funding: "credits", apiModel: trial.model, trialId: trial.id, unlock: true, survivalDays: req.body?.survivalDays, postedBy: (await currentUser(req))?.login ?? null });
+  const bounty = createBounty({ painId: trial.painId, funding: "free", apiModel: trial.model, trialId: trial.id, unlock: true, survivalDays: req.body?.survivalDays, postedBy: (await currentUser(req))?.login ?? null });
   background(() => runBounty(bounty.id));
   res.status(202).json(publicBounty(bounty));
 });
@@ -581,26 +672,6 @@ app.post("/api/proofs", (req, res) => {
   res.status(202).json(sealProof(proofFor(painId)));
 });
 
-// --- Credits -----------------------------------------------------------------
-
-app.get("/api/credits", (_req, res) => res.json({ ...creditsSummary(), payments: paymentsMode() }));
-
-// Buy a pack: Stripe Checkout when Stripe is set up, otherwise simulated.
-app.post("/api/credits/buy", async (req, res) => {
-  const dollars = Number(req.body?.dollars);
-  if (!isCreditAmount(dollars)) return res.status(400).json({ error: "Choose a pack or a whole amount from $5 to $1,000" });
-  // Credits are bought, never given: without Stripe there's no payment, so no
-  // credits. ("Buy" used to add them for free in simulated mode, which is how
-  // a balance appeared from nowhere.)
-  if (!stripeConfigured()) return res.status(409).json({ error: "Buying credits needs Stripe, which isn't set up on this server" });
-  const base = publicBase(req);
-  const checkoutUrl = await startCreditCheckout(dollars, {
-    successUrl: `${base}/api/credits/return?session_id={CHECKOUT_SESSION_ID}`,
-    cancelUrl: `${base}${dashboard("credits=cancelled", "billing")}`,
-  });
-  res.json({ checkoutUrl });
-});
-
 // Stripe webhook: the same confirmations as the return pages, sent straight
 // from Stripe, so a payment still lands if the browser never makes it back
 // (tab closed, network dropped). All three are safe to receive twice.
@@ -618,27 +689,18 @@ app.post("/api/stripe/webhook", express.raw({ type: "*/*" }), async (req, res) =
   }
   if (["checkout.session.completed", "checkout.session.async_payment_succeeded"].includes(event.type)) {
     const session = event.data.object;
-    if (session.metadata?.kind === "credits") {
-      if (session.payment_status === "paid") await addCredits({ dollars: session.amount_total / 100, mode: paymentsMode(), stripeSessionId: session.id });
-    } else if (session.metadata?.kind === "billing-setup") {
-      await finishSetup(session.metadata.github, session.id);
-    } else if (session.metadata?.bountyId) {
-      const bounty = state.bounties.find((b) => b.id === session.metadata.bountyId);
-      if (bounty) await fundAndStart(bounty, session.id);
-    }
+    // Checkouts name whose they are (escrow.js); older ones the local user's.
+    const ws = await openWorkspace(session.metadata?.owner || LOCAL);
+    await withWorkspace(ws, async () => {
+      if (session.metadata?.kind === "billing-setup") {
+        await finishSetup(session.metadata.github, session.id);
+      } else if (session.metadata?.bountyId) {
+        const bounty = state.bounties.find((b) => b.id === session.metadata.bountyId);
+        if (bounty) await fundAndStart(bounty, session.id);
+      }
+    });
   }
   res.json({ received: true });
-});
-
-app.get("/api/credits/return", async (req, res) => {
-  try {
-    const { dollars, sessionId } = await confirmCreditPurchase(req.query.session_id);
-    await addCredits({ dollars, mode: paymentsMode(), stripeSessionId: sessionId });
-    res.redirect(dashboard("credits=added", "billing"));
-  } catch (err) {
-    emit("credits.error", { message: `Credit purchase didn't go through: ${err.message}` });
-    res.redirect(dashboard("credits=failed", "billing"));
-  }
 });
 
 // With Stripe, the reward is held on the team's saved card (set up once,
@@ -666,7 +728,7 @@ async function openBounty(req, res, opts) {
         // Declined, or Stripe failed: don't leave an unfundable bounty behind.
         state.bounties = state.bounties.filter((b) => b !== bounty);
         emit("escrow.error", { bountyId: bounty.id, message: `Couldn't hold the reward on your card: ${err.message}` });
-        throw Object.assign(new Error(`Your card couldn't hold $${bounty.reward}: ${err.message.replace(/\.$/, "")}. Update your card in Credits & billing.`), { status: 402 });
+        throw Object.assign(new Error(`Your card couldn't hold $${bounty.reward}: ${err.message.replace(/\.$/, "")}. Update your card in Billing.`), { status: 402 });
       }
     }
   }
@@ -761,25 +823,22 @@ app.post("/api/bounties/:id/survival/check", async (req, res) => {
   res.json(publicBounty(bounty));
 });
 
-// Delete a bounty. Its money is settled first: a held reward is released,
-// and a fix still in its survival window is refunded and its payout
-// cancelled. Not while agents are working on it, and only by whoever posted
-// it (when it has a poster). The ledger keeps what already happened.
+// Delete a bounty. Its money is settled first: a held reward is released.
+// Not while agents are working on it, not once its fix was delivered and is
+// in its survival window (the team has the code; survival.js), and only by
+// whoever posted it (when it has a poster). The ledger keeps what already
+// happened.
 const WORKING = ["bidding", "awarding", "competing", "diagnosing", "verifying", "judging"];
 app.delete("/api/bounties/:id", async (req, res) => {
   const bounty = getBounty(req.params.id);
   const login = (await currentUser(req))?.login ?? null;
   if (bounty.postedBy && bounty.postedBy !== login) return res.status(403).json({ error: "Only whoever posted this bounty can delete it" });
   if (WORKING.includes(bounty.status)) return res.status(409).json({ error: "Agents are working on this bounty; delete it once they're done" });
+  if (bounty.status === "surviving") return res.status(409).json({ error: `The fix was delivered and is in its survival window until ${bounty.survival.endsAt.slice(0, 10)}; delete it after that` });
   if (bounty.escrow?.status === "held") await releaseEscrow(bounty);
-  if (bounty.status === "surviving" && bounty.escrow?.status === "charged") {
-    await refundEscrow(bounty);
-    const entry = state.ledger.find((t) => t.bountyId === bounty.id && t.status === "pending");
-    if (entry) Object.assign(entry, { status: "cancelled", settledAt: new Date().toISOString() });
-  }
   state.bounties = state.bounties.filter((b) => b !== bounty);
   await saveState();
-  emit("bounty.deleted", { bountyId: bounty.id, message: `Deleted the bounty for ${bounty.testFile}${bounty.escrow?.status === "refunded" ? " (refunded)" : bounty.escrow?.status === "released" ? " (hold released)" : ""}` });
+  emit("bounty.deleted", { bountyId: bounty.id, message: `Deleted the bounty for ${bounty.testFile}${bounty.escrow?.status === "released" ? " (hold released)" : ""}` });
   res.json({ ok: true, escrow: bounty.escrow?.status ?? null });
 });
 
@@ -809,6 +868,8 @@ app.get("/api/bounties/:id/file", (req, res) => {
 app.post("/api/bounties/:id/run", (req, res) => {
   const bounty = getBounty(req.params.id);
   if (bounty.escrow.status !== "held") return res.status(402).json({ error: "Fund this bounty before agents can work on it" });
+  const busy = overLimit("bounties");
+  if (busy) return res.status(429).json({ error: busy });
   background(() => runBounty(bounty.id));
   res.status(202).json({ accepted: true, bountyId: bounty.id });
 });
@@ -862,6 +923,14 @@ app.post("/api/agents/:id/enabled", (req, res) => {
 // for the filters and sorts. Listing ids contain slashes
 // (openrouter:z-ai/glm-5.3), so single listings go by ?id=.
 app.get("/api/marketplace", async (req, res) => res.json(marketplace(req.query, await currentUser(req))));
+// An agent's uploaded image (marketplace.js). The URL carries the image's
+// hash (?v=), so browsers can keep it until it changes.
+app.get("/api/marketplace/avatar", (req, res) => {
+  const img = avatarImage(String(req.query.id ?? ""));
+  if (!img) return res.status(404).json({ error: "No image for this listing" });
+  res.set({ "Content-Type": img.type, "Cache-Control": "public, max-age=31536000, immutable", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'" });
+  res.send(img.bytes);
+});
 app.get("/api/marketplace/listing", async (req, res) => {
   const user = await currentUser(req);
   res.json({ ...listing(req.query.id, user), reviews: reviewsFor(req.query.id, req.query.reviewSort) });
@@ -878,8 +947,8 @@ app.post("/api/marketplace/openrouter/refresh", async (_req, res) => {
 // Builders publish agents with a webhook. The response has the signing
 // secret, shown this once. Body: { name, tagline, description, webhookUrl,
 // pains, languages }
-app.post("/api/marketplace/agents", async (req, res) => res.status(201).json(publishAgent(req.body ?? {}, await currentUser(req))));
-app.patch("/api/marketplace/agents", async (req, res) => res.json(updateAgent(req.query.id, req.body ?? {}, await currentUser(req))));
+app.post("/api/marketplace/agents", async (req, res) => res.status(201).json(await publishAgent(req.body ?? {}, await currentUser(req))));
+app.patch("/api/marketplace/agents", async (req, res) => res.json(await updateAgent(req.query.id, req.body ?? {}, await currentUser(req))));
 app.post("/api/marketplace/agents/rotate-secret", async (req, res) => res.json(rotateSecret(req.query.id, await currentUser(req))));
 app.delete("/api/marketplace/listing", async (req, res) => {
   removeListing(req.query.id, await currentUser(req));
@@ -896,6 +965,22 @@ app.delete("/api/marketplace/reviews/:id", async (req, res) => {
 app.post("/api/marketplace/reviews/:id/reply", async (req, res) => res.json(replyToReview(req.params.id, req.body?.body, await currentUser(req), ownerOf)));
 app.post("/api/marketplace/reviews/:id/helpful", async (req, res) => res.json(voteHelpful(req.params.id, await currentUser(req), true)));
 app.delete("/api/marketplace/reviews/:id/helpful", async (req, res) => res.json(voteHelpful(req.params.id, await currentUser(req), false)));
+
+// Library: listings the signed-in account saved, and its pods of them
+// (see library.js). Bounties can take their competitors from either.
+// Listing ids contain slashes, so saved listings go by ?id=.
+app.get("/api/library", async (req, res) => res.json(libraryFor(await currentUser(req), listingExists)));
+app.post("/api/library/saved", async (req, res) => res.status(201).json(saveListing(req.body?.id, await currentUser(req), listingExists)));
+app.delete("/api/library/saved", async (req, res) => res.json(unsaveListing(String(req.query.id ?? ""), await currentUser(req), listingExists)));
+// Favorites: starred saved listings, shown first. Listing ids contain slashes, so by ?id= to remove.
+app.post("/api/library/favorites", async (req, res) => res.status(201).json(favoriteListing(req.body?.id, true, await currentUser(req), listingExists)));
+app.delete("/api/library/favorites", async (req, res) => res.json(favoriteListing(req.query.id, false, await currentUser(req), listingExists)));
+// Body: { name, description?, listings: [listing id, ...] }
+app.post("/api/library/pods", async (req, res) => res.status(201).json(createPod(req.body ?? {}, await currentUser(req), listingExists)));
+// Body: { name?, description?, listings? } (listings replaces the whole list)
+app.patch("/api/library/pods/:id", async (req, res) => res.json(updatePod(req.params.id, req.body ?? {}, await currentUser(req), listingExists)));
+app.delete("/api/library/pods/:id", async (req, res) => res.json(deletePod(req.params.id, await currentUser(req), listingExists)));
+
 app.get("/api/ledger", (_req, res) => res.json(state.ledger));
 app.get("/api/settlement", (_req, res) => res.json(morningSettlement()));
 
@@ -911,14 +996,26 @@ app.use((err, _req, res, _next) => {
   res.status(err.status ?? 500).json({ error: err.message });
 });
 
-// Pick up where the last run left off: the repo connection, and bounties
-// whose survival windows are still running (with their fixes re-applied).
-const restored = await loadState();
-// The repo connected before repos were remembered shows up in the recent list too.
-if (state.connection.type === "github" && !state.recentRepos.some((r) => r.fullName === state.connection.fullName)) rememberRepo();
-if (restored) recoverInterrupted();
-await resetWorkspace();
-if (restored) await reapplyBoughtFixes();
+// Opening a workspace (a user's first request, or startup for users with
+// work still running) picks up where they left off: persist.js loads their
+// data, then this rebuilds their working copy, recovers interrupted races
+// and re-applies the fixes they bought. Background work gets the GitHub
+// token they last signed in with.
+onOpen(async (ws) => {
+  if (ws.unsaved) return;
+  ws.token ??= latestToken(ws.login);
+  // The repo connected before repos were remembered shows up in the recent list too.
+  if (state.connection.type === "github" && !state.recentRepos.some((r) => r.fullName === state.connection.fullName)) rememberRepo();
+  if (ws.restored) recoverInterrupted();
+  await resetWorkspace();
+  if (ws.restored) await reapplyBoughtFixes();
+});
+// Deployed, signed-out visitors share an empty stand-in that's never saved
+// (and can't change anything, see the session middleware above). Locally,
+// signed out is the local user, opened now like any other.
+if (deployed) setGuest({ login: "guest", data: (await import("./store.js")).userDefaults(), locals: {}, token: null, unsaved: true });
+const resumed = await loadState();
+if (!deployed) await openWorkspace(LOCAL);
 
 // On Vercel the platform serves the exported app; locally we listen.
 export default app;
@@ -928,13 +1025,12 @@ if (!process.env.VERCEL) app.listen(PORT, (err) => {
     console.error(err.code === "EADDRINUSE" ? `Port ${PORT} is already in use. Stop whatever is using it or set PORT.` : `Couldn't start the server: ${err.message}`);
     process.exit(1);
   }
-  const keys = [process.env.ANTHROPIC_API_KEY && "Claude", process.env.OPENAI_API_KEY && "OpenAI"].filter(Boolean);
-  console.log(`Shoal server on http://localhost:${PORT} (${MOCK ? "MOCK agents: set ANTHROPIC_API_KEY / OPENAI_API_KEY for real paid runs" : `paid runs: ${keys.join(" + ")} API`})`);
-  const watching = state.bounties.filter((b) => b.status === "surviving").length;
+  console.log(`Shoal server on http://localhost:${PORT} (model API keys come from each user's API keys section; without them, practice mode)`);
   const store = storageInfo();
   console.log(`Storage: ${store.backend === "supabase" ? `Supabase (schema ${store.schema})` : `${store.file} (set SUPABASE_DB_URL for Supabase)`}`);
-  if (restored) console.log(`Restored ${state.connection.fullName}: ${state.bounties.length} bounties, ${watching} in their survival window`);
-  console.log(`GitHub:${hasToken() ? "GITHUB_TOKEN set" : "no GITHUB_TOKEN (public repos read-only, no PRs)"}`);
+  if (resumed.length) console.log(`Resumed ${resumed.length} user${resumed.length === 1 ? "" : "s"} with work still running: ${resumed.map((ws) => (ws.login === LOCAL ? "local" : `@${ws.login}`)).join(", ")}`);
+  console.log(`GitHub: ${oauthConfigured() ? "sign-in set up" : "sign-in NOT set up (GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET)"}${hasToken() ? ", GITHUB_TOKEN in use (local only)" : ""}`);
+  for (const problem of deployProblems()) console.warn(`Setup: ${problem}`);
   if (staleLanding) console.warn("Web: web/dist is older than web/src, so /app and / are out of date. Run `npm run build` from the repo root, or start with `npm start` there.");
   console.log(
     `Payments: ${{ "stripe-live": "Stripe LIVE escrow: REAL MONEY", "stripe-test": "Stripe TEST mode escrow" }[paymentsMode()] ?? (stripeKeyProblem() ? `${stripeKeyProblem()}; using simulated escrow` : "simulated escrow (set STRIPE_SECRET_KEY for Stripe)")}`,

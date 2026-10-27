@@ -1,11 +1,13 @@
 // End-to-end check of the core bounty loop on the bundled demo repo, with
 // mock agents and simulated escrow (no keys, no spend):
 //   private parallel attempts (no bids) -> only the winner's fix is shown ->
-//   charged, payout pending -> survival checks -> a regression is clawed back
-//   and refunded -> a fix that survives its window is paid -> scorecards
+//   charged, payout pending -> survival checks on the fix as delivered: the
+//   team's own changes (reverting it, deleting the test) only warn, while a
+//   fix that fails on its own code is clawed back and refunded -> a fix that
+//   survives its window is paid -> scorecards
 //   count each outcome -> bounties and ledger are saved to disk.
 //   node scripts/survival-check.js
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -18,8 +20,10 @@ delete process.env.STRIPE_SECRET_KEY;
 delete process.env.SHOAL_SURVIVAL_MINUTES;
 
 await import("../src/index.js");
-const { WORKSPACE, DEMO_REPO } = await import("../src/repo.js");
+const { workspaceDir, DEMO_REPO } = await import("../src/repo.js");
+const WORKSPACE = workspaceDir();
 const { checkSurvivors } = await import("../src/survival.js");
+const { state } = await import("../src/store.js");
 
 const BASE = "http://localhost:4107";
 // The built-in persona agents: this check is about their behaviour (bounties
@@ -78,10 +82,21 @@ b1 = await api(`/api/bounties/${first.id}`);
 check("a second relevant commit within the hour isn't checked again", !checked.includes(first.id));
 check("...and the next scheduled check comes within that hour", Date.parse(b1.survival.nextCheckAt) <= Date.parse(b1.survival.lastCommitCheckAt) + 3_600_000, b1.survival.nextCheckAt);
 
-// The team's code regresses: put the original bug back.
-await writeFile(path.join(WORKSPACE, "src/cart.js"), await readFile(path.join(DEMO_REPO, "src/cart.js"), "utf8"));
+// The team copies the fix, then puts the original bug back and deletes the
+// test: no refund, since the guarantee covers the fix as delivered.
+const buggy = await readFile(path.join(DEMO_REPO, "src/cart.js"), "utf8");
+await writeFile(path.join(WORKSPACE, "src/cart.js"), buggy);
+await rename(path.join(WORKSPACE, "test/cart.test.js"), path.join(WORKSPACE, "test/cart.test.js.gone"));
 b1 = await api(`/api/bounties/${first.id}/survival/check`, {});
-check("regression is clawed back", b1.status === "clawed_back" && b1.survival.status === "regressed", b1.survival.reason);
+check("the team reverting the fix or deleting the test isn't a refund", b1.status === "surviving" && b1.escrow.status === "charged" && b1.survival.checks.at(-1).ok === true, JSON.stringify(b1.survival.checks.at(-1)));
+check("...but it's flagged", b1.survival.checks.at(-1).drifted?.includes("src/cart.js"), JSON.stringify(b1.survival.checks.at(-1).drifted));
+await rename(path.join(WORKSPACE, "test/cart.test.js.gone"), path.join(WORKSPACE, "test/cart.test.js"));
+
+// The fix itself doesn't hold (it hid the flakiness): stand in for one by
+// pinning the original bug as the delivered fix.
+state.bounties.find((x) => x.id === first.id).survival.pinned.find((f) => f.path === "src/cart.js").content = buggy;
+b1 = await api(`/api/bounties/${first.id}/survival/check`, {});
+check("a fix that fails on its own code is clawed back", b1.status === "clawed_back" && b1.survival.status === "regressed", b1.survival.reason);
 check("team refunded", b1.escrow.status === "refunded" && b1.escrow.refunded === 300, JSON.stringify(b1.escrow));
 ledger = await api("/api/ledger");
 check("ledger marks it clawed back", ledger.find((t) => t.bountyId === first.id)?.status === "clawed_back");
@@ -120,7 +135,9 @@ const blocked = await fetch(`${BASE}/api/reset`, { method: "POST" });
 check("reset refused while a fix is in its window", blocked.status === 409, String(blocked.status));
 await new Promise((r) => setTimeout(r, 3500));
 const saved = JSON.parse(await readFile(path.join(process.env.SHOAL_DATA_DIR, "state.json"), "utf8"));
-check("bounties, ledger and scorecards saved to disk", saved.bounties.length === 3 && saved.ledger.length === 3 && saved.scorecards.find((c) => c.id === "rootcause")?.wins >= 2, `${saved.bounties.length} bounties`);
+// Bounties and the ledger are the local user's (persist.js, version 3); scorecards are shared.
+const mine = saved.users?.local ?? {};
+check("bounties, ledger and scorecards saved to disk", mine.bounties?.length === 3 && mine.ledger?.length === 3 && saved.scorecards.find((c) => c.id === "rootcause")?.wins >= 2, `${mine.bounties?.length} bounties`);
 
 console.log(ok ? "\nAll survival checks passed" : "\nSome checks FAILED");
 process.exit(ok ? 0 : 1);

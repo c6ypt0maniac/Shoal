@@ -1,6 +1,6 @@
 // Minimal .zip writer (deflate, no zip64), so downloads don't depend on which
 // `tar` happens to be on the PATH. Fine for repo-sized archives.
-import { crc32, deflateRawSync } from "node:zlib";
+import { crc32, deflateRawSync, inflateRawSync } from "node:zlib";
 
 // files: [{ path, data: Buffer | string }] -> Buffer of the whole archive.
 export function zip(files) {
@@ -45,4 +45,38 @@ export function zip(files) {
   end.writeUInt32LE(dir.length, 12);
   end.writeUInt32LE(offset, 16);
   return Buffer.concat([...locals, dir, end]);
+}
+
+// Minimal .zip reader for uploaded agent bundles (stored or deflate, no zip64).
+// Refuses what could escape the folder it's unpacked into (absolute paths,
+// "..", links) and anything over the limits, before inflating a byte more.
+// -> [{ path, data: Buffer }] (folders left out).
+export function unzip(buf, { maxFiles = 2000, maxBytes = 20 * 1024 * 1024 } = {}) {
+  const bad = (why) => Object.assign(new Error(`That zip ${why}`), { status: 400 });
+  let end = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 65535); i--) if (buf.readUInt32LE(i) === 0x06054b50) { end = i; break; }
+  if (end < 0) throw bad("isn't a valid zip file");
+  const count = buf.readUInt16LE(end + 10);
+  if (count > maxFiles) throw bad(`has more than ${maxFiles} files`);
+  let at = buf.readUInt32LE(end + 16), total = 0;
+  const out = [];
+  for (let n = 0; n < count; n++) {
+    if (buf.readUInt32LE(at) !== 0x02014b50) throw bad("is damaged");
+    const method = buf.readUInt16LE(at + 10), packed = buf.readUInt32LE(at + 20), size = buf.readUInt32LE(at + 24);
+    const nameLen = buf.readUInt16LE(at + 28), extraLen = buf.readUInt16LE(at + 30), commentLen = buf.readUInt16LE(at + 32);
+    const unixMode = buf.readUInt32LE(at + 38) >>> 16, local = buf.readUInt32LE(at + 42);
+    const name = buf.subarray(at + 46, at + 46 + nameLen).toString("utf8").replace(/\\/g, "/");
+    at += 46 + nameLen + extraLen + commentLen;
+    if (name.endsWith("/")) continue;
+    if (name.startsWith("/") || /^[a-z]:/i.test(name) || name.split("/").includes("..")) throw bad(`has a file outside its folder (${name})`);
+    if ((unixMode & 0o170000) === 0o120000) throw bad(`has a link (${name}); include the file itself`);
+    total += size;
+    if (total > maxBytes) throw bad(`unpacks to more than ${Math.round(maxBytes / 1024 / 1024)} MB`);
+    const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
+    const raw = buf.subarray(start, start + packed);
+    const data = method === 0 ? Buffer.from(raw) : method === 8 ? inflateRawSync(raw, { maxOutputLength: size }) : null;
+    if (!data) throw bad(`uses a compression Shoal can't read (${name})`);
+    out.push({ path: name, data });
+  }
+  return out;
 }

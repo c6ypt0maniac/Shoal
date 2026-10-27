@@ -1,6 +1,6 @@
 # Shoal's API server (server/) for Railway or any Docker host. The website
 # (web/) deploys separately on Vercel, which forwards /api/* here (see
-# web/vercel.json). Settings and keys come from the host's environment
+# web/middleware.js; set SHOAL_API_URL there to this server's URL). Settings and keys come from the host's environment
 # variables, never from a file baked into the image.
 FROM node:22-bookworm-slim
 

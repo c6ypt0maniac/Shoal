@@ -1,10 +1,10 @@
 // Checks sealed API trials (api-trials.js) in practice mode (no keys, no spend):
-//   trials need credits;
+//   trials are free (models on the team's keys), within fair-use limits;
 //   the trial only diagnoses: step 1's diagnoses are wrong, step 2's right,
-//   and the cheapest correct model is recommended with a quote; no fix is
+//   and the cheapest correct model is recommended with a token estimate; no fix is
 //   written (step 3 never asked);
-//   authorizing it: that model alone writes the fix, it's proven, charged
-//   once (no more than the quote) and lands;
+//   authorizing it: that model alone writes the fix, it's proven and lands,
+//   free;
 //   a model that failed is never asked again on the same bug;
 //   the spend cap stops the ladder before a call that would go over it.
 //   node scripts/api-trials-check.js
@@ -28,8 +28,10 @@ delete process.env.SHOAL_TRIAL_CAP;
 delete process.env.STRIPE_SECRET_KEY;
 
 await import("../src/index.js");
-const { DEMO_REPO, WORKSPACE } = await import("../src/repo.js");
-const { addCredits, balanceCents } = await import("../src/credits.js");
+const { DEMO_REPO, workspaceDir } = await import("../src/repo.js");
+const WORKSPACE = workspaceDir();
+const { useOnce } = await import("../src/usage.js");
+const { openWorkspace, withWorkspace } = await import("../src/store.js");
 const { state } = await import("../src/store.js");
 
 const BASE = "http://localhost:4106";
@@ -64,11 +66,14 @@ try {
   const orders = state.pains.find((p) => p.testFile === "test/orders.test.js" && !p.healthy);
   check("scan found the flaky cart and orders tests", Boolean(cart && orders));
 
-  console.log("1. Trials need credits");
-  const none = await req("/api/trials/sealed", { painId: cart.id });
-  check("no credits: refused with 402", none.status === 402, none.text);
-
-  await addCredits({ dollars: 25, mode: "simulated" });
+  console.log("1. Fair-use limits (the local user has none)");
+  process.env.SHOAL_TRIALS_PER_DAY = "2";
+  const someone = await openWorkspace("limit-tester");
+  const tries = withWorkspace(someone, () => [0, 1, 2].map(() => { try { useOnce("trials"); return "ok"; } catch (err) { return err.status; } }));
+  check("a signed-in account gets its daily trials, then a 429", tries.join() === "ok,ok,429", tries.join());
+  const local = [0, 1, 2].map(() => { try { useOnce("trials"); return "ok"; } catch (err) { return err.status; } });
+  check("the local user isn't limited", local.join() === "ok,ok,ok", local.join());
+  delete process.env.SHOAL_TRIALS_PER_DAY;
   console.log("2. The trial only diagnoses, then recommends the cheapest correct model");
   const started = await req("/api/trials/sealed", { painId: cart.id });
   check("started", started.status === 202, started.text);
@@ -80,12 +85,10 @@ try {
   check("a step-2 model that diagnosed it right is recommended", ["claude-sonnet-5-5", "gpt-6.1-sol"].includes(p.ladder.pick) && p.ladder.pickName, p.ladder.pick);
   check("no fix was written in the trial", fixed.length === 0 && state.trials.filter((t) => t.painId === cart.id).length === 0);
   check("the team sees what's broken, not the plan", p.ladder.diagnoses.length === 5 && p.ladder.diagnoses.every((d) => !("plan" in d) && d.file) && !JSON.stringify(p.ladder).includes("Practice mode."));
-  const quote = p.ladder.quote;
-  check("a quote is shown before authorizing, $2.99-$19.99, ending in .99", quote >= 2.99 && quote <= 19.99 && Math.round(quote * 100) % 100 === 99, String(quote));
+  check("free on Shoal: only a token estimate is shown before authorizing", p.ladder.quote === 0 && p.ladder.tokens?.total > 0, JSON.stringify(p.ladder.tokens));
   check("running the trial again leaves the recommendation alone", (await req("/api/trials/sealed", { painId: cart.id })).status === 202 && (await until("refusal", async () => (state.apiTrials[cart.id].status === "awaiting_authorization" ? true : null))));
 
-  console.log("3. Authorizing: the recommended model writes the fix; charged once, only when proven");
-  const before = balanceCents();
+  console.log("3. Authorizing: the recommended model writes the fix; free");
   const auth = await req("/api/trials/authorize", { painId: cart.id });
   check("authorize accepted", auth.status === 202, auth.text);
   check("a second authorize is refused", (await req("/api/trials/authorize", { painId: cart.id })).status === 409);
@@ -99,8 +102,7 @@ try {
   check("only the recommended model wrote a fix", fixed.length === 1 && fixed[0] === p.ladder.pick && trials.length === 1 && trials[0].model === p.ladder.pick, fixed.join(", "));
   check("Shoal set the model tag and measured the cost", trials[0].sealed && trials[0].client?.app === "Shoal API" && trials[0].apiCost > 0);
   check("the fix landed (survival window started)", bounty.status === "surviving", bounty.status);
-  const charged = (before - balanceCents()) / 100;
-  check("charged once, no more than the quote", charged > 0 && charged <= quote && charged === state.apiTrials[cart.id].price && state.trialSpend[cart.id].revenue === charged, `${charged} vs quote ${quote}`);
+  check("nothing charged", bounty.escrow.mode === "free" && bounty.escrow.charged === 0 && state.apiTrials[cart.id].price === 0, JSON.stringify(bounty.escrow));
   const file = await req(`/api/trials/${trials[0].id}/file?path=src/cart.js`);
   check("the code is readable once it landed", file.status === 200 && /return lookupDiscount/.test(file.text));
 
@@ -152,13 +154,13 @@ try {
   console.log("8. Deleting bounties");
   const del = async (id) => { const r = await fetch(`${BASE}/api/bounties/${id}`, { method: "DELETE" }); return { status: r.status, body: await r.json() }; };
   const gone = await del(posted.id);
-  check("a bounty in its survival window is deleted and refunded", gone.status === 200 && gone.body.escrow === "refunded" && !state.bounties.some((x) => x.id === posted.id), JSON.stringify(gone.body));
+  check("a bounty whose fix was delivered can't be deleted for a refund", gone.status === 409 && state.bounties.find((x) => x.id === posted.id)?.escrow.status === "charged", JSON.stringify(gone.body));
   const held = JSON.parse((await req("/api/bounties", { painId: orders.id, reward: 15 })).text);
   const gone2 = await del(held.id);
   check("an unstarted bounty is deleted and its hold released", gone2.status === 200 && gone2.body.escrow === "released", JSON.stringify(gone2.body));
 
   const margins = await req("/api/owner/margins");
-  check("owner margin view (local)", margins.status === 200 && JSON.parse(margins.text).rows.some((r) => r.painId === cart.id && r.revenue === charged), margins.text.slice(0, 200));
+  check("owner margin view (local)", margins.status === 200 && JSON.parse(margins.text).rows.some((r) => r.painId === cart.id), margins.text.slice(0, 200));
 } catch (err) {
   check("run", false, err.stack);
 }

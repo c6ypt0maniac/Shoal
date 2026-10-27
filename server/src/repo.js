@@ -8,6 +8,7 @@ import { SKIP_DIRS, commandFor, detectStacks, isTestPath, parseResults, sourcesF
 import { exec } from "node:child_process";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { testEvidence } from './test-evidence.js';
+import { LOCAL, currentWorkspace, scoped } from "./store.js";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,19 +18,29 @@ export const DEMO_REPO = path.resolve(here, "../../demo-repo");
 // SHOAL_REPOS_DIR: where clones go (default server/.repos), e.g. for a test server.
 export const REPOS_DIR = path.resolve(here, "..", process.env.SHOAL_REPOS_DIR || ".repos");
 // SHOAL_WORKSPACE lets a second server (e.g. a preview) run without
-// clobbering the main one's checkout. A let, not a const: claimWorkspace
-// moves it if another server already has it (importers see the change).
-export let WORKSPACE = path.resolve(here, "..", process.env.SHOAL_WORKSPACE || ".workspace");
+// clobbering the main one's checkout. claimWorkspace moves it if another
+// server already has it.
+let WORKSPACE = path.resolve(here, "..", process.env.SHOAL_WORKSPACE || ".workspace");
 
+// Each user's working copy: the local user keeps .workspace itself; everyone
+// else gets .workspace-users/<login>. Clones go under .repos/<login>/ the
+// same way, so two users on the same repo never share a folder.
+const safe = (login) => login.replace(/[^\w.-]+/g, "_");
+export const activeDir = () => (currentWorkspace().login === LOCAL ? WORKSPACE : path.join(`${WORKSPACE}-users`, safe(currentWorkspace().login)));
+export const reposDir = () => (currentWorkspace().login === LOCAL ? REPOS_DIR : path.join(REPOS_DIR, "users", safe(currentWorkspace().login)));
+// Everything a user has on disk: their working copy, parked repos, clones.
+export const userDirs = () => [activeDir(), `${activeDir()}-repos`, reposDir()];
+
+// The current user's source: the repo their working copy is built from.
 // testCommand: only when the team typed one in setup; otherwise each test runs
 // with the command its stack calls for (see stack.js).
-let source = { dir: DEMO_REPO, testCommand: null, stacks: [] };
+const source = () => scoped("source", () => ({ dir: DEMO_REPO, testCommand: null, stacks: [] }));
 
 export function setSource(dir, testCommand) {
-  source = { dir, testCommand: testCommand?.trim() || null, stacks: [] };
+  Object.assign(source(), { dir, testCommand: testCommand?.trim() || null, stacks: [] });
 }
 
-export const getSource = () => source;
+export const getSource = () => source();
 
 // Which repo a piece of work is about. Normally the active one (connected on
 // the Repository page), but each bounty keeps its own repo: its race,
@@ -37,7 +48,7 @@ export const getSource = () => source;
 // (see repos.js), and every helper below then reads that repo's working copy
 // and runs its tests, without each caller passing it along.
 const current = new AsyncLocalStorage();
-const ctx = () => current.getStore() ?? { workspace: WORKSPACE, stacks: source.stacks, testCommand: source.testCommand };
+const ctx = () => current.getStore() ?? { workspace: activeDir(), stacks: source().stacks, testCommand: source().testCommand };
 export const withRepo = (repo, fn) => current.run(repo, fn);
 export const workspaceDir = () => ctx().workspace;
 export const getStacks = () => ctx().stacks;
@@ -54,7 +65,10 @@ export async function buildWorkspace(from, to) {
 // one, and this server's scan would then find tests it has no setup for. So
 // if another live server has it, this one quietly takes its own folder next
 // to it (.workspace-<port>) instead of failing to start.
+let claimed = false;
 async function claimWorkspace() {
+  if (claimed) return;
+  claimed = true;
   const holder = async (dir) => {
     const pid = Number(await readFile(`${dir}.lock`, "utf8").catch(() => ""));
     return pid && pid !== process.pid && isAlive(pid) ? pid : null;
@@ -81,9 +95,11 @@ function isAlive(pid) {
 // Fresh working copy of the source, then learn how its tests run.
 export async function resetWorkspace() {
   await claimWorkspace();
-  await rm(WORKSPACE, { recursive: true, force: true });
-  await copyTree(source.dir, WORKSPACE);
-  source.stacks = await detectStacks(WORKSPACE);
+  const dir = activeDir(), src = source();
+  await rm(dir, { recursive: true, force: true });
+  await mkdir(path.dirname(dir), { recursive: true });
+  await copyTree(src.dir, dir);
+  src.stacks = await detectStacks(dir);
 }
 
 // Installed dependencies are linked, not copied: tests only read them, and

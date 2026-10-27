@@ -9,21 +9,21 @@ const PARTS = {
   bounties: () => api.bounties(),
   settlement: () => api.settlement(),
   ledger: () => api.ledger(),
-  credits: () => api.credits().catch(() => null),
   connection: () => api.connection(),
   agents: () => api.agents(),
   market: () => api.marketplace({ limit: 200 }).then((m) => m.items).catch(() => []),
+  library: () => api.library().catch(() => null),
   health: () => api.health(),
   me: () => api.me().catch(() => null),
 };
 const ALL = Object.keys(PARTS);
-const CORE = ['pains', 'bounties', 'settlement', 'ledger', 'credits'];
+const CORE = ['pains', 'bounties', 'settlement', 'ledger'];
 const partsFor = (events) => {
   const parts = new Set(CORE);
   for (const { type } of events) {
     if (/^(connect|sync|scan|reset)/.test(type)) parts.add('connection');
-    if (/^(agent|marketplace|bounty\.(competing|winner|surviving|settled|clawed_back|failed)|verify\.passed|survival)/.test(type)) { parts.add('agents'); parts.add('market'); }
-    if (/^auth\./.test(type)) { parts.add('me'); parts.add('health'); }
+    if (/^(agent|marketplace|bounty\.(competing|winner|surviving|settled|clawed_back|failed)|verify\.passed|survival)/.test(type)) { parts.add('agents'); parts.add('market'); parts.add('library'); }
+    if (/^auth\./.test(type)) { parts.add('me'); parts.add('health'); parts.add('library'); }
   }
   return [...parts];
 };
@@ -32,7 +32,7 @@ const partsFor = (events) => {
 // While the tab is visible it long-polls: the server answers as soon as there's a
 // new event. Hidden tabs check every few seconds instead of holding a connection.
 export function useShoal() {
-  const [s, setS] = useState({ events: [], pains: [], bounties: [], agents: [], market: [], settlement: null, ledger: [], credits: null, connection: null, health: null, me: null });
+  const [s, setS] = useState({ events: [], pains: [], bounties: [], agents: [], market: [], library: null, settlement: null, ledger: [], connection: null, health: null, me: null });
   const last = useRef(0);
   // One refresh at a time; parts asked for meanwhile are fetched right after it.
   const busy = useRef(null), queued = useRef(new Set());

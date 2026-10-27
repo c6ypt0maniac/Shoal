@@ -11,13 +11,12 @@
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { state } from "./store.js";
-import { WORKSPACE, buildWorkspace, getSource, withRepo, writeFiles } from "./repo.js";
+import { scoped, state } from "./store.js";
+import { activeDir, buildWorkspace, getSource, withRepo, writeFiles } from "./repo.js";
 import { pullRepo } from "./github.js";
 
-// Next to the active working copy (.workspace -> .workspace-repos).
-// A function: WORKSPACE can move at startup (repo.js claimWorkspace).
-const parkedDir = () => WORKSPACE + "-repos";
+// Next to the user's active working copy (.workspace -> .workspace-repos).
+const parkedDir = () => activeDir() + "-repos";
 
 // "owner/name" for a GitHub repo, "demo" for the bundled one.
 export const repoKey = (conn = state.connection) => (conn?.type === "github" ? conn.fullName : "demo");
@@ -45,7 +44,8 @@ const keyOf = (b) => b.repo?.key ?? repoKey();
 export const boughtFiles = (b) => (["surviving", "settled"].includes(b.status) ? (b.attempts.find((a) => a.passed && a.agentId === b.winner)?.files ?? []) : []);
 export const boughtOn = (key) => state.bounties.filter((b) => keyOf(b) === key && boughtFiles(b).length);
 
-const parked = new Map(); // repo key -> Promise<{ workspace, stacks, testCommand }>
+// This user's parked repos: repo key -> Promise<{ workspace, stacks, testCommand }>
+const parkedRepos = () => scoped("parked", () => new Map());
 
 async function park(repo) {
   if (!existsSync(repo.dir)) throw Object.assign(new Error(`${repo.fullName ?? repo.key} isn't on this machine any more. Connect it again to finish this bounty.`), { status: 409 });
@@ -59,11 +59,11 @@ async function park(repo) {
 export function inRepo(bounty, fn) {
   if (isActive(bounty)) return fn();
   const key = bounty.repo.key;
-  let ready = parked.get(key);
+  let ready = parkedRepos().get(key);
   if (!ready) {
     ready = park(bounty.repo);
-    parked.set(key, ready);
-    ready.catch(() => parked.delete(key));
+    parkedRepos().set(key, ready);
+    ready.catch(() => parkedRepos().delete(key));
   }
   return ready.then((repo) => withRepo(repo, fn));
 }
@@ -73,16 +73,16 @@ export function inRepo(bounty, fn) {
 export async function refreshParked(bounty) {
   if (isActive(bounty) || bounty.repo.type !== "github" || !existsSync(bounty.repo.dir)) return [];
   const { changed } = await pullRepo(bounty.repo.dir, bounty.repo.fullName, bounty.repo.defaultBranch);
-  if (changed.length) parked.delete(bounty.repo.key);
+  if (changed.length) parkedRepos().delete(bounty.repo.key);
   return changed;
 }
 
 // The repo just became active: its parked copy is replaced by .workspace.
-export const unpark = (key) => parked.delete(key);
+export const unpark = (key) => parkedRepos().delete(key);
 
 // Everything parked, gone (account deletion).
 export async function wipeParked() {
-  parked.clear();
+  parkedRepos().clear();
   await rm(parkedDir(), { recursive: true, force: true });
 }
 

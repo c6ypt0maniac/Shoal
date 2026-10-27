@@ -2,8 +2,8 @@
 //   awaiting_funding -> open -> competing -> verifying -> surviving -> settled
 //                                                               \-> clawed_back
 //   (or failed: no verified fix, hold released, $0 charged)
-// The team sets the reward; it sits in escrow (Stripe hold, simulated, or
-// prepaid credits) before any work starts. Agents never bid on price: every
+// The team sets the reward; it sits in escrow (Stripe hold, or simulated)
+// before any work starts. Agents never bid on price: every
 // agent attempts the fix privately and in parallel, each in its own sandbox,
 // and every attempt goes through the verifier. The verified ones are judged
 // best scorecard first by two judges (Claude and OpenAI, see proof.js); the
@@ -11,7 +11,7 @@
 // the fix survives its window (survival.js); a regression claws it back.
 //
 // Unlocking a sealed trial (unlock) skips the model call: the exact fix that
-// was proven lands, charged once at the price shown (api-trials.js).
+// was proven lands, free (funding "free"; api-trials.js).
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { AGENTS, diagnosisPrompt, practiceOnly, requestDiagnosis, requestModelFix } from "./agents.js";
@@ -22,14 +22,14 @@ import { stackFor } from "./stack.js";
 import { MODELS, linesChanged, providerLabel } from "./trials.js";
 import { verify } from "./verifier.js";
 import { emit } from "./events.js";
-import { state, newId, cardFor } from "./store.js";
+import { state, newId, cardFor, CARD_COUNTS } from "./store.js";
 import { writeFiles, workspaceDir } from "./repo.js";
 import { inRepo, isActive, repoSnapshot } from "./repos.js";
 import { openPullRequest } from "./github.js";
-import { chargeEscrow, newEscrow, refundEscrow, releaseEscrow } from "./escrow.js";
+import { chargeEscrow, newEscrow, refundEscrow, releaseEscrow, isFree } from "./escrow.js";
 import { cleanSurvivalDays, startSurvival } from "./survival.js";
 import { judgeAttempt } from "./proof.js";
-import { recordRevenue } from "./spend.js";
+import { addCompute, recordRevenue } from "./spend.js";
 import { brief, grade, pickReason, rankDiagnoses, where } from "./api-trials.js";
 import { envLimit, mapLimit } from "./limit.js";
 
@@ -61,7 +61,7 @@ export function recoverInterrupted() {
 }
 
 // funding: "stripe" (team pays through Checkout), "simulated" (fake money)
-// or "credits". apiModel + trialId + unlock: the proven fix from a sealed
+// or "free" (no money: a proven trial fix, on the team's own keys). apiModel + trialId + unlock: the proven fix from a sealed
 // trial lands (api-trials.js authorizeFix), with that model as the winner.
 // survivalDays: 7, 10 or 14 before the agent is paid. competitors: the
 // marketplace listings the team picked to compete (default: Shoal's
@@ -77,11 +77,11 @@ export function createBounty({ painId, reward, funding = "simulated", apiModel =
   }
   // Any repo works: on one you can't push to (or archived), the winning fix
   // comes as a draft PR the team can read and download (surfacePullRequest).
-  // Credit runs carry the estimated fix price (can be cents); bounties a reward.
+  // A free bounty (an unlocked trial fix) carries no reward; others do.
   const practice = practiceOnly(state.connection.type);
   if (practice) throw httpError(409, practice);
-  const amount = funding === "credits" ? Number(reward) : Math.round(Number(reward) || pain.suggestedReward);
-  if (funding !== "credits" && (amount < 1 || amount > 10_000)) throw httpError(400, "Reward must be between $1 and $10,000");
+  const amount = funding === "free" ? 0 : Math.round(Number(reward) || pain.suggestedReward);
+  if (funding !== "free" && (amount < 1 || amount > 10_000)) throw httpError(400, "Reward must be between $1 and $10,000");
   const bounty = {
     id: newId("bounty"),
     painId,
@@ -114,9 +114,9 @@ export function createBounty({ painId, reward, funding = "simulated", apiModel =
     reward: bounty.reward,
     message:
       unlock
-        ? `Unlocked: ${MODELS[apiModel].name}'s proven fix for ${pain.testFile} ($${amount.toFixed(2)} from credits, refunded if it regresses within ${bounty.survivalDays} days)`
-        : funding === "credits"
-        ? `API fix approved: ${MODELS[apiModel].name} will ${bounty.title.replace(/^Make/, "make")} (about $${amount.toFixed(2)} from credits, only if verified, refunded if it regresses within ${bounty.survivalDays} days)`
+        ? `Unlocked: ${MODELS[apiModel].name}'s proven fix for ${pain.testFile} (free; Shoal keeps checking it for ${bounty.survivalDays} days)`
+        : funding === "free"
+        ? `API fix approved: ${MODELS[apiModel].name} will ${bounty.title.replace(/^Make/, "make")} on your API keys (free on Shoal)`
         : `New bounty: $${bounty.reward} to ${bounty.title}, paid only if the fix survives ${bounty.survivalDays} days${bounty.status === "awaiting_funding" ? " (waiting for Stripe funding)" : ""}`,
   });
   return bounty;
@@ -204,15 +204,18 @@ async function compete(bounty, pain) {
   const attempts = await mapLimit(fixes.filter(Boolean), envLimit("SHOAL_VERIFY_CONCURRENCY", 2), async ({ id, fix, started }) => {
     const result = await verify({ bountyId: bounty.id, agentId: nameFor(id), testFile: pain.testFile, files: fix.files, stableTestFiles, flakeRate: pain.flakeRate });
     const durationMs = Date.now() - started;
+    const lines = await linesChanged(fix.files);
     if (result.passed) {
       cardFor(id).verified += 1;
       cardFor(id).verifiedMs += durationMs;
+      cardFor(id).verifiedLines += lines;
+      addLanguage(id, bounty.language);
     }
     return {
       agentId: id,
       summary: fix.summary,
       files: fix.files,
-      linesChanged: await linesChanged(fix.files),
+      linesChanged: lines,
       passed: result.passed,
       reason: result.reason ?? null,
       runs: result.runs.map((r) => r.passed),
@@ -225,7 +228,7 @@ async function compete(bounty, pain) {
   if (!verified.length) return fail(bounty, `No agent's fix for ${pain.testFile} passed verification. Hold released, $0 charged.`);
   // Ranked on track record only, never price: best scorecard, then the
   // smaller change. Judged in that order; the first both judges pass wins.
-  verified.sort((a, b) => rank(cardFor(b.agentId)) - rank(cardFor(a.agentId)) || a.linesChanged - b.linesChanged);
+  verified.sort((a, b) => byRecord(scorecard(a.agentId), scorecard(b.agentId)) || a.linesChanged - b.linesChanged);
   // Kept on each attempt, so the team can see afterwards why the winner won (publicBounty).
   verified.forEach((v, i) => Object.assign(v, { rank: i + 1, score: Math.round(rank(cardFor(v.agentId)) * 1000) / 1000 }));
   bounty.status = "judging";
@@ -234,6 +237,7 @@ async function compete(bounty, pain) {
     const review = await judgeAttempt({ pain, files: candidate.files, author: candidate.agentId, others: verified.filter((v) => v !== candidate).map((v) => v.files) });
     candidate.judged = true;
     candidate.judges = review.judges;
+    recordJudges(candidate.agentId, review);
     bounty.apiCost += review.cost;
     emit("bounty.judged", {
       bountyId: bounty.id,
@@ -344,9 +348,12 @@ export async function buildFix(bountyId, model = null) {
         bounty.attempts.push(entry);
         if (!result.passed) { lastFailure = [result.reason, result.failureLog].filter(Boolean).join('\n'); continue; }
         cardFor(d.model).verified += 1;
+        cardFor(d.model).verifiedLines += entry.linesChanged;
+        addLanguage(d.model, bounty.language);
         bounty.status = "judging";
         const review = await judgeAttempt({ pain, files: fix.files, author: d.model });
         entry.judges = review.judges;
+        recordJudges(d.model, review);
         bounty.apiCost += review.cost;
         if (review.ok) {
           emit("bounty.winner", { bountyId: bounty.id, agentId: d.model, message: `${name}'s fix verified and both judges passed it` });
@@ -370,7 +377,9 @@ async function runUnlock(bounty, pain) {
   if (!trial) return fail(bounty, "The sealed fix is gone (the server restarted or the repo was rescanned). Nothing charged.");
   const name = MODELS[bounty.apiModel].name;
   bounty.status = "verifying";
+  const started = Date.now();
   const result = await verify({ bountyId: bounty.id, agentId: name, testFile: pain.testFile, files: trial.files, stableTestFiles: bounty.stableTestFiles, flakeRate: pain.flakeRate });
+  addCompute(pain.id, (Date.now() - started) / 1000);
   const entry = { agentId: bounty.apiModel, summary: trial.summary, files: trial.files, linesChanged: trial.linesChanged, passed: result.passed, reason: result.reason ?? null, failureLog: result.failureLog ?? null, runs: result.runs.map((r) => r.passed) };
   bounty.attempts.push(entry);
   if (!result.passed) return fail(bounty, `${name}'s fix no longer passes on the current code (${result.reason}). Nothing charged.`);
@@ -400,12 +409,12 @@ async function win(bounty, pain, payee, attempt) {
     emit("escrow.error", { bountyId: bounty.id, message: `Fix verified but the charge failed: ${err.message}` });
     return bounty;
   }
-  // Credit runs: the API cost goes to the model provider, the rest is Shoal's fee.
-  const credits = bounty.escrow.mode === "credits";
+  // A free bounty pays no one: the model ran on the team's own keys.
+  const free = isFree(bounty.escrow);
   // Kept to 4 decimals: fixes can cost fractions of a cent.
   const round4 = (n) => Math.round(n * 1e4) / 1e4;
-  const fee = credits ? round4(charged - bounty.apiCost) : round4(charged * TAKE_RATE);
-  startSurvival(bounty);
+  const fee = free ? 0 : round4(charged * TAKE_RATE);
+  await startSurvival(bounty, attempt.files);
   state.ledger.unshift({
     id: newId("tx"),
     bountyId: bounty.id,
@@ -518,11 +527,11 @@ async function settle(bounty, pain, agent, bid) {
     emit("escrow.error", { bountyId: bounty.id, message: `Fix verified but the charge failed: ${err.message}` });
     return bounty;
   }
-  // Credit runs: the API cost goes to the model provider, the rest is Shoal's fee.
-  const credits = bounty.escrow.mode === "credits";
+  // A free bounty pays no one: the model ran on the team's own keys.
+  const free = isFree(bounty.escrow);
   // Kept to 4 decimals: fixes can cost fractions of a cent.
   const round4 = (n) => Math.round(n * 1e4) / 1e4;
-  const fee = credits ? round4(charged - bounty.apiCost) : Math.round(charged * TAKE_RATE);
+  const fee = free ? 0 : Math.round(charged * TAKE_RATE);
   const entry = {
     id: newId("tx"),
     bountyId: bounty.id,
@@ -532,7 +541,7 @@ async function settle(bounty, pain, agent, bid) {
     amount: charged,
     agentPayout: round4(charged - fee),
     platformFee: fee,
-    savedUnderReward: credits ? 0 : bounty.reward - charged,
+    savedUnderReward: free ? 0 : bounty.reward - charged,
     funding: bounty.escrow.mode,
     paymentIntentId: bounty.escrow.paymentIntentId,
     hoursReturnedPerWeek: pain.hoursPerWeek,
@@ -601,8 +610,55 @@ async function surfacePullRequest(bounty, pain, agent, attempt) {
 
 // How good an agent's record is, 0-1: how often its attempts verify, times
 // how often its wins survive. Smoothed so a new agent starts in the middle.
-function rank(card) {
-  return ((card.verified + 1) / (card.attempts + 2)) * ((card.survived + 1) / (card.survived + card.clawbacks + 2));
+// --- Ranking ------------------------------------------------------------------------
+// The score blends every rate Shoal measures, each taken at its 95% Wilson
+// lower bound: the rate the record shows *at least*, given how many tries
+// back it. 3 of 3 counts for less than 30 of 32, so an agent can't top the
+// board on a lucky streak, and the order holds steady as results come in.
+// Rates with no data yet (say, survival before any win was judged) are left
+// out and the rest re-weighted, so persona agents (no diagnoses) and models
+// are compared on what they've actually done.
+const WEIGHTS = { survival: 0.35, verified: 0.25, judges: 0.15, diagnosis: 0.15, uptime: 0.1 };
+
+export function atLeast(k, n) {
+  if (!n) return null;
+  const z = 1.96, p = k / n, z2 = z * z;
+  return (p + z2 / (2 * n) - z * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n))) / (1 + z2 / n);
+}
+
+function parts(c) {
+  return {
+    survival: atLeast(c.survived, c.survived + c.clawbacks),
+    verified: atLeast(c.verified, c.attempts),
+    judges: atLeast(c.judgedPassed, c.judged),
+    diagnosis: atLeast(c.diagnosesCorrect, c.diagnoses),
+    uptime: atLeast(c.delivered, c.attempts),
+  };
+}
+
+function rank(c) {
+  let sum = 0, weight = 0;
+  for (const [k, v] of Object.entries(parts(c))) if (v != null) (sum += WEIGHTS[k] * v), (weight += WEIGHTS[k]);
+  return weight ? sum / weight : 0;
+}
+
+// How much the score can be trusted: by how many attempts back it.
+const confidence = (attempts) => (attempts >= 30 ? "high" : attempts >= 10 ? "medium" : attempts >= 3 ? "low" : "new");
+
+// Best record first; ties go to more fixes that survived, then the faster,
+// then the smaller fix, then the name, so the order never flips at random.
+export function byRecord(a, b) {
+  const slow = (x) => x.avgTimeToFixMs ?? Infinity, big = (x) => x.avgLinesChanged ?? Infinity;
+  return b.rankScore - a.rankScore || b.survived - a.survived || slow(a) - slow(b) || big(a) - big(b) || String(a.id).localeCompare(String(b.id));
+}
+
+// A verified fix both judges reviewed counts toward judge approval. Not when
+// a judge couldn't run (no API key, spend cap): that says nothing about the fix.
+function recordJudges(id, review) {
+  if (!review.judges?.length || review.judges.some((j) => j.unavailable)) return;
+  const card = cardFor(id);
+  card.judged += 1;
+  if (review.ok) card.judgedPassed += 1;
 }
 
 // Public scorecards for every marketplace agent and every model that has
@@ -614,12 +670,20 @@ export function leaderboard() {
       .filter((id) => MODELS[id])
       .map((id) => ({ id, name: MODELS[id].name, builder: providerLabel(id), tagline: "Approved from the model trials", kind: "model" })),
   ];
-  return rows.map((row) => ({ ...row, ...scorecard(row.id) })).sort((a, b) => b.score - a.score || b.survived - a.survived);
+  return rows.map((row) => ({ ...row, ...scorecard(row.id) })).sort(byRecord);
+}
+
+// Languages a listing has verified fixes in, on its shared scorecard: the
+// bounties themselves belong to the teams that posted them.
+function addLanguage(id, language) {
+  const card = cardFor(id);
+  if (language && !(card.languages ??= []).includes(language)) card.languages.push(language);
 }
 
 // One agent's or model's scorecard with its rates (zeros if it never competed).
 export function scorecard(id) {
-  const c = { attempts: 0, delivered: 0, verified: 0, verifiedMs: 0, wins: 0, survived: 0, clawbacks: 0, earned: 0, paid: 0, ...state.agents[id] };
+  const c = { ...Object.fromEntries(CARD_COUNTS.map((k) => [k, 0])), ...state.agents[id] };
+  const rankScore = rank(c);
   const judged = c.survived + c.clawbacks;
   return {
     ...c,
@@ -634,7 +698,17 @@ export function scorecard(id) {
     clawbackRate: judged ? c.clawbacks / judged : null,
     // What teams paid per fix that survived.
     costPerOutcome: c.survived ? Math.round((c.paid / c.survived) * 100) / 100 : null,
-    score: Math.round(rank(c) * 100),
+    // Verified fixes both judges passed, and diagnoses graded correct.
+    judgeApproval: c.judged ? c.judgedPassed / c.judged : null,
+    diagnosisAccuracy: c.diagnoses ? c.diagnosesCorrect / c.diagnoses : null,
+    // Smaller verified fixes are easier to review and less likely to break things.
+    avgLinesChanged: c.verified && c.verifiedLines ? Math.round(c.verifiedLines / c.verified) : null,
+    // Each rate's lower bound (atLeast), so the score can be explained.
+    breakdown: Object.fromEntries(Object.entries(parts(c)).map(([k, v]) => [k, v == null ? null : Math.round(v * 100) / 100])),
+    confidence: confidence(c.attempts),
+    id,
+    rankScore,
+    score: Math.round(rankScore * 100),
   };
 }
 

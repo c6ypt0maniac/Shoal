@@ -13,7 +13,7 @@ import { nameFor } from './marketplace.js';
 import { zip } from './zip.js';
 import { isProtected } from './verifier.js';
 import { openPullRequest } from './github.js';
-import { MOCK } from './agents.js';
+import { isMock } from './agents.js';
 import { isSealed, brief, publicLadder } from './api-trials.js';
 import { isActive } from './repos.js';
 
@@ -74,9 +74,9 @@ export async function reviewFor(painId, bountyId) {
     const safeText = value => r.locked ? brief(value) : value;
     const judges = (r.proof?.checks?.review?.judges || r.judges || []).map(j=>({model:j.model,name:j.name,status:j.status,ok:j.ok,via:j.via,summary:safeText(j.summary)}));
     const checks = Object.fromEntries(['stress','suite','rules','challenge'].map(k=>{const c=r.proof?.checks?.[k];return[k,c?{ok:c.ok,total:c.total,passed:c.passed}:null];}));
-    return { key:r.key,kind:r.kind,pullRequest:r.pullRequest||null,canCreatePullRequest:!r.locked&&Boolean(r.passed)&&files.length>0&&!issue&&!(r.judges||[]).some(j=>j.ok===false)&&!(r.proof&&r.proof.verdict!=='safe'),apiTrial:r.kind==='trial'&&r.apiCost!=null,locked:Boolean(r.locked),simulated:r.kind==='race'&&MOCK,model:r.model,name:MODELS[r.model]?.name||nameFor(r.model),status:r.status,passed:Boolean(r.passed),reason:safeText(r.reason||issue),failureLog:r.locked?null:(r.failureLog||null),summary:safeText(r.summary)||'No fix was delivered.',runs:r.runs||[],durationMs:r.durationMs??null,judges,proof:r.proof?{status:r.proof.status,verdict:r.proof.verdict,score:r.proof.score,failures:r.proof.failures?.map(safeText),checks}:null,changes,canPreview:files.length>0&&!issue&&!r.locked,recommended:best?.key===r.key };
+    return { key:r.key,kind:r.kind,pullRequest:r.pullRequest||null,canCreatePullRequest:!r.locked&&Boolean(r.passed)&&files.length>0&&!issue&&!(r.judges||[]).some(j=>j.ok===false)&&!(r.proof&&r.proof.verdict!=='safe'),apiTrial:r.kind==='trial'&&r.apiCost!=null,locked:Boolean(r.locked),simulated:r.kind==='race'&&isMock(),model:r.model,name:MODELS[r.model]?.name||nameFor(r.model),status:r.status,passed:Boolean(r.passed),reason:safeText(r.reason||issue),failureLog:r.locked?null:(r.failureLog||null),summary:safeText(r.summary)||'No fix was delivered.',runs:r.runs||[],durationMs:r.durationMs??null,judges,proof:r.proof?{status:r.proof.status,verdict:r.proof.verdict,score:r.proof.score,failures:r.proof.failures?.map(safeText),checks}:null,changes,canPreview:files.length>0&&!issue&&!r.locked,recommended:best?.key===r.key };
   }));
-  if (best && winner && !proven && MOCK) { best.label = 'Simulated race winner'; best.reason = 'This race used simulated agents. Its result is not evidence of live model performance.'; }
+  if (best && winner && !proven && isMock()) { best.label = 'Simulated race winner'; best.reason = 'This race used simulated agents. Its result is not evidence of live model performance.'; }
   return { painId,testFile:pain.testFile,repository:bounty?.repo?.fullName||state.connection.fullName,best,attempts,execution:'api',ladder:active?publicLadder(painId):null,comparisonBase:'Compared with the connected repository source. A passed trial still needs its complete proof report.' };
 }
 const MIME = { '.html':'text/html; charset=utf-8', '.js':'text/javascript', '.mjs':'text/javascript', '.css':'text/css', '.json':'application/json', '.svg':'image/svg+xml', '.png':'image/png', '.jpg':'image/jpeg', '.jpeg':'image/jpeg', '.gif':'image/gif', '.webp':'image/webp', '.ico':'image/x-icon', '.woff':'font/woff', '.woff2':'font/woff2', '.wasm':'application/wasm' };

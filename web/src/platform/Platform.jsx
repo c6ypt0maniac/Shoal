@@ -1,36 +1,41 @@
 import { useEffect, useRef, useState } from 'react';
 import Water from '../components/Water.jsx';
-import { api } from './api.js';
+import { api, getKeys, setKeys, PROVIDERS } from './api.js';
 import { useShoal } from './useShoal.js';
 import Race from './Race.jsx';
 import Shore from './Shore.jsx';
 import ShoreCard from './ShoreCard.jsx';
-import { Agents, CompetitorPicker, ListingDetail, PublishAgent, nameOf } from './Market.jsx';
+import { Agents, CompetitorPicker, Library, ListingDetail, PublishAgent, nameOf } from './Market.jsx';
 import { Repo, Setup } from './Repo.jsx';
 import Trials from './Trials.jsx';
 import FixReview from './FixReview.jsx';
+import Guide from './Guide.jsx';
 import { overlay, Browse, Empty, Group, Icon, ItemCard, Label, LIVE, Modal, STATUS, Tag, btn, card, field, ghost, money, primary, signInHref, tone } from './ui.jsx';
 
-// Messages for ?funding= / ?credits= when Stripe Checkout sends the team back.
-const RETURNS = { 'payments=saved': ['Payment method saved. Bounties are held on this card from now on.'], 'payments=failed': ["The card wasn't saved. Try again from Profile.", true], 'funding=held': ['Reward held in escrow. The race is starting.'], 'funding=cancelled': ['Funding cancelled. The bounty is waiting for funding.', true], 'funding=failed': ["Funding didn't go through. Try again from the bounty.", true], 'credits=added': ['Credits added.'], 'credits=cancelled': ['Credit purchase cancelled.', true], 'credits=failed': ["The credit purchase didn't go through.", true], 'github=signed-in': ['Signed in with GitHub. Pick a repository to connect.'] };
+// Messages for ?funding= / ?payments= when Stripe Checkout sends the team back.
+const RETURNS = { 'payments=saved': ['Payment method saved. Bounties are held on this card from now on.'], 'payments=failed': ["The card wasn't saved. Try again from Profile.", true], 'funding=held': ['Reward held in escrow. The race is starting.'], 'funding=cancelled': ['Funding cancelled. The bounty is waiting for funding.', true], 'funding=failed': ["Funding didn't go through. Try again from the bounty.", true], 'github=signed-in': ['Signed in with GitHub. Pick a repository to connect.'] };
 
 const NAV = [
-  ['Account', [['account', 'Profile', 'user'], ['billing', 'Credits & billing', 'card']]],
+  ['Account', [['account', 'Profile', 'user'], ['billing', 'Billing', 'card'], ['keys', 'API keys', 'key']]],
   ['Workspace', [['setup', 'Get started', 'play'], ['repo', 'Repository', 'repo'], ['activity', 'Activity', 'pulse']]],
-  ['Marketplace', [['bounties', 'Bounties', 'bounty'], ['agents', 'Agents for hire', 'fish'], ['trials', 'Model trials', 'flask'], ['selling', 'Your agents', 'plus']]],
+  ['Marketplace', [['bounties', 'Bounties', 'bounty'], ['agents', 'Agents for hire', 'fish'], ['library', 'Library', 'bookmark'], ['trials', 'Model trials', 'flask'], ['selling', 'Your agents', 'plus']]],
   ['Results', [['settlement', 'Settlement', 'chart']]],
+  ['Help', [['guide', 'Guide', 'help']]],
 ];
 const TITLES = {
   account: ['Profile', 'Your GitHub account and role'],
-  billing: ['Credits & billing', 'Your card for bounties, and credit packs for API fixes. Rewards are held, never charged until a fix is verified.'],
+  keys: ['API keys', 'Your own Anthropic, OpenAI and OpenRouter keys. Every model call runs on them; without any, Shoal runs in practice mode on the demo repo.'],
+  billing: ['Billing', 'Your card for bounties. Rewards are held, never charged until a fix is verified.'],
   setup: ['Get started', 'Three steps to your first bounty. Pick or switch repos on the Repository page.'],
   repo: ['Repository', 'What agents can see, and how Shoal stays in sync'],
   activity: ['Activity', 'Every attempt, green run, rejection and payout'],
   bounties: ['Bounties', 'Flaky tests from your repo, priced by the dev-hours they cost'],
   agents: ['Agents for hire', 'Agents and models ranked by verified fixes that survived. Pick who competes when you post a bounty.'],
-  trials: ['Model trials', 'Try models on your flaky tests for free, then buy the cheapest proven fix with credits'],
-  selling: ['Your agents', 'Agents you published to the marketplace. Shoal sends bounties to their webhooks.'],
+  library: ['Library', 'Your favorites, the agents and models you saved, and pods that group them for bounties'],
+  trials: ['Model trials', 'Models on your API keys find the cheapest proven fix for each flaky test. Free on Shoal.'],
+  selling: ['Your agents', 'Agents you published to the marketplace: by webhook, prompt, code bundle or container.'],
   settlement: ['Settlement', 'What was fixed, what survived, what was paid and the hours you got back'],
+  guide: ['Guide', 'How Shoal works: metrics, picking the best model, the marketplace and bounties'],
 };
 
 function useWide() {
@@ -55,7 +60,7 @@ export default function Platform() {
   const [err, setErr] = useState('');
   const [note, setNote] = useState(null);
   useEffect(() => {
-    const q = new URLSearchParams(location.search), k = ['payments', 'funding', 'credits', 'github'].find((x) => q.has(x));
+    const q = new URLSearchParams(location.search), k = ['payments', 'funding', 'github'].find((x) => q.has(x));
     if (q.has('github_error')) setErr('GitHub sign-in failed: ' + q.get('github_error'));
     else if (!k) return;
     const r = RETURNS[k + '=' + q.get(k)];
@@ -125,12 +130,15 @@ export default function Platform() {
             {v === 'bounties' && <Bounties s={s} act={act} setOpen={setOpen} setup={!steps[1]} go={go} postBounty={postBounty} />}
             {v === 'agents' && <Agents s={s} act={act} setOpen={setOpen} />}
             {v === 'selling' && <Agents s={s} act={act} setOpen={setOpen} mine onPublish={() => setCreate('agent')} />}
+            {v === 'library' && <Library s={s} act={act} setOpen={setOpen} go={go} />}
             {v === 'trials' && <Trials s={s} act={act} go={go} />}
             {v === 'activity' && <Activity events={s.events} />}
             {v === 'settlement' && <Settlement s={s} setOpen={setOpen} />}
             {v === 'billing' && <Billing s={s} act={act} />}
+            {v === 'keys' && <ApiKeys s={s} />}
             {v === 'repo' && <Repo s={s} act={act} go={go} />}
             {v === 'account' && <Account s={s} act={act} />}
+            {v === 'guide' && <Guide go={go} />}
     </>
   );
 
@@ -333,7 +341,7 @@ function Listing({ s, act, open, setOpen, postBounty }) {
     <Modal onClose={close} wide>
       <div className="flex flex-wrap gap-2 border-b border-ink/10 px-6 py-5 pr-16" role="group" aria-label="Bounty display style">
         <button className={reviewMode==='review'?primary:ghost} aria-pressed={reviewMode==='review'} onClick={()=>chooseView('review')}>Model review</button>
-        <button className={reviewMode==='classic'?primary:ghost} aria-pressed={reviewMode==='classic'} onClick={()=>chooseView('classic')}>Classic bounty</button>
+        <button className={reviewMode==='classic'?primary:ghost} aria-pressed={reviewMode==='classic'} onClick={()=>chooseView('classic')}>Bounty details</button>
       </div>
       {reviewMode==='review'&&<FixReview key={b?.id||p.id} painId={b?.painId||p.id} bountyId={b?.id} events={s.events} onTrials={()=>{close();location.hash='trials';}}/>}
       <details key={reviewMode} open={reviewMode==='classic'} className="border-t border-ink/15">
@@ -343,7 +351,7 @@ function Listing({ s, act, open, setOpen, postBounty }) {
           {b ? <><div className="text-sm font-medium text-muted">{LIVE.includes(b.status) ? 'Live race' : 'Race'}</div><Race bounty={b} events={s.events} names={name} /></> : <div className="my-auto flex flex-col items-center gap-4"><div className="flex w-[80%] gap-1">{Array.from({ length: p.runs }, (_, i) => <span key={i} className={'h-8 flex-1 rounded-md ' + (i < p.failures ? 'bg-bad/80' : 'bg-accent/45')} />)}</div><span className="text-sm text-muted">{p.failures} of {p.runs} scan runs failed</span></div>}
         </div>
         <div className="flex flex-col gap-4 p-8">
-          <div className="flex flex-col gap-1"><span className="text-[30px] font-semibold tabular-nums tracking-[-0.03em]">{b?.escrow?.mode === 'credits' ? '$' + Number(b.reward).toFixed(2) : money(b ? b.reward : p.suggestedReward)}</span><span className="break-all font-mono text-[15px]">{b?.testFile ?? p.testFile}</span>
+          <div className="flex flex-col gap-1"><span className="text-[30px] font-semibold tabular-nums tracking-[-0.03em]">{['free', 'credits'].includes(b?.escrow?.mode) ? 'Free' : money(b ? b.reward : p.suggestedReward)}</span><span className="break-all font-mono text-[15px]">{b?.testFile ?? p.testFile}</span>
             {/* The repo the bounty is on, linked to GitHub (the bundled demo repo isn't on GitHub). */}
             {b?.repo && (b.repo.url
               ? <a className="text-sm text-accent underline" href={b.repo.url} target="_blank" rel="noreferrer">{b.repo.fullName} on GitHub</a>
@@ -412,7 +420,7 @@ function Listing({ s, act, open, setOpen, postBounty }) {
             await api.deleteBounty(b.id);
             close();
           })}>Delete bounty</button>}
-          {b && <p className="m-0 text-sm text-muted">{ESCROW[b.escrow?.status] || b.escrow?.status}{b.escrow?.mode === 'stripe' ? ' · Stripe' + (b.escrow.live ? '' : ' test mode') : b.escrow?.mode === 'credits' ? ' · from credits' : ' · simulated'}.{['held', 'awaiting_funding'].includes(b.escrow?.status) ? ' No surviving fix, $0 charged.' : b.escrow?.status === 'charged' && b.status === 'surviving' ? ' Refunded if the fix regresses in its survival window.' : ''}</p>}
+          {b && <p className="m-0 text-sm text-muted">{ESCROW[b.escrow?.status] || b.escrow?.status}{b.escrow?.mode === 'stripe' ? ' · Stripe' + (b.escrow.live ? '' : ' test mode') : ['free', 'credits'].includes(b.escrow?.mode) ? ' · free (on your API keys)' : ' · simulated'}.{['held', 'awaiting_funding'].includes(b.escrow?.status) ? ' No surviving fix, $0 charged.' : b.escrow?.status === 'charged' && b.status === 'surviving' ? ' Refunded if the fix regresses in its survival window.' : ''}</p>}
         </div>
       </div>
       </details>
@@ -507,7 +515,7 @@ function Create({ s, act, err, mode, startPain, setMode, onPosted }) {
           </select>
         </Label>
         {repoErr && <span className="text-sm text-bad">{repoErr}</span>}
-        {s.health?.mock && activeKey !== 'demo' && !switchingTo && <span className="text-sm text-bad">This server has no API keys (practice mode), which only works on the bundled demo repo. Add ANTHROPIC_API_KEY or OPENAI_API_KEY to fix {activeKey}.</span>}
+        {s.health?.mock && activeKey !== 'demo' && !switchingTo && <span className="text-sm text-bad">No API keys added (practice mode), which only works on the bundled demo repo. <a className="underline" href="#keys">Add your API keys</a> to fix {activeKey}.</span>}
         {activeKey !== 'demo' && readOnly(activeKey) && !switchingTo && <span className="text-sm text-muted">You can't push to {activeKey}, so the winning fix comes as a draft PR you can download. Get write access (and reconnect) for real PRs.</span>}
         {err && <span className="text-sm text-bad">{err}</span>}
         {!ready ? (
@@ -525,7 +533,7 @@ function Create({ s, act, err, mode, startPain, setMode, onPosted }) {
 
 function Activity({ events }) {
   const [q, setQ] = useState(''), [chip, setChip] = useState('all');
-  const grp = (t) => /^(bid|bounty|work)\./.test(t) ? 'race' : /^(verify|survival|proof)\./.test(t) ? 'verify' : /^(escrow|credits|pr)\./.test(t) ? 'money' : /^(trials|claude|codex|marketplace|agent)\./.test(t) ? 'market' : 'setup';
+  const grp = (t) => /^(bid|bounty|work)\./.test(t) ? 'race' : /^(verify|survival|proof)\./.test(t) ? 'verify' : /^(escrow|pr)\./.test(t) ? 'money' : /^(trials|claude|codex|marketplace|agent)\./.test(t) ? 'market' : 'setup';
   const all = events.slice(-150).reverse();
   const n = (g) => all.filter((e) => grp(e.type) === g).length;
   const chips = [['all', 'All', all.length], ['race', 'Races', n('race')], ['verify', 'Verification', n('verify')], ['money', 'Money & PRs', n('money')], ['market', 'Marketplace & trials', n('market')], ['setup', 'Repo', n('setup')]];
@@ -566,50 +574,55 @@ function Settlement({ s, setOpen }) {
   );
 }
 
-function Billing({ s, act }) {
-  const c = s.credits;
+// The user's own model keys, kept in this browser (api.js) and sent with each
+// request. Saving refreshes health so practice mode turns off right away.
+function ApiKeys({ s }) {
+  const [keys, setK] = useState(getKeys);
+  const [shown, setShown] = useState(false);
+  const [checks, setChecks] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const save = async () => {
+    setBusy(true); setSaved(false);
+    setK(setKeys(keys));
+    try { setChecks(await api.checkKeys()); } catch (e) { setChecks({ error: e.message }); }
+    await s.refresh(); setBusy(false); setSaved(true);
+  };
+  const clear = async () => { setK(setKeys({})); setChecks(null); setSaved(false); await s.refresh(); };
   return (
     <section className="flex flex-col gap-5">
-      {s.me?.viewer && <PaymentMethod act={act} from="billing" />}
-      <h2 className="m-0 border-b border-ink/12 pb-3 text-[24px] font-semibold tracking-[-0.025em]">Credits</h2>
-      <div className="glass-dark flex flex-wrap items-center gap-4 rounded-[20px] p-6 text-paper">
-        <div className="flex flex-col"><span className="text-[32px] font-semibold tabular-nums">{c ? '$' + Number(c.balance ?? 0).toFixed(2) : '—'}</span><span className="text-sm text-mist">Balance for API fixes · {c?.payments || s.health?.payments} payments</span></div>
-      </div>
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {[10, 25, 50].map((p) => (
-          <div key={p} className={card}><span className="text-[26px] font-semibold">{money(p)}</span><span className="text-[15px] text-muted">A verified fix uses its real API cost plus the 15% fee. Unverified costs nothing.</span>
-            <button className={ghost + ' mt-2 self-start'} onClick={act(async () => { const r = await api.buyCredits(p); if (r?.checkoutUrl) location.href = r.checkoutUrl; })}>Buy</button></div>
-        ))}
-        <CustomCredits act={act} />
-      </div>
-      {(c?.purchases?.length > 0 || c?.charges?.length > 0) && <>
-        <div className="text-[17px] font-semibold">History</div>
-        <div className="glass rounded-[20px] px-6 py-2">
-          {[...(c.purchases || []).map((x) => ({ ...x, k: 'Bought credits', sign: '+' })), ...(c.charges || []).map((x) => ({ ...x, k: 'API fix' + (x.model ? ' · ' + x.model : ''), sign: '−' }))]
-            .sort((a, b) => String(b.at ?? b.createdAt ?? '').localeCompare(String(a.at ?? a.createdAt ?? '')))
-            .map((x, i) => <div key={i} className="grid grid-cols-[minmax(0,1fr)_100px] gap-4 border-t border-ink/10 py-3 tabular-nums first:border-t-0"><span className="truncate">{x.k}</span><span className={'text-right ' + (x.sign === '+' ? 'text-accent' : '')}>{x.sign}${Number(x.amount).toFixed(2)}</span></div>)}
+      <div className={card}>
+        <span className="text-[15px] text-muted">Keys are stored only in this browser and sent to the Shoal server with each request. They're never saved on the server. Model costs are billed to your accounts.</span>
+        {PROVIDERS.map(([id, name, hint]) => {
+          const c = checks?.[id];
+          return (
+            <Label key={id} t={<span className="flex flex-wrap items-center gap-2">{name}{c && c.ok !== null && <Tag tone={c.ok ? 'ok' : 'bad'}>{c.ok ? 'Works' : 'Rejected'}</Tag>}{c?.where && <span className="text-xs">{c.where}</span>}</span>}>
+              <input className={field} type={shown ? 'text' : 'password'} autoComplete="off" spellCheck={false} placeholder={hint} value={keys[id] || ''} onChange={(e) => { setK({ ...keys, [id]: e.target.value }); setSaved(false); }} />
+              {c && c.ok !== null && <span className={'text-xs ' + (c.ok ? 'text-accent' : 'text-bad')}>{c.detail}</span>}
+            </Label>
+          );
+        })}
+        {checks?.error && <span className="text-sm text-bad">{checks.error}</span>}
+        <div className="flex flex-wrap items-center gap-2">
+          <button className={primary} disabled={busy} onClick={save}>{busy ? 'Checking…' : 'Save and check'}</button>
+          <button className={ghost} onClick={() => setShown((x) => !x)}>{shown ? 'Hide' : 'Show'}</button>
+          <button className={ghost} onClick={clear}>Remove all</button>
+          {saved && <span className="text-sm text-accent">Saved.</span>}
         </div>
-      </>}
+        <span className="text-sm text-muted">{s.health?.mock ? 'Practice mode: add an Anthropic or OpenAI key to diagnose and fix your own repos.' : 'Live: model trials, paid fixes and judges run on your keys.'}</span>
+      </div>
     </section>
   );
 }
 
-function CustomCredits({ act }) {
-  const [v, setV] = useState('');
-  const n = Number(v), ok = Number.isInteger(n) && n >= 5 && n <= 1000;
+// Billing: the card bounties are held on. Trials and their fixes are free
+// (models run on your own API keys), so there's no balance to keep.
+function Billing({ s, act }) {
   return (
-    <div className={card}>
-      <span className="text-[26px] font-semibold">Custom</span>
-      <span className="text-[15px] text-muted">Any whole amount from $5 to $1,000.</span>
-      <div className="mt-2 flex gap-2">
-        <label className="flex min-w-0 flex-1 items-center gap-1 rounded-xl border border-ink/15 bg-white/60 px-3 focus-within:border-accent">
-          <span className="text-muted">$</span>
-          <input type="number" inputMode="numeric" min="5" max="1000" step="1" value={v} onChange={(e) => setV(e.target.value)} placeholder="75" aria-label="Custom credit amount in dollars" className="w-full min-w-0 bg-transparent py-2.5 tabular-nums outline-none" />
-        </label>
-        <button className={ghost} disabled={!ok} onClick={act(async () => { const r = await api.buyCredits(n); if (r?.checkoutUrl) location.href = r.checkoutUrl; else setV(''); })}>Buy</button>
-      </div>
-      {v && !ok && <span className="text-sm text-bad">Enter a whole amount from $5 to $1,000.</span>}
-    </div>
+    <section className="flex flex-col gap-5">
+      {s.me?.viewer ? <PaymentMethod act={act} from="billing" /> : <Empty>Sign in to save a card for bounties.</Empty>}
+      <span className="text-[15px] text-muted">Model trials and their proven fixes are free on Shoal: the models run on your own API keys, so you pay those tokens to your provider. Only bounties use this card, and only for verified fixes.</span>
+    </section>
   );
 }
 
@@ -628,7 +641,7 @@ function Account({ s, act }) {
       </div>
       <h2 className="m-0 border-b border-ink/12 pb-3 text-[24px] font-semibold tracking-[-0.025em]">How you use Shoal</h2>
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        {[['team', 'I have dev pain', 'Find flaky tests, post bounties, pay only for fixes that survive.'], ['builder', 'I build agents', 'Publish an agent with a webhook and earn from verified fixes.']].map(([id, t, b]) => (
+        {[['team', 'Engineering team', 'Find flaky tests, post bounties and pay only for fixes that hold up.'], ['builder', 'Agent developer', 'Publish your agent through a webhook and earn from verified fixes.']].map(([id, t, b]) => (
           <button key={id} onClick={act(() => api.setRole(id))} className={card + ' cursor-pointer text-left ' + (role === id ? 'ring-2 ring-accent/60' : '')}><span className="text-[19px] font-semibold">{t}</span><span className="text-[15px] text-muted">{b}</span>{role === id && <span className="text-sm text-accent">Selected</span>}</button>
         ))}
       </div>
@@ -725,7 +738,7 @@ function DeleteAccount({ login, act }) {
     <>
       <h2 className="m-0 border-b border-ink/12 pb-3 text-[24px] font-semibold tracking-[-0.025em]">Delete account</h2>
       <div className={card + ' border-bad/30'}>
-        <span className="text-[15px]">This can't be undone. It wipes everything: the connected repository and its scans, your bounties (held rewards are released and fixes still in their survival window are refunded), model trials, activity, unused credits (they're forfeited), your saved card, and the agents, models and reviews in the marketplace. Shoal's access to your GitHub account is revoked and you're signed out, so signing in again starts fresh.</span>
+        <span className="text-[15px]">This can't be undone. It wipes everything: the connected repository and its scans, your bounties (held rewards are released and fixes still in their survival window are refunded), model trials, activity, your saved card, and your own agents, imported models and reviews in the marketplace. Shoal's access to your GitHub account is revoked and you're signed out, so signing in again starts fresh.</span>
         <Label t={'Type ' + login + ' to confirm'}><input className={field} value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck="false" /></Label>
         <button className={btn + ' self-start bg-bad text-paper hover:bg-ink'} disabled={typed.trim() !== login} onClick={act(async () => { await api.deleteAccount(); try { localStorage.removeItem('shoal.explored.' + login); } catch {} location.href = '/app'; })}>Delete my account</button>
       </div>

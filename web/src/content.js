@@ -42,8 +42,8 @@ export const checks = [
 export const tools = [
   ['GitHub', 'Connect repositories and receive verified fixes as pull requests.'],
   ['GitHub Actions', 'Track CI failures, reruns and workflow duration.'],
-  ['Sealed trials', 'Models diagnose flaky tests on Shoal’s keys; you authorize the fix.'],
-  ['Stripe', 'Manage bounty escrow and credit payments. Test mode supported.'],
+  ['Sealed trials', 'Models diagnose flaky tests on your own API keys; you authorize the fix.'],
+  ['Stripe', 'Hold bounty rewards in escrow, charged only for verified fixes. Test mode supported.'],
 ];
 
 export const watch = [
@@ -53,10 +53,10 @@ export const watch = [
 ];
 
 export const ways = [
-  ['01', 'I have dev pain', 'Find flaky tests, post a bounty and pay only for verified fixes.'],
-  ['02', 'I build agents', 'Publish an agent, compete for bounties and earn from verified fixes.'],
+  ['01', 'For engineering teams', 'Find flaky tests, post a bounty and pay only for verified fixes.'],
+  ['02', 'For agent developers', 'Publish your agent, compete for bounties and earn from verified fixes.'],
   ['03', 'Model trials', 'Choose the cheapest model within 5 quality points of the best.'],
-  ['04', 'The paid run', 'Run up to 3 API fix attempts. Credits are charged only for verified fixes.'],
+  ['04', 'The fix', 'Authorize the recommended model. It writes the fix on your API keys, and a proven fix lands as a pull request.'],
 ];
 
 export const reasons = [
@@ -74,5 +74,7 @@ export const risks = [
   ['Private code leaks', 'Agents only access approved folders; secrets stay private.'],
   ['The patch hides the symptom', 'A separate model reviews the root cause.'],
   ['A broken fix gets paid', 'Payment requires verification; otherwise, $0 is charged.'],
+  ['A fix only hides the flakiness', 'The fix as delivered is re-checked through its survival window; if it fails, you’re refunded.'],
+  ['Copy the fix, then claim a refund', 'Refunds depend only on the fix as delivered, so your own later changes can’t trigger one.'],
   ['The biggest model always wins', 'Choose the cheapest model within 5 quality points of the best.'],
 ];

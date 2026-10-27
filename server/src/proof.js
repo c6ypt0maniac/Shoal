@@ -19,8 +19,8 @@
 //                   root cause is fixed. Asked only once every test-based
 //                   check above has passed: a fix that already failed isn't
 //                   worth a judge's tokens.
-// Who pays: Shoal's API keys (the team spends nothing), with a spend cap per
-// bug (spend.js).
+// Who pays: the team's API keys (user-keys.js), with a token cap per bug
+// (spend.js); Shoal's sandbox time is covered by the unlock price (pricing.js).
 //   track record    how this model's trials have gone on this repo (shown,
 //                   not counted: it describes the model, not this fix).
 //   code diff       exactly which lines would land.
@@ -32,9 +32,9 @@ import { challengePath, commandFor, stackFor, testHint } from "./stack.js";
 import { inScope, isSecret } from "./scope.js";
 import { isProtected } from "./verifier.js";
 import { emit } from "./events.js";
-import { state } from "./store.js";
+import { state, scoped } from "./store.js";
 import { MODELS, rankedOptions } from "./trials.js";
-import { MOCK, judgeViaApi } from "./agents.js";
+import { isMock, judgeViaApi } from "./agents.js";
 
 const STRESS_PARALLEL = 40;
 const STRESS_MIXED = 10;
@@ -44,18 +44,19 @@ const CHALLENGE_RUNS = 3;
 // The checks a fix must pass. The trust score is the share it passed.
 const CHECKS = ["stress", "suite", "rules", "challenge", "review"];
 
-const running = new Set();
+// Per user (store.js scoped): bugs being proved, and their challenge tests.
+const running = () => scoped("proving", () => new Set());
 // Challenge tests per problem, reused while the same fixes are checked.
-const challenges = new Map(); // painId -> { key, challenge }
+const challenges = () => scoped("challenges", () => new Map()); // painId -> { key, challenge }
 
-export const isProving = () => running.size > 0;
+export const isProving = () => running().size > 0;
 
 // Proof status for one problem: every candidate checked so far and the first
 // one that's proven (the one the team can buy).
 export function proofFor(painId) {
   const proofs = Object.values(state.proofs).filter((p) => p.painId === painId).sort((a, b) => a.rank - b.rank);
   return {
-    checking: running.has(painId),
+    checking: running().has(painId),
     candidates: proofs,
     proven: proofs.find((p) => p.verdict === "safe") ?? null,
   };
@@ -67,22 +68,22 @@ export function resetProofs(painId) {
     if (p.painId !== painId) continue;
     delete state.proofs[id];
   }
-  challenges.delete(painId);
+  challenges().delete(painId);
 }
 
 // Writes the challenge tests, runs them against every fix, then checks
 // candidates best-value first until one passes everything.
 export async function proveProblem(painId) {
-  if (running.has(painId)) return;
+  if (running().has(painId)) return;
   const pain = state.pains.find((p) => p.id === painId);
   const options = rankedOptions(painId);
   if (!pain || !options.length) return;
-  running.add(painId);
+  running().add(painId);
   try {
     const code = await proofContext(pain, options.map((o) => o.trial.files));
     const key = options.map((o) => o.trial.id).join(",");
-    if (challenges.get(painId)?.key !== key) challenges.set(painId, { key, challenge: await challengeFor(pain, options, code) });
-    const { challenge } = challenges.get(painId);
+    if (challenges().get(painId)?.key !== key) challenges().set(painId, { key, challenge: await challengeFor(pain, options, code) });
+    const { challenge } = challenges().get(painId);
     for (const [rank, option] of options.entries()) {
       const existing = state.proofs[option.trial.id];
       if (existing?.status === "done") {
@@ -97,7 +98,7 @@ export async function proveProblem(painId) {
     }
     emit("proof.none", { message: `No model's fix for ${pain.testFile} is proven yet. Nothing is offered for sale.` });
   } finally {
-    running.delete(painId);
+    running().delete(painId);
   }
 }
 
@@ -283,7 +284,7 @@ async function challengeFor(pain, options, code) {
   if (!stack?.toolOk) return { ok: false, file: null, error: stack ? stack.toolMessage : `No supported test setup for ${pain.testFile}` };
   const file = challengePath(stack, pain.testFile);
   // Practice mode: no writer to pay; the other checks still run.
-  if (MOCK) return { ok: true, mock: true, file, author: "practice mode", original: {}, results: {}, fair: [], unfair: [] };
+  if (isMock()) return { ok: true, mock: true, file, author: "practice mode", original: {}, results: {}, fair: [], unfair: [] };
   emit("proof.challenge", { message: `Proof: a model is reading ${code.length} relevant files and writing challenge tests for ${pain.testFile}` });
 
   const fixes = await Promise.all(options.map(async (o, i) => `### Fix ${fixLabel(i)} changed ${o.trial.files.map((f) => f.path).join(", ")}\n${diffText(await diffFiles(o.trial.files))}`));
@@ -299,7 +300,7 @@ async function challengeFor(pain, options, code) {
     "Reply with only the file, in one fenced code block.",
   ].join("\n\n");
 
-  // Sonnet 5.5, then GPT-6.1 Sol, on Shoal's API keys: a mid-tier model is
+  // Sonnet 5.5, then GPT-6.1 Sol, on the user's API keys: a mid-tier model is
   // enough, since a test only counts if some fix passes it.
   const viaApi = (model) => async () => {
     const cost = estimate(model, prompt, 8_000);
@@ -332,7 +333,7 @@ async function challengeFor(pain, options, code) {
         ? `${author} didn't return a test file`
         : capped
           ? "No challenge tests: writing them would go over this bug's spend cap"
-          : "No challenge tests could be written: set ANTHROPIC_API_KEY or OPENAI_API_KEY on the server",
+          : "No challenge tests could be written: add your Anthropic or OpenAI API key",
     };
   }
 
@@ -389,7 +390,7 @@ function challengeCheck(challenge, trialId) {
 // Two judges from different labs, never the model that wrote the fix:
 // Sonnet 5.5 (Opus 5.5 for Sonnet's fixes) and GPT-6.1 Sol (GPT-6 Sol for
 // Sol's fixes). Sol replaced GPT-6 Astra: same verdicts in practice at a
-// fraction of the price. They run on Shoal's API keys. Both must pass. Bounties use the same judges on
+// fraction of the price. They run on the user's API keys. Both must pass. Bounties use the same judges on
 // their best verified fixes (judgeAttempt).
 const JUDGES = {
   anthropic: [{ id: "claude-sonnet-5-5" }, { id: "claude-opus-5-5" }],
@@ -431,17 +432,17 @@ async function startReview(pain, trial, diff, { code, options }) {
   return { ok: null, filesSeen: code.length, judges };
 }
 
-const noJudge = (j) => ({ verdict: "fail", summary: `${j.name} couldn't run: ${j.error ?? `set ${j.provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"} on the server, or this bug's spend cap was reached`}.`, remaining: [], risks: [] });
+const noJudge = (j) => ({ verdict: "fail", summary: `${j.name} couldn't run: ${j.error ?? `add your ${j.provider === "anthropic" ? "Anthropic" : "OpenAI"} API key, or this bug's spend cap was reached`}.`, remaining: [], risks: [] });
 
-// One judge's answer, on Shoal's API key within the bug's spend cap. In
+// One judge's answer, on the user's API key within the bug's spend cap. In
 // practice mode, a stand-in that passes (never for bounties: real).
 // -> { text, via, cost } or null.
 async function askJudge(j, prompt, painId = null, { real = false } = {}) {
-  if (MOCK && real) {
-    j.error ??= "the server has no API keys";
+  if (isMock() && real) {
+    j.error ??= "no API keys were added";
     return null;
   }
-  if (MOCK) return { text: JSON.stringify({ verdict: "pass", summary: "Practice-mode judge (no API keys): not a real review." }), via: "practice mode", cost: 0 };
+  if (isMock()) return { text: JSON.stringify({ verdict: "pass", summary: "Practice-mode judge (no API keys): not a real review." }), via: "practice mode", cost: 0 };
   if (!fitsCap(painId, estimate(j.model, prompt, 6_000))) return null;
   try {
     const api = await judgeViaApi(j.model, prompt);
@@ -458,7 +459,7 @@ async function askJudge(j, prompt, painId = null, { real = false } = {}) {
 // author: who wrote it (never judges itself). others: the other verified
 // attempts' files, so the judges can spot a bug this one only avoids.
 // -> { ok, judges, cost }. ok only if both judges ran and both passed.
-// Judges are always real models on Shoal's API keys, for every agent's fix
+// Judges are always real models on the user's API keys, for every agent's fix
 // (mock agents' included). There's no practice-mode pass here: with no real
 // judge the fix can't win. When OpenAI can't run, a Claude model stands in
 // (askOrStandIn). SHOAL_MOCK_JUDGES=1 (the check
@@ -484,8 +485,8 @@ export async function judgeAttempt({ pain, files, author, others = [] }) {
         cost += got.cost;
         recordVerdict(judge, parseVerdict(got.text), got.via);
       } else {
-        const key = judge.provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
-        recordVerdict(judge, { verdict: "fail", summary: `${judge.name} couldn't judge: ${judge.error ?? `set ${key} on the server`}.`, remaining: [], risks: [] }, null);
+        const key = judge.provider === "anthropic" ? "Anthropic" : "OpenAI";
+        recordVerdict(judge, { verdict: "fail", summary: `${judge.name} couldn't judge: ${judge.error ?? `add your ${key} API key`}.`, remaining: [], risks: [] }, null);
         judge.unavailable = true;
       }
       return judge;

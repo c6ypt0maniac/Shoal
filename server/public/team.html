@@ -140,8 +140,8 @@
       </table>
     </section>
     <section>
-      <h2>Model trials <span class="hint">· sealed, on Shoal's API keys: models diagnose each flaky test, the best value is recommended, and you authorize the fix</span></h2>
-      <div class="trial-controls"><button type="button" class="cta" id="sealedBtn" onclick="runSealed()">▶ Run sealed trials</button><span class="hint">Needs credits. Nothing is fixed until you authorize it.</span></div>
+      <h2>Model trials <span class="hint">· sealed, on your own API keys: models diagnose each flaky test, the best value is recommended, and you authorize the fix</span></h2>
+      <div class="trial-controls"><button type="button" class="cta" id="sealedBtn" onclick="runSealed()">▶ Run sealed trials</button><span class="hint">Free on Shoal; models run on your API keys. Nothing is fixed until you authorize it.</span></div>
       <table>
         <thead><tr><th>Model</th><th>Tests fixed</th><th>Quality</th><th>Cost per fix</th><th>Avg lines changed</th></tr></thead>
         <tbody id="scoreboard"></tbody>
@@ -166,13 +166,6 @@
     </section>
   </div>
   <div>
-    <section>
-      <div class="section-head"><h2>Credits</h2><span id="creditMode" class="hint"></span></div>
-      <div class="credit-balance"><b id="creditBalance">$0.00</b> <span class="hint">for verified API fixes</span></div>
-      <div class="packs" id="packs"></div>
-      <p class="hint">A verified fix uses its real API cost plus a 15% Shoal fee. A fix that isn't verified costs nothing.</p>
-      <ul id="creditActivity" class="credit-activity"></ul>
-    </section>
     <section>
       <h2>Morning Settlement</h2>
       <div class="stats" id="settlement"></div>
@@ -211,16 +204,14 @@ const post = (p, body) =>
 let agentNames = {};
 
 async function refresh() {
-  const [pains, bounties, agents, settlement, conn, ci, trials, credits] = await Promise.all([
+  const [pains, bounties, agents, settlement, conn, ci, trials] = await Promise.all([
     get("/api/pains"), get("/api/bounties"), get("/api/agents"), get("/api/settlement"), get("/api/connection"), get("/api/ci"),
     get("/api/trials").catch(() => ({ scoreboard: [], problems: [], trials: [], models: {} })),
-    get("/api/credits").catch(() => null),
   ]);
   agentNames = {
     ...Object.fromEntries(Object.entries(trials.models).map(([id, m]) => [id, m.name])),
     ...Object.fromEntries(agents.map((a) => [a.id, a.name])),
   };
-  if (credits) renderCredits(credits);
   renderTrials(trials);
 
   $("ghBtnLabel").innerHTML = conn.type === "github" ? `<span class="dot"></span> ${esc(conn.fullName)}` : "Connect to GitHub";

@@ -10,14 +10,13 @@
 // STRIPE_ALLOW_LIVE=1 and real Claude agents: charging a real card for a
 // mock agent's scripted fix would be taking money for nothing.
 import Stripe from "stripe";
+import { currentWorkspace } from "./store.js";
 import { emit } from "./events.js";
-import { chargeCredits, refundCredits } from "./credits.js";
-import { MOCK } from "./agents.js";
 
 const key = () => process.env.STRIPE_SECRET_KEY ?? "";
 const isTestKey = () => /^(sk|rk)_test_/.test(key());
 const isLiveKey = () => /^(sk|rk)_live_/.test(key());
-export const stripeLive = () => isLiveKey() && process.env.STRIPE_ALLOW_LIVE === "1" && !MOCK;
+export const stripeLive = () => isLiveKey() && process.env.STRIPE_ALLOW_LIVE === "1" && process.env.SHOAL_MOCK !== "1";
 export const stripeConfigured = () => isTestKey() || stripeLive();
 export const paymentsMode = () => (stripeLive() ? "stripe-live" : isTestKey() ? "stripe-test" : "simulated");
 
@@ -26,17 +25,23 @@ export function stripeKeyProblem() {
   if (!key() || stripeConfigured()) return null;
   if (!isLiveKey()) return "STRIPE_SECRET_KEY isn't a Stripe secret key";
   if (process.env.STRIPE_ALLOW_LIVE !== "1") return "STRIPE_SECRET_KEY is a LIVE key; set STRIPE_ALLOW_LIVE=1 to take real money";
-  return "live payments need real agents; set ANTHROPIC_API_KEY or OPENAI_API_KEY (mock agents can't take real money)";
+  return "live payments need real agents; unset SHOAL_MOCK=1 (mock agents can't take real money)";
 }
 
 let client = null;
 export const stripe = () => (client ??= new Stripe(key()));
 
 const cents = (dollars) => Math.round(dollars * 100);
+export const isFree = (escrow) => escrow.mode === "free" || escrow.mode === "credits";
+// Whose checkout this is: the webhook and the return page credit that user.
+const owner = () => currentWorkspace().login;
 
 export function newEscrow(reward, mode) {
   return {
-    mode, // "stripe" | "simulated" | "credits" (prepaid, see credits.js)
+    // "stripe" | "simulated" | "free": unlocking a trial fix moves no money
+    // (the team's tokens, on their own keys, are its only cost). Bounties
+    // saved before trials were free say "credits"; they're treated as free.
+    mode,
     live: mode === "stripe" && stripeLive(),
     status: mode === "stripe" ? "awaiting_funding" : "held",
     amount: reward,
@@ -61,7 +66,7 @@ export async function holdWithSavedCard(bounty, card) {
       off_session: true,
       confirm: true,
       description: `Shoal bounty ${bounty.id}`,
-      metadata: { bountyId: bounty.id },
+      metadata: { bountyId: bounty.id, owner: owner() },
     }, { idempotencyKey: `shoal-hold-${bounty.id}` });
     if (intent.status !== "requires_capture") throw Object.assign(new Error(`Payment isn't on hold (status: ${intent.status})`), { needsCheckout: true });
     bounty.escrow.paymentIntentId = intent.id;
@@ -93,9 +98,9 @@ export async function startCheckout(bounty, { successUrl, cancelUrl }) {
     payment_intent_data: {
       capture_method: "manual",
       description: `Shoal bounty ${bounty.id}`,
-      metadata: { bountyId: bounty.id },
+      metadata: { bountyId: bounty.id, owner: owner() },
     },
-    metadata: { bountyId: bounty.id },
+    metadata: { bountyId: bounty.id, owner: owner() },
     success_url: successUrl,
     cancel_url: cancelUrl,
   });
@@ -117,64 +122,28 @@ export async function confirmFunding(bounty, sessionId) {
 
 // Fix verified: charge the team. Shoal holds it through the survival window
 // (the agent is paid only after; see survival.js) and refunds it on a
-// clawback. Credit runs deduct the real API cost plus fee instead.
+// clawback. A free bounty charges nothing.
 export async function chargeEscrow(bounty, amount) {
   const escrow = bounty.escrow;
   if (escrow.mode === "stripe") {
     await stripe().paymentIntents.capture(escrow.paymentIntentId, { amount_to_capture: cents(amount) });
   }
-  if (escrow.mode === "credits") {
-    // An unlock charges the price shown before unlocking (pricing.js).
-    amount = await chargeCredits({ bountyId: bounty.id, model: bounty.apiModel, apiCost: bounty.apiCost, ...(bounty.unlock ? { cents: cents(bounty.reward) } : {}) });
-  }
+  const free = isFree(escrow);
+  if (free) amount = 0;
   escrow.status = "charged";
   escrow.charged = amount;
-  escrow.released = escrow.mode === "credits" ? 0 : escrow.amount - amount;
-  const via = { simulated: " (simulated)", stripe: " via Stripe", credits: bounty.unlock ? " from credits (unlocked a sealed fix)" : ` from credits (API cost $${bounty.apiCost?.toFixed(4)} + fee)` }[escrow.mode];
+  escrow.released = free ? 0 : escrow.amount - amount;
+  const via = { simulated: " (simulated)", stripe: " via Stripe" }[escrow.mode] ?? "";
   emit("escrow.charged", {
     bountyId: bounty.id,
     amount,
-    message: `Charged $${amount}${escrow.released ? `, released the other $${escrow.released}` : ""}${via}`,
+    message: free ? "Fix verified: free on Shoal (the model ran on your API keys)" : `Charged $${amount}${escrow.released ? `, released the other $${escrow.released}` : ""}${via}`,
   });
   return amount;
 }
 
-// --- Credit packs ------------------------------------------------------------
-
-// Checkout for a credit pack: a normal, immediately captured payment.
-export async function startCreditCheckout(dollars, { successUrl, cancelUrl }) {
-  const session = await stripe().checkout.sessions.create({
-    mode: "payment",
-    line_items: [
-      {
-        quantity: 1,
-        price_data: {
-          currency: "usd",
-          unit_amount: cents(dollars),
-          product_data: {
-            name: `Shoal credits: $${dollars}`,
-            description: "Prepaid credits for verified fixes. Each verified fix uses its real API cost plus Shoal's fee; failed fixes cost nothing.",
-          },
-        },
-      },
-    ],
-    metadata: { kind: "credits", dollars: String(dollars) },
-    success_url: successUrl,
-    cancel_url: cancelUrl,
-  });
-  return session.url;
-}
-
-// Stripe sent the team back: check the pack was actually paid, and for how much.
-export async function confirmCreditPurchase(sessionId) {
-  const session = await stripe().checkout.sessions.retrieve(String(sessionId ?? ""));
-  if (session.metadata?.kind !== "credits") throw httpError(400, "That isn't a credit purchase");
-  if (session.payment_status !== "paid") throw httpError(402, `Payment didn't complete (status: ${session.payment_status})`);
-  return { dollars: session.amount_total / 100, sessionId: session.id };
-}
-
 // The fix regressed inside its survival window: give the team its money
-// back. Stripe refunds the captured charge; credits go back on the balance.
+// back. Stripe refunds the captured charge; a free bounty has nothing to refund.
 export async function refundEscrow(bounty) {
   const escrow = bounty.escrow;
   if (escrow.status !== "charged") return 0;
@@ -182,11 +151,10 @@ export async function refundEscrow(bounty) {
     const refund = await stripe().refunds.create({ payment_intent: escrow.paymentIntentId, amount: cents(escrow.charged), metadata: { bountyId: bounty.id, reason: "clawback" } });
     escrow.refundId = refund.id;
   }
-  if (escrow.mode === "credits") await refundCredits({ bountyId: bounty.id });
   escrow.status = "refunded";
   escrow.refunded = escrow.charged;
-  const via = { simulated: " (simulated)", stripe: " via Stripe", credits: " to credits" }[escrow.mode];
-  emit("escrow.refunded", { bountyId: bounty.id, amount: escrow.refunded, message: `Refunded $${escrow.refunded}${via}: the fix didn't survive` });
+  const via = { simulated: " (simulated)", stripe: " via Stripe" }[escrow.mode] ?? "";
+  emit("escrow.refunded", { bountyId: bounty.id, amount: escrow.refunded, message: isFree(escrow) ? "The fix didn't survive (it was free, so nothing to refund)" : `Refunded $${escrow.refunded}${via}: the fix didn't survive` });
   return escrow.refunded;
 }
 
@@ -200,8 +168,8 @@ export async function releaseEscrow(bounty) {
   emit("escrow.released", {
     bountyId: bounty.id,
     message:
-      escrow.mode === "credits"
-        ? "No verified fix: nothing taken from credits"
+      isFree(escrow)
+        ? "No verified fix: nothing charged"
         : `Hold of $${escrow.amount} released: no verified fix, nothing charged${escrow.mode === "simulated" ? " (simulated)" : ""}`,
   });
 }

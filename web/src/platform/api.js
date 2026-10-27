@@ -3,10 +3,29 @@
 export const OFFLINE = "Can't reach the Shoal server. If it isn't running, start it with npm start.";
 export const apiHref = path => String(import.meta.env.VITE_SHOAL_API_URL || '').replace(/\/$/, '') + path;
 
+// The user's own model API keys. They stay in this browser and go to the
+// Shoal server with each request (server/src/user-keys.js); the server never
+// stores them or uses keys of its own.
+export const PROVIDERS = [
+  ['anthropic', 'Anthropic', 'sk-ant-…', 'X-Anthropic-Key'],
+  ['openai', 'OpenAI', 'sk-…', 'X-OpenAI-Key'],
+  ['openrouter', 'OpenRouter', 'sk-or-…', 'X-OpenRouter-Key'],
+];
+const KEYS_ITEM = 'shoal.apiKeys';
+export function getKeys() {
+  try { return JSON.parse(localStorage.getItem(KEYS_ITEM)) || {}; } catch { return {}; }
+}
+export function setKeys(keys) {
+  const kept = Object.fromEntries(Object.entries(keys).map(([k, v]) => [k, String(v || '').trim()]).filter(([, v]) => v));
+  try { localStorage.setItem(KEYS_ITEM, JSON.stringify(kept)); } catch {}
+  return kept;
+}
+const keyHeaders = () => { const k = getKeys(); return Object.fromEntries(PROVIDERS.filter(([id]) => k[id]).map(([id, , , h]) => [h, k[id]])); };
+
 async function req(method, url, body) {
   let r;
   try {
-    r = await fetch(apiHref(url), { method, credentials: 'include', headers: body ? { 'Content-Type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined });
+    r = await fetch(apiHref(url), { method, credentials: 'include', headers: { ...keyHeaders(), ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
   } catch {
     throw Object.assign(new Error(OFFLINE), { offline: true });
   }
@@ -20,6 +39,7 @@ const id = encodeURIComponent;
 
 export const api = {
   health: () => get('/api/health'),
+  checkKeys: () => post('/api/keys/check'),
   me: () => get('/api/me'),
   setRole: (role) => post('/api/me/role', { role }),
   signOut: () => post('/api/auth/github/logout'),
@@ -70,6 +90,15 @@ export const api = {
   reply: (reviewId, body) => post('/api/marketplace/reviews/' + id(reviewId) + '/reply', { body }),
   helpful: (reviewId, on) => (on ? post : del)('/api/marketplace/reviews/' + id(reviewId) + '/helpful'),
 
+  // Your library: saved agents and models, and pods of them
+  library: () => get('/api/library'),
+  saveListing: (listingId) => post('/api/library/saved', { id: listingId }),
+  unsaveListing: (listingId) => del('/api/library/saved?id=' + id(listingId)),
+  favorite: (listingId, on) => (on ? post('/api/library/favorites', { id: listingId }) : del('/api/library/favorites?id=' + id(listingId))),
+  createPod: (name, description = '', listings = []) => post('/api/library/pods', { name, description, listings }),
+  updatePod: (podId, changes) => patch('/api/library/pods/' + id(podId), changes),
+  deletePod: (podId) => del('/api/library/pods/' + id(podId)),
+
   // Model trials and the approved API fix
   trials: () => get('/api/trials'),
   sealedTrials: (painId) => post('/api/trials/sealed', painId ? { painId } : {}),
@@ -80,8 +109,6 @@ export const api = {
   prove: (painId) => post('/api/proofs', { painId }),
 
   // Money
-  credits: () => get('/api/credits'),
-  buyCredits: (dollars) => post('/api/credits/buy', { dollars }),
   ledger: () => get('/api/ledger'),
   settlement: () => get('/api/settlement'),
 

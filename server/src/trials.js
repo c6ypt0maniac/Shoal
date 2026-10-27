@@ -6,6 +6,7 @@ import { verify } from "./verifier.js";
 import { emit } from "./events.js";
 import { state, newId } from "./store.js";
 import { readRepoFile } from "./repo.js";
+import { addCompute } from "./spend.js";
 
 // Models a trial can be tagged with: the ones Shoal can later run through
 // the API. Prices are $ per million tokens: input, cached input, output.
@@ -63,7 +64,7 @@ export const OPENAI_MODEL_IDS = MODEL_IDS.filter((id) => MODELS[id].provider ===
 export const providerLabel = (model) => (MODELS[model]?.provider === "openai" ? "OpenAI API" : "Claude API");
 
 // client: who ran it ({ app: "Shoal API" }).
-// sealed + apiCost: Shoal ran it on its own keys (api-trials.js) at that
+// sealed + apiCost: Shoal ran it on the team's keys (api-trials.js) at that
 // measured cost, which also becomes the model's cost per fix.
 export async function submitTrial({ painId, model, summary, files, client = null, sealed = false, apiCost = null }) {
   const pain = state.pains.find((p) => p.id === painId);
@@ -98,7 +99,10 @@ export async function submitTrial({ painId, model, summary, files, client = null
   });
 
   const stableTestFiles = state.pains.filter((p) => p.healthy).map((p) => p.testFile);
+  const started = Date.now();
   const result = await verify({ bountyId: trial.id, agentId: MODELS[model].name, testFile: pain.testFile, files, stableTestFiles, flakeRate: pain.flakeRate });
+  // Sandbox time is Shoal's cost on a sealed trial (pricing.js).
+  if (sealed) addCompute(pain.id, (Date.now() - started) / 1000);
   trial.status = result.passed ? "passed" : "failed";
   trial.reason = result.reason ?? null;
   trial.runs = result.runs.map((r) => r.passed);
@@ -121,7 +125,7 @@ export async function submitTrial({ painId, model, summary, files, client = null
 const QUALITY_MARGIN = 5;
 // Typical tokens for one fix, used until a trial run measures the real ones
 // (e.g. trials submitted from someone's own Claude Code session).
-const DEFAULT_TOKENS = { input_tokens: 25_000, output_tokens: 3_000 };
+export const TYPICAL_FIX_TOKENS = { input_tokens: 25_000, output_tokens: 3_000 };
 
 // $ for one API call's usage, in Claude's shape: input_tokens excludes cache
 // reads and writes (agents.js converts OpenAI usage to this shape).
@@ -137,7 +141,7 @@ export function tokenCost(model, usage) {
 // Expected API cost of one fix with this model: measured in the latest trial
 // run when there is one, otherwise a typical-size estimate.
 export function costPerFix(model) {
-  return state.modelCost[model]?.perFix ?? tokenCost(model, DEFAULT_TOKENS);
+  return state.modelCost[model]?.perFix ?? tokenCost(model, TYPICAL_FIX_TOKENS);
 }
 
 // Quality of each model's best verified fix for one problem:

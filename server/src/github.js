@@ -6,14 +6,19 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { rm, mkdir, readdir, readFile, access as exists } from "node:fs/promises";
-import { REPOS_DIR, listTestFiles, sh } from "./repo.js";
+import { listTestFiles, reposDir, sh } from "./repo.js";
 import { MANIFESTS, detectStacks, installCommand, stackFor } from "./stack.js";
+import { LOCAL, currentWorkspace, scoped } from "./store.js";
 
 const API = "https://api.github.com";
 
-// Shoal runs locally for one person, so the signed-in token lives in memory.
-let oauthToken = null;
-const token = () => oauthToken ?? process.env.GITHUB_TOKEN;
+// Each user's GitHub token lives on their workspace (store.js), set from
+// their session by index.js for every request and the work it starts.
+const oauthToken = () => currentWorkspace().token;
+// GITHUB_TOKEN is a local-dev shortcut. Deployed (NODE_ENV=production, as in
+// the Dockerfile) it's ignored: every visitor would act as that account.
+export const envToken = () => (process.env.NODE_ENV === "production" ? undefined : process.env.GITHUB_TOKEN);
+const token = () => oauthToken() ?? (currentWorkspace().login === LOCAL ? envToken() : undefined);
 export const hasToken = () => Boolean(token());
 
 // --- Sign in with GitHub (OAuth web flow) ---------------------------------
@@ -45,15 +50,15 @@ export function githubAuthorizeUrl(callbackUrl, state, scope = OAUTH_SCOPES) {
 }
 
 // Exchanges the one-time code from GitHub's redirect for an access token.
-// Resolves with the page the user started sign-in from.
+// Resolves with the token, who it belongs to and the page the user started
+// sign-in from. index.js turns that into a session.
 export async function completeOAuth({ code, state, callbackUrl }) {
   const returnTo = pendingStates.get(state);
   if (!pendingStates.delete(state)) throw Object.assign(new Error("Sign-in expired or was tampered with; try again"), { status: 400 });
-  oauthToken = await exchangeCode(code, callbackUrl);
-  cache.clear();
-  // Warm the caches now so the pages after sign-in don't wait on GitHub.
-  listRepos().catch(() => {});
-  return returnTo;
+  const token = await exchangeCode(code, callbackUrl);
+  const me = await gh("/user", { token });
+  if (!me?.login) throw Object.assign(new Error("GitHub didn't say who signed in; try again"), { status: 401 });
+  return { token, login: me.login, returnTo };
 }
 
 // The one-time code from GitHub's redirect -> an access token.
@@ -80,7 +85,7 @@ export async function exchangeCode(code, callbackUrl) {
 // Resolves with whether GitHub confirmed it.
 // token: the sign-in to revoke (by default the current one); pass it in when
 // revoking after signOut() has cleared it.
-export async function revokeGrant(token = oauthToken) {
+export async function revokeGrant(token = oauthToken()) {
   if (!token || !oauthConfigured()) return false;
   const basic = Buffer.from(`${process.env.GITHUB_CLIENT_ID}:${process.env.GITHUB_CLIENT_SECRET}`).toString("base64");
   const res = await fetch(`${API}/applications/${process.env.GITHUB_CLIENT_ID}/grant`, {
@@ -92,40 +97,42 @@ export async function revokeGrant(token = oauthToken) {
   return res?.status === 204;
 }
 
-export const getOAuthToken = () => oauthToken;
-export const signedInWithEnvToken = () => !oauthToken && Boolean(process.env.GITHUB_TOKEN);
+export const getOAuthToken = () => oauthToken();
+export const signedInWithEnvToken = () => !oauthToken() && currentWorkspace().login === LOCAL && Boolean(envToken());
 
+// Takes the token off the current workspace and forgets what was cached with it.
 export function signOut() {
-  oauthToken = null;
-  cache.clear();
+  currentWorkspace().token = null;
+  cache().clear();
 }
 
 // --- Cache ------------------------------------------------------------------
 // GitHub's API can take seconds per call, and every page asks "who's signed
 // in?", so answers are kept in memory. Within maxAge a cached value is
 // returned as-is; after that it's still returned instantly while a fresh copy
-// loads in the background (stale-while-revalidate). Cleared on sign-in/out.
-const cache = new Map(); // key -> { value, at, refreshing }
+// loads in the background (stale-while-revalidate). Per user, since answers
+// depend on whose token asked. Cleared on sign-out.
+const cache = () => scoped("github", () => new Map()); // key -> { value, at, refreshing }
 
 async function cached(key, maxAgeMs, load) {
-  const hit = cache.get(key);
+  const hit = cache().get(key);
   if (hit && "value" in hit) {
     if (Date.now() - hit.at > maxAgeMs && !hit.refreshing) {
       hit.refreshing = load()
-        .then((value) => cache.set(key, { value, at: Date.now() }))
+        .then((value) => cache().set(key, { value, at: Date.now() }))
         .catch(() => (hit.refreshing = null));
     }
     return hit.value;
   }
   if (hit?.pending) return hit.pending; // share one in-flight request
   const pending = load();
-  cache.set(key, { pending });
+  cache().set(key, { pending });
   try {
     const value = await pending;
-    cache.set(key, { value, at: Date.now() });
+    cache().set(key, { value, at: Date.now() });
     return value;
   } catch (err) {
-    cache.delete(key);
+    cache().delete(key);
     throw err;
   }
 }
@@ -164,7 +171,7 @@ export async function getViewer() {
   if (!hasToken()) return null;
   return cached("viewer", Infinity, async () => {
     const me = await gh("/user");
-    return me && { login: me.login, name: me.name, avatarUrl: me.avatar_url, via: oauthToken ? "oauth" : "env" };
+    return me && { login: me.login, name: me.name, avatarUrl: me.avatar_url, via: oauthToken() ? "oauth" : "env" };
   });
 }
 
@@ -207,7 +214,7 @@ export async function getRepo(fullName) {
 // The latest commit on a branch. A cheap call, so new pushes are noticed
 // within seconds; everything keyed on it refreshes by itself.
 export async function headSha(fullName, branch, { fresh = false } = {}) {
-  if (fresh) cache.delete(`head:${fullName}:${branch}`);
+  if (fresh) cache().delete(`head:${fullName}:${branch}`);
   return cached(`head:${fullName}:${branch}`, 10_000, async () => {
     const commit = await gh(`/repos/${fullName}/commits/${encodeURIComponent(branch)}`);
     return { sha: commit.sha, message: commit.commit?.message?.split("\n")[0] ?? "", at: commit.commit?.committer?.date ?? null };
@@ -267,8 +274,9 @@ export async function reinstall(dir, changed, onStep = () => {}) {
 // reinstalled only where a manifest changed) instead of cloned again; only
 // projects that have tests get dependencies; and those installs run at once.
 export async function cloneRepo(fullName, onStep = () => {}, branch = null) {
-  const dir = path.join(REPOS_DIR, fullName.replace("/", "__"));
-  await mkdir(REPOS_DIR, { recursive: true });
+  const root = reposDir();
+  const dir = path.join(root, fullName.replace("/", "__"));
+  await mkdir(root, { recursive: true });
   if (branch && (await exists(path.join(dir, ".git")).then(() => true, () => false))) {
     try {
       const { changed } = await pullRepo(dir, fullName, branch);
@@ -281,7 +289,7 @@ export async function cloneRepo(fullName, onStep = () => {}, branch = null) {
   }
   await rm(dir, { recursive: true, force: true });
   const auth = token() ? `x-access-token:${token()}@` : "";
-  const clone = await sh(`git clone --depth 1 --single-branch "https://${auth}github.com/${fullName}.git" "${dir}"`, REPOS_DIR);
+  const clone = await sh(`git clone --depth 1 --single-branch "https://${auth}github.com/${fullName}.git" "${dir}"`, root);
   if (!clone.ok) throw new Error(`git clone failed: ${redact(clone.output).slice(-400)}`);
   await installForTests(dir, onStep);
   return dir;

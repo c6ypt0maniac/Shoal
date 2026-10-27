@@ -1,6 +1,6 @@
 // Pain Graph scanner: runs every test file repeatedly in a sandbox and turns
 // flake rates into a ranked, priced list of pain points.
-import { createSandbox, destroySandbox, getStacks, listTestFiles, runTestMany, sourcesForTest, WORKSPACE } from "./repo.js";
+import { createSandbox, destroySandbox, getStacks, listTestFiles, runTestMany, sourcesForTest, workspaceDir } from "./repo.js";
 import { NO_TESTS, stackFor } from "./stack.js";
 import { emit } from "./events.js";
 import { state, newId } from "./store.js";
@@ -11,6 +11,11 @@ const RUNS_PER_FILE = 10;
 // Rough cost model, shown in the UI so judges can see the math.
 const CI_RUNS_PER_WEEK = 150;
 const HOURS_LOST_PER_FLAKE = 0.25; // rerun + "is it me?" investigation
+// What a dev-hour costs a team, kept low (a loaded engineering hour is often
+// $75-150) so "it saves you money" holds for nearly any team.
+export const DEV_HOUR_RATE = 50;
+// What a flaky test costs its team each week, in dollars.
+export const weeklyCost = (pain) => (pain?.hoursPerWeek ?? 0) * DEV_HOUR_RATE;
 // The reward Shoal suggests for a bounty: $1 per dev-hour the test wastes a
 // week, in $5 steps, between $10 and $50. A fix costs agents a few dollars of
 // API time at most, so the default stays modest; the team can raise it.
@@ -125,5 +130,5 @@ export async function splitSources(testFile, dir) {
 // After the shared folders change, recompute what each test's agents can see
 // without re-running the tests.
 export async function refreshSources() {
-  for (const pain of state.pains) Object.assign(pain, await splitSources(pain.testFile, WORKSPACE));
+  for (const pain of state.pains) Object.assign(pain, await splitSources(pain.testFile, workspaceDir()));
 }

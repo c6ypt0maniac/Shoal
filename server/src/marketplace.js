@@ -17,13 +17,17 @@
 //   - agents builders publish with a webhook (publishAgent; competitors.js
 //     has the webhook protocol)
 // Imported and published listings are kept in state.listings (persist.js).
-import { AGENTS, MOCK, modelUnavailable } from "./agents.js";
-import { MODELS, providerLabel } from "./trials.js";
-import { scorecard } from "./bounties.js";
+import { hasKey } from "./user-keys.js";
+import { AGENTS, isMock, modelUnavailable } from "./agents.js";
+import { MODELS, TYPICAL_FIX_TOKENS, costPerFix, providerLabel } from "./trials.js";
+import { byRecord, scorecard } from "./bounties.js";
 import { ratingFor } from "./reviews.js";
 import { emit } from "./events.js";
 import { state } from "./store.js";
 import { encrypt, newSecret } from "./secrets.js";
+import { createHash } from "node:crypto";
+import { RUNTIMES, cleanBundle, cleanImage, cleanPrompt } from "./uploads.js";
+import { sandboxProblem } from "./sandbox.js";
 
 const OPENROUTER = "https://openrouter.ai/api/v1";
 const CATALOG_TTL_MS = 60 * 60_000;
@@ -173,13 +177,69 @@ const cleanList = (v, allowed) => {
 // A builder publishes an agent. Returns its signing secret once: Shoal signs
 // every webhook request with it, and won't show it again (rotate to get a
 // new one).
-export function publishAgent({ name, tagline, description, webhookUrl, pains, languages }, user) {
+// --- Agent images -------------------------------------------------------------------
+// A builder picks one of Shoal's fish (avatar: { preset: "fish-0".."fish-5" })
+// or uploads their own image (avatar: { image: "data:image/png;base64,..." }).
+// An upload is kept on the listing (avatarImage) but never sent with it: the
+// listing only carries { image: true, v } and the image is served on its own
+// (GET /api/marketplace/avatar), so the marketplace list stays small.
+// Only PNG, JPEG and WebP, checked by their bytes (no SVG: it can run scripts).
+export const PRESETS = ["fish-0", "fish-1", "fish-2", "fish-3", "fish-4", "fish-5"];
+const MAX_IMAGE_BYTES = 256 * 1024;
+const IMAGE_TYPES = [
+  ["image/png", (b) => b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))],
+  ["image/jpeg", (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff],
+  ["image/webp", (b) => b.subarray(0, 4).toString("latin1") === "RIFF" && b.subarray(8, 12).toString("latin1") === "WEBP"],
+];
+
+function cleanAvatar(avatar) {
+  if (avatar == null) return { avatar: null, image: null };
+  if (avatar.preset != null) {
+    if (!PRESETS.includes(avatar.preset)) throw httpError(400, `avatar.preset must be one of ${PRESETS.join(", ")}`);
+    return { avatar: { preset: avatar.preset }, image: null };
+  }
+  const m = /^data:([\w/+.-]+);base64,([A-Za-z0-9+/=]+)$/.exec(String(avatar.image ?? ""));
+  if (!m) throw httpError(400, "Upload a PNG, JPEG or WebP image");
+  const bytes = Buffer.from(m[2], "base64");
+  if (bytes.length > MAX_IMAGE_BYTES) throw httpError(413, `Images are at most ${MAX_IMAGE_BYTES / 1024} KB`);
+  const type = IMAGE_TYPES.find(([, is]) => is(bytes))?.[0];
+  if (!type) throw httpError(400, "Upload a PNG, JPEG or WebP image");
+  const v = createHash("sha256").update(bytes).digest("hex").slice(0, 12);
+  return { avatar: { image: true, v }, image: { type, data: bytes.toString("base64") } };
+}
+
+function setAvatar(listing, avatar) {
+  const { avatar: a, image } = cleanAvatar(avatar);
+  listing.avatar = a;
+  listing.avatarImage = image;
+}
+
+// An uploaded agent image -> { type, bytes }, or null.
+export function avatarImage(id) {
+  const img = state.listings.find((l) => l.id === id)?.avatarImage;
+  return img ? { type: img.type, bytes: Buffer.from(img.data, "base64") } : null;
+}
+
+// How the agent runs (uploads.js), checked and ready to store: the fields
+// for its runtime only, so a listing never keeps another runtime's leftovers.
+async function howItRuns(runtime, { webhookUrl, prompt, bundle, image }) {
+  if (!RUNTIMES.includes(runtime)) throw httpError(400, `runtime must be one of ${RUNTIMES.join(", ")}`);
+  if (runtime === "webhook") return { runtime, webhookUrl: cleanWebhook(webhookUrl) };
+  if (runtime === "prompt") return { runtime, prompt: cleanPrompt(prompt) };
+  if (runtime === "bundle") return { runtime, ...(await cleanBundle(bundle)) };
+  return { runtime, image: cleanImage(image) };
+}
+const RUNTIME_FIELDS = ["runtime", "webhookUrl", "secretSealed", "prompt", "bundle", "image"];
+
+export async function publishAgent({ name, tagline, description, webhookUrl, pains, languages, avatar, runtime = "webhook", prompt, bundle, image }, user) {
   if (!user) throw httpError(401, "Sign in with GitHub to publish an agent");
   const title = String(name ?? "").trim().slice(0, 60);
   if (!title) throw httpError(400, "Give the agent a name");
   const id = `agent:${user.login}/${slug(title)}`;
   if (allListings().some((l) => l.id === id)) throw httpError(409, `You already have an agent called ${title}`);
-  const secret = newSecret();
+  const runs = await howItRuns(runtime, { webhookUrl, prompt, bundle, image });
+  // Only webhooks are signed: the other runtimes run inside Shoal.
+  const secret = runs.runtime === "webhook" ? newSecret() : null;
   const listing = {
     id,
     kind: "agent",
@@ -191,28 +251,44 @@ export function publishAgent({ name, tagline, description, webhookUrl, pains, la
     description: String(description ?? "").trim().slice(0, 4000),
     pains: cleanList(pains ?? ["flaky-tests"], PAINS),
     languages: cleanList(languages),
-    webhookUrl: cleanWebhook(webhookUrl),
-    secretSealed: encrypt(secret),
+    ...runs,
+    ...(secret ? { secretSealed: encrypt(secret) } : {}),
     addedAt: new Date().toISOString(),
   };
+  setAvatar(listing, avatar);
   state.listings.push(listing);
   emit("marketplace.published", { listingId: id, message: `@${user.login} published ${title} to the marketplace` });
-  return { ...entry(listing, user), signingSecret: secret };
+  return { ...entry(listing, user), ...(secret ? { signingSecret: secret } : {}) };
 }
 
-export function updateAgent(id, patch, user) {
+export async function updateAgent(id, patch, user) {
   const listing = ownListing(id, user);
   if (patch.name != null) listing.name = String(patch.name).trim().slice(0, 60) || listing.name;
   if (patch.tagline != null) listing.tagline = String(patch.tagline).trim().slice(0, 160);
   if (patch.description != null) listing.description = String(patch.description).trim().slice(0, 4000);
   if (patch.pains != null) listing.pains = cleanList(patch.pains, PAINS);
   if (patch.languages != null) listing.languages = cleanList(patch.languages);
-  if (patch.webhookUrl != null) listing.webhookUrl = cleanWebhook(patch.webhookUrl);
+  // Switching how it runs (or new code for it) replaces the old runtime's fields.
+  if (patch.runtime != null && patch.runtime !== (listing.runtime ?? "webhook") || patch.prompt != null || patch.bundle != null || patch.image != null) {
+    const runtime = patch.runtime ?? listing.runtime ?? "webhook";
+    const runs = await howItRuns(runtime, { webhookUrl: patch.webhookUrl ?? listing.webhookUrl, prompt: patch.prompt ?? listing.prompt, bundle: patch.bundle, image: patch.image ?? listing.image?.image });
+    const keep = runtime === "webhook" && listing.secretSealed;
+    for (const k of RUNTIME_FIELDS) if (!(k === "secretSealed" && keep)) delete listing[k];
+    Object.assign(listing, runs);
+    if (runtime === "webhook" && !listing.secretSealed) {
+      const secret = newSecret();
+      listing.secretSealed = encrypt(secret);
+      return { ...entry(listing, user), signingSecret: secret };
+    }
+  } else if (patch.webhookUrl != null) listing.webhookUrl = cleanWebhook(patch.webhookUrl);
+  // null clears it (back to Shoal's default fish).
+  if (patch.avatar !== undefined) setAvatar(listing, patch.avatar);
   return entry(listing, user);
 }
 
 export function rotateSecret(id, user) {
   const listing = ownListing(id, user);
+  if ((listing.runtime ?? "webhook") !== "webhook") throw httpError(400, "Only webhook agents have a signing secret");
   const secret = newSecret();
   listing.secretSealed = encrypt(secret);
   return { id, signingSecret: secret };
@@ -252,10 +328,15 @@ export const nameFor = (id) => allListings().find((l) => l.id === id)?.name ?? i
 
 // Why a listing can't compete right now, or null.
 function unavailable(l) {
-  if (l.provider === "shoal") return MOCK || process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY ? null : "needs ANTHROPIC_API_KEY or OPENAI_API_KEY";
+  if (l.provider === "shoal") return isMock() || hasKey("anthropic") || hasKey("openai") ? null : "needs your Anthropic or OpenAI API key";
   if (MODELS[l.id]) return modelUnavailable(l.id);
-  if (l.provider === "openrouter") return MOCK || process.env.OPENROUTER_API_KEY ? null : "needs OPENROUTER_API_KEY";
-  if (l.provider === "builder") return l.webhookUrl ? null : "has no webhook";
+  if (l.provider === "openrouter") return isMock() || hasKey("openrouter") ? null : "needs your OpenRouter API key";
+  if (l.provider === "builder") {
+    const runtime = l.runtime ?? "webhook";
+    if (runtime === "prompt") return modelUnavailable(l.prompt.model);
+    if (runtime === "bundle" || runtime === "image") return sandboxProblem(runtime);
+    return l.webhookUrl ? null : "has no webhook";
+  }
   return "unknown kind of listing";
 }
 
@@ -281,37 +362,54 @@ export function checkCompetitors(ids) {
   return list;
 }
 
-// Languages a listing has verified fixes in, from the bounties it entered.
+// Languages a listing has verified fixes in, recorded on its scorecard
+// (bounties.js), plus any from this team's own older bounties.
 function verifiedLanguages(id) {
   const langs = state.bounties.filter((b) => b.language && b.attempts?.some((a) => a.agentId === id && a.passed)).map((b) => b.language);
-  return [...new Set(langs)];
+  return [...new Set([...(state.agents[id]?.languages ?? []), ...langs])];
 }
 
 // What the public sees of a listing. Secrets never leave the server; the
 // webhook URL only to its builder.
 function entry(l, user = null) {
-  const { secretSealed, webhookUrl, ...pub } = l;
+  const { secretSealed, webhookUrl, avatarImage, prompt, bundle, image, ...pub } = l;
+  const mine = l.owner && l.owner === user?.login;
   const why = unavailable(l);
   return {
     ...pub,
-    ...(l.owner && l.owner === user?.login ? { webhookUrl } : {}),
+    // How it's built stays the builder's: others see only how it runs and on what.
+    ...(mine ? { webhookUrl, prompt, bundle, image } : {}),
+    ...(prompt ? { model: prompt.model } : {}),
+    ...(bundle ? { bundleLanguage: bundle.language } : {}),
+    runtime: l.runtime ?? (l.provider === "builder" ? "webhook" : undefined),
     verifiedLanguages: verifiedLanguages(l.id),
     shoal: scorecard(l.id),
+    fixCost: fixCost(l),
     rating: ratingFor(l.id),
     available: !why,
     unavailableReason: why,
   };
 }
 
-// Cost per surviving fix when Shoal has measured one, else the list price
-// (input + output per million tokens) for models.
-const price = (l) => l.shoal.costPerOutcome ?? (l.openrouter?.price?.input != null ? l.openrouter.price.input + l.openrouter.price.output : listPrice(l.id));
-const listPrice = (id) => (MODELS[id] ? MODELS[id].input + MODELS[id].output : null);
+// What one fix from a model costs in tokens: measured in a trial when there
+// is one, else a typical fix (TYPICAL_FIX_TOKENS) at its list prices, which
+// only orders the cheapest sort: the website shows a cost per fix only when
+// it's measured, token prices otherwise. null for agents, which don't
+// publish token prices.
+function fixCost(l) {
+  if (MODELS[l.id]) return { amount: costPerFix(l.id), measured: Boolean(state.modelCost[l.id]?.perFix) };
+  const p = l.openrouter?.price;
+  if (p?.input == null || p.output == null) return null;
+  return { amount: (TYPICAL_FIX_TOKENS.input_tokens * p.input + TYPICAL_FIX_TOKENS.output_tokens * p.output) / 1e6, measured: false };
+}
+
+// Cost per surviving fix when Shoal has measured one, else the cost of one fix.
+const price = (l) => l.shoal.costPerOutcome ?? l.fixCost?.amount ?? null;
 const last = (v) => v ?? Infinity;
 const first = (v) => v ?? -Infinity;
 
 const SORTS = {
-  best: (a, b) => b.shoal.score - a.shoal.score || b.shoal.survived - a.shoal.survived,
+  best: (a, b) => byRecord(a.shoal, b.shoal),
   top_rated: (a, b) => first(b.rating.average) - first(a.rating.average) || b.rating.count - a.rating.count,
   cheapest: (a, b) => last(price(a)) - last(price(b)),
   most_used: (a, b) => b.shoal.attempts - a.shoal.attempts,

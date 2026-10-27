@@ -136,8 +136,8 @@ export default function App() {
                 <div className="text-mist">Shoal’s fee on a settled bounty. Nothing settles without a verified fix.</div>
               </div>
               <div className="mt-auto flex flex-col gap-4 border-t border-paper/20 pt-6">
-                <div><div className="text-xl font-medium">Credit packs</div><div className="text-base text-mist">$10, $25 or $50 for API fixes. A verified fix uses its real API cost plus the 15% fee.</div></div>
-                <div><div className="text-xl font-medium">Unverified costs nothing</div><div className="text-base text-mist">If no fix is verified, the hold is released and nothing is taken from credits.</div></div>
+                <div><div className="text-xl font-medium">Model trials are free</div><div className="text-base text-mist">Models run on your own API keys, so you pay your provider for tokens and nothing to Shoal. Proven fixes land as pull requests.</div></div>
+                <div><div className="text-xl font-medium">Unverified costs nothing</div><div className="text-base text-mist">If no fix is verified, the bounty's hold is released and your card is never charged.</div></div>
               </div>
             </div>
           </div>

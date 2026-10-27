@@ -1,6 +1,6 @@
 // The outside APIs Shoal plugs into, what each one turns on, where to get its
 // keys, and a live check for each that costs nothing (lists models, reads a
-// balance, ...). Used by scripts/keys.js and /api/health.
+// balance, ...). Used by scripts/keys.js, /api/health and /api/keys/check.
 // Checks return { ok, detail } and never include a key in what they return.
 
 const TIMEOUT = 15_000;
@@ -24,14 +24,16 @@ const reach = (have, want) => {
   return missing.length ? `can't use ${missing.join(", ")}` : `can use ${want.join(", ")}`;
 };
 
-export const INTEGRATIONS = [
+// Model API keys: never read from the environment. Each user adds their own
+// on the website (user-keys.js); POST /api/keys/check runs these against them.
+export const MODEL_KEYS = [
   {
     id: "anthropic",
     name: "Anthropic (Claude)",
     turnsOn: "Paid runs and marketplace agents on Claude, and the Claude judge",
     where: "console.anthropic.com -> Settings -> API keys",
-    vars: [{ name: "ANTHROPIC_API_KEY", secret: true, pattern: /^sk-ant-/ }],
-    async check({ ANTHROPIC_API_KEY: key }) {
+    pattern: /^sk-ant-/,
+    async check(key) {
       const r = await getJson("https://api.anthropic.com/v1/models?limit=1000", { "x-api-key": key, "anthropic-version": "2023-06-01" });
       if (r.status !== 200) return { ok: false, detail: apiError(r) };
       const have = new Set(r.json.data.map((m) => m.id));
@@ -43,8 +45,8 @@ export const INTEGRATIONS = [
     name: "OpenAI",
     turnsOn: "Paid runs and marketplace agents on GPT, and the OpenAI judge",
     where: "platform.openai.com -> API keys",
-    vars: [{ name: "OPENAI_API_KEY", secret: true, pattern: /^sk-/ }],
-    async check({ OPENAI_API_KEY: key }) {
+    pattern: /^sk-/,
+    async check(key) {
       const r = await getJson("https://api.openai.com/v1/models", { authorization: `Bearer ${key}` });
       if (r.status !== 200) return { ok: false, detail: apiError(r) };
       const have = new Set(r.json.data.map((m) => m.id));
@@ -56,14 +58,18 @@ export const INTEGRATIONS = [
     name: "OpenRouter",
     turnsOn: "Marketplace models imported from OpenRouter competing on bounties",
     where: "openrouter.ai -> Keys",
-    vars: [{ name: "OPENROUTER_API_KEY", secret: true, pattern: /^sk-or-/ }],
-    async check({ OPENROUTER_API_KEY: key }) {
+    pattern: /^sk-or-/,
+    async check(key) {
       const r = await getJson("https://openrouter.ai/api/v1/key", { authorization: `Bearer ${key}` });
       if (r.status !== 200) return { ok: false, detail: apiError(r) };
       const { usage, limit } = r.json.data ?? {};
       return { ok: true, detail: `used $${Number(usage ?? 0).toFixed(2)}${limit == null ? ", no limit" : ` of $${limit}`}` };
     },
   },
+];
+
+// Server-side settings, from the environment.
+export const INTEGRATIONS = [
   {
     id: "stripe",
     name: "Stripe",
@@ -135,20 +141,6 @@ export const INTEGRATIONS = [
       }
     },
   },
-  {
-    id: "supabase-api",
-    name: "Supabase API",
-    turnsOn: "Server-side Supabase API access (not needed for storage)",
-    where: "supabase.com -> Project Settings -> API (service_role key, server only)",
-    vars: [
-      { name: "SUPABASE_URL", pattern: /^https:\/\// },
-      { name: "SUPABASE_SERVICE_ROLE_KEY", secret: true },
-    ],
-    async check({ SUPABASE_URL: url, SUPABASE_SERVICE_ROLE_KEY: key }) {
-      const r = await getJson(`${url.replace(/\/$/, "")}/rest/v1/`, { apikey: key, authorization: `Bearer ${key}` });
-      return r.status === 200 ? { ok: true, detail: "service key accepted" } : { ok: false, detail: apiError(r) };
-    },
-  },
 ];
 
 const required = (i) => i.vars.filter((v) => !v.optional);
@@ -176,3 +168,15 @@ export async function checkIntegration(i, env = process.env) {
 
 // Which integrations have their keys set, for /api/health. No values.
 export const integrationStatus = () => Object.fromEntries(INTEGRATIONS.map((i) => [i.id, configured(i)]));
+
+// A user's model key, checked live. -> { ok, detail }; never echoes the key.
+export async function checkModelKey(id, key) {
+  const m = MODEL_KEYS.find((x) => x.id === id);
+  if (!key) return { ok: null, detail: "not added" };
+  if (!m.pattern.test(key)) return { ok: false, detail: `doesn't look like an ${m.name} key (expected ${m.pattern.source.replace(/\\/g, "")}...)` };
+  try {
+    return await m.check(key);
+  } catch (err) {
+    return { ok: false, detail: err.name === "TimeoutError" ? "timed out" : err.message };
+  }
+}

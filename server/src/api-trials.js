@@ -1,5 +1,7 @@
-// Sealed API trials: Shoal finds the right model on its own Anthropic and
-// OpenAI keys and pays every token; the team pays only to unlock a proven fix.
+// Sealed API trials: Shoal finds the right model on the user's own Anthropic
+// and OpenAI keys (user-keys.js), which pay every token. Shoal charges
+// nothing: trials and their proven fixes are free, within each account's
+// fair-use limits (usage.js), since the tests run on Shoal's servers.
 //   step 1  Haiku 5.5, GPT-6 Luna, GPT-5 nano
 //   step 2  Sonnet 5.5, GPT-6.1 Sol
 //   step 3  Opus 5.5, GPT-6 Astra
@@ -13,26 +15,24 @@
 // the cheapest model that got it right, with a quote. Nothing more happens
 // until the team authorizes it (authorizeFix): only then does that model
 // write the full fix, which is verified and goes through the proof report
-// (proof.js). Proven: credits are charged (never more than the quote) and the
-// fix lands as a PR. Not proven: the next correct model tries; if none
-// proves one, nothing is charged. A model is never asked twice for a
+// (proof.js). Proven: the fix lands as a PR. Not proven: the next correct
+// model tries. A model is never asked twice for a
 // diagnosis or a fix. Every call is checked against the bug's spend cap
 // first (spend.js).
 //
 // Sealed: until the team unlocks, no fix code leaves Shoal. The API and the
 // dashboard show what's broken and where (the winning
 // diagnosis, cut down), diff stats, which checks passed and short judge
-// verdicts (sealTrial, sealProof, publicLadder). Unlocking charges credits
-// once at the price shown (pricing.js), then the proven fix lands as a PR,
-// the same way a bounty's does (bounties.js).
+// verdicts (sealTrial, sealProof, publicLadder). Unlocking is free: the
+// proven fix lands as a PR, the same way a bounty's does (bounties.js).
 import { emit } from "./events.js";
-import { state } from "./store.js";
+import { cardFor, state } from "./store.js";
 import { MODELS, submitTrial } from "./trials.js";
-import { MOCK, contextFiles, diagnosisPrompt, practiceOnly, fixPrompt, judgeViaApi, modelUnavailable, requestDiagnosis, requestModelFix } from "./agents.js";
+import { isMock, contextFiles, diagnosisPrompt, practiceOnly, fixPrompt, judgeViaApi, modelUnavailable, requestDiagnosis, requestModelFix } from "./agents.js";
 import { proofFor, proveProblem } from "./proof.js";
-import { addSpend, estimate, fitsCap, spentOn, trialCap } from "./spend.js";
-import { balanceCents } from "./credits.js";
-import { FLOOR, priceFor, unlockPrice } from "./pricing.js";
+import { addSpend, estimate, fitsCap, tokensOn, trialCap } from "./spend.js";
+import { overLimit, useOnce } from "./usage.js";
+import { weeklyCost } from "./scanner.js";
 import { createBounty, runBounty } from "./bounties.js";
 
 export const STEPS = [
@@ -43,8 +43,7 @@ export const STEPS = [
 const GRADERS = ["claude-sonnet-5-5", "gpt-6.1-sol", "claude-opus-5-5"];
 
 // Ladder state per bug: which models diagnosed and which wrote a fix, their
-// diagnoses and grades, where it stopped and why, and the unlock price, fixed
-// when a fix is proven.
+// diagnoses and grades, and where it stopped and why.
 const ladderFor = (painId) => (state.apiTrials[painId] ??= { status: "idle", step: null, diagnosed: [], fixed: [], diagnoses: [], stopped: null, price: null });
 
 export const ladderStatus = (painId) => state.apiTrials[painId] ?? null;
@@ -74,12 +73,8 @@ export function where(location) {
 // A trial Shoal paid for and the team hasn't unlocked: its code stays hidden.
 export const isSealed = (trial) => Boolean(trial?.sealed && !trial.unlockedAt);
 
-// Trials need credits: at least the lowest unlock price, so a proven fix can
-// always be bought.
-export function canStart() {
-  if (balanceCents() < Math.round(FLOOR * 100)) return `Trials need credits: add at least $${FLOOR.toFixed(2)} first`;
-  return null;
-}
+// Why this account can't start trials right now (fair use, usage.js), or null.
+export const canStart = () => overLimit("trials");
 
 // Runs the ladder for one bug. Resolves when it stops.
 export async function runSealedTrials(painId) {
@@ -90,11 +85,10 @@ export async function runSealedTrials(painId) {
   if (ladder.status === "running") throw httpError(409, `Trials for ${pain.testFile} are already running`);
   if (["awaiting_authorization", "fixing"].includes(ladder.status)) throw httpError(409, `${MODELS[ladder.pick].name} is already recommended for ${pain.testFile}`);
   if (proofFor(painId).proven) throw httpError(409, `${pain.testFile} already has a proven fix`);
-  const noCredits = canStart();
-  if (noCredits) throw httpError(402, noCredits);
   const practice = practiceOnly(state.connection.type);
   if (practice) throw httpError(409, practice);
 
+  useOnce("trials");
   Object.assign(ladder, { status: "running", stopped: null, startedAt: new Date().toISOString() });
   try {
     const prompt = await diagnosisPrompt(pain);
@@ -102,7 +96,7 @@ export async function runSealedTrials(painId) {
       ladder.step = i + 1;
       const fresh = models.filter((m) => !ladder.diagnosed.includes(m) && !modelUnavailable(m));
       if (fresh.length) {
-        if (spentOn(painId) >= trialCap()) return stop(ladder, pain, "cap");
+        if (tokensOn(painId) >= trialCap(painId)) return stop(ladder, pain, "cap");
         emit("trials.step", { message: `Sealed trials, step ${i + 1}: ${fresh.map((m) => MODELS[m].name).join(", ")} diagnose ${pain.testFile}` });
         // The step's calls run at once, so each one's estimate is reserved
         // before the next is checked against the cap.
@@ -123,7 +117,7 @@ export async function runSealedTrials(painId) {
       if (ready.length) {
         ladder.pick = ready[0].model;
         ladder.pickReason = pickReason(ladder.diagnoses);
-        ladder.quote = await quote(pain, ready[0]);
+        Object.assign(ladder, await quote(pain, ready[0]));
         return stop(ladder, pain, "diagnosed");
       }
     }
@@ -159,25 +153,28 @@ export function pickReason(entries) {
 
 const correctUnfixed = (ladder) => rankDiagnoses(ladder.diagnoses).filter((d) => !ladder.fixed.includes(d.model));
 
-// The most the team will pay if it authorizes this model: Shoal's spend so
-// far plus an estimate of the fix and its proof (two judges and the challenge
-// writer at about $0.10 each), priced like any fix. The charge never goes
-// over it.
+// What the fix costs the team, all of it tokens on their own keys (Shoal
+// charges nothing): the diagnosis already spent plus an estimate of the fix
+// and its proof (two judges and the challenge writer at about $0.10 each),
+// against what the test wastes a week, and how soon the fix pays for itself.
 async function quote(pain, diagnosis) {
   const fix = estimate(diagnosis.model, await fixPrompt(pain, { diagnosis }), 8_000);
-  return priceFor(spentOn(pain.id) + fix + 0.3);
+  const diagnosed = tokensOn(pain.id);
+  const total = round4(diagnosed + fix + 0.3), perWeek = weeklyCost(pain);
+  return { quote: 0, tokens: { diagnosis: round4(diagnosed), fix: round4(fix + 0.3), total }, savings: { perWeek, fixCost: Math.round(total * 100) / 100, paybackHours: perWeek > 0 ? Math.ceil((total / perWeek) * 7 * 24) : null } };
 }
 
+const round4 = (n) => Math.round(n * 1e4) / 1e4;
+
 // The team authorized the recommended model: it writes the fix now, which
-// is verified and proven; proven, it's charged and lands as a PR (the bounty
-// flow, bounties.js runUnlock). If it isn't proven, the next model with a
-// correct diagnosis tries. Nothing is charged unless one is proven.
+// is verified and proven; proven, it lands as a PR, free (the bounty flow,
+// bounties.js runUnlock). If it isn't proven, the next model with a correct
+// diagnosis tries.
 export async function authorizeFix(painId, { survivalDays, postedBy = null } = {}) {
   const pain = state.pains.find((p) => p.id === painId);
   const ladder = state.apiTrials[painId];
   if (!pain || !ladder) throw httpError(404, "Run the trial for this test first");
   if (ladder.status !== "awaiting_authorization") throw httpError(409, ladder.status === "fixing" ? "The fix is already being written" : "There's no recommended model waiting for your go-ahead");
-  if (balanceCents() < Math.round(ladder.quote * 100)) throw httpError(402, `Not enough credits: this fix costs up to $${ladder.quote.toFixed(2)}. Add credits first.`);
   Object.assign(ladder, { status: "fixing", authorizedAt: new Date().toISOString(), authorizedBy: postedBy });
   try {
     for (const d of correctUnfixed(ladder)) {
@@ -186,9 +183,9 @@ export async function authorizeFix(painId, { survivalDays, postedBy = null } = {
       await proveProblem(painId);
       const proven = proofFor(painId).proven;
       if (!proven) continue;
-      ladder.price = Math.min(unlockPrice(painId), ladder.quote);
+      ladder.price = 0;
       stop(ladder, pain, "proven");
-      const bounty = createBounty({ painId, reward: ladder.price, funding: "credits", apiModel: proven.model, trialId: proven.trialId, unlock: true, survivalDays, postedBy });
+      const bounty = createBounty({ painId, funding: "free", apiModel: proven.model, trialId: proven.trialId, unlock: true, survivalDays, postedBy });
       ladder.bountyId = bounty.id;
       await runBounty(bounty.id);
       return ladder;
@@ -226,7 +223,7 @@ export async function grade(pain, entries) {
   // What each model would cost to write this bug's fix: its prices on this
   // bug's code and diagnosis, not a generic estimate.
   for (const d of entries) d.fixCost = estimate(d.model, `${code}\n${d.cause}\n${d.plan}`, 8_000);
-  if (MOCK) {
+  if (isMock()) {
     for (const d of entries) {
       d.correct = (pain.sourceFiles ?? []).includes(d.file);
       d.score = d.correct ? 7 : 0;
@@ -263,6 +260,12 @@ export async function grade(pain, entries) {
 }
 
 function report(pain, entries, by = "practice-mode grader") {
+  // Each graded diagnosis counts toward the model's diagnosis accuracy (bounties.js scorecard).
+  for (const d of entries) {
+    const card = cardFor(d.model);
+    card.diagnoses += 1;
+    if (d.correct) card.diagnosesCorrect += 1;
+  }
   const right = entries.filter((d) => d.correct).map((d) => MODELS[d.model].name);
   emit("trials.graded", { message: `Sealed trials: ${by} graded ${entries.length} diagnoses for ${pain.testFile}; correct: ${right.join(", ") || "none"}` });
 }
@@ -288,9 +291,9 @@ async function writeFix(pain, diagnosis, ladder) {
 const label = (i) => String.fromCharCode(65 + (i % 26)) + (i >= 26 ? Math.floor(i / 26) : "");
 
 const STOPS = {
-  diagnosed: (l) => `${MODELS[l.pick].name} diagnosed it correctly at the lowest cost. Authorize it to write the fix (up to $${l.quote.toFixed(2)}, charged only if the fix is proven).`,
-  proven: (l) => `proven; charging $${l.price.toFixed(2)} and opening the PR`,
-  not_proven: () => "no model's fix was proven; nothing charged",
+  diagnosed: (l) => `${MODELS[l.pick].name} diagnosed it correctly at the lowest cost. Authorize it to write the fix: free on Shoal, about $${l.tokens.total.toFixed(2)} of tokens on your API keys (diagnosis and fix).${l.savings.perWeek > 0 ? ` The test wastes about $${Math.round(l.savings.perWeek)} of dev time a week, so the fix pays for itself in about ${l.savings.paybackHours} hours.` : ""}`,
+  proven: () => "proven; opening the PR",
+  not_proven: () => "no model's fix was proven",
   cap: () => "stopped at this bug's spend cap",
   exhausted: () => "no model diagnosed it correctly",
 };

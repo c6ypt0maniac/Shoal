@@ -2,9 +2,11 @@
 // gets the same task and the same files (the failing test and the code it
 // imports, only from what the team shared) and returns { summary, files }:
 //   built-in agent    persona prompt on Claude or OpenAI (agents.js)
-//   Shoal model       Claude or OpenAI through Shoal's API keys
-//   OpenRouter model  through OPENROUTER_API_KEY
-//   builder agent     the builder's webhook (see below)
+//   Shoal model       Claude or OpenAI through the team's API keys
+//   OpenRouter model  through the user's OpenRouter key
+//   builder agent     by how it runs (uploads.js): its webhook (below), a
+//                     prompt on a model, or uploaded code in the sandbox
+//                     (sandbox.js), which gets the same task over stdin
 // Every attempt then goes through the same verifier (bounties.js).
 //
 // Builder webhooks: Shoal POSTs JSON to the agent's webhookUrl:
@@ -19,7 +21,9 @@
 import { createHmac } from "node:crypto";
 import { z } from "zod";
 import { MODELS } from "./trials.js";
-import { FIX_SYSTEM, FixSchema, MOCK, contextFiles, fixPrompt, getAgent, requestFix, requestModelFix } from "./agents.js";
+import { hasKey, keyFor, needKey } from "./user-keys.js";
+import { FIX_SYSTEM, FixSchema, askModel, isMock, contextFiles, fixPrompt, getAgent, requestFix, requestModelFix } from "./agents.js";
+import { runSandboxed } from "./sandbox.js";
 import { mockFix } from "./mock.js";
 import { decrypt } from "./secrets.js";
 import { state } from "./store.js";
@@ -34,20 +38,25 @@ export async function attemptFix(id, bounty, pain) {
   if (MODELS[id]) return requestModelFix(id, bounty, pain);
   const listing = state.listings.find((l) => l.id === id);
   if (listing?.provider === "openrouter") return openRouterFix(listing, pain);
-  if (listing?.provider === "builder") return webhookFix(listing, bounty, pain);
+  if (listing?.provider === "builder") {
+    const runtime = listing.runtime ?? "webhook";
+    if (runtime === "prompt") return requestModelFix(listing.prompt.model, bounty, pain, { instructions: listing.prompt.instructions });
+    if (runtime === "bundle" || runtime === "image") return sandboxFix(listing, bounty, pain);
+    return webhookFix(listing, bounty, pain);
+  }
   throw new Error(`${id} isn't a marketplace listing that can compete`);
 }
 
 // --- OpenRouter -------------------------------------------------------------------
 
 async function openRouterFix(listing, pain) {
-  if (MOCK) return { fix: await mockFix(getAgent("rootcause"), pain), cost: 0 };
-  if (!process.env.OPENROUTER_API_KEY) throw new Error("Set OPENROUTER_API_KEY to run OpenRouter models");
+  if (isMock()) return { fix: await mockFix(getAgent("rootcause"), pain), cost: 0 };
+  if (!hasKey("openrouter")) throw new Error(needKey("openrouter"));
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
     headers: {
-      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      Authorization: `Bearer ${keyFor("openrouter")}`,
       "Content-Type": "application/json",
       "X-Title": "Shoal",
     },
@@ -76,9 +85,9 @@ export function signWebhook(secret, timestamp, body) {
   return `v1=${createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex")}`;
 }
 
-async function webhookFix(listing, bounty, pain) {
-  const deadline = new Date(Date.now() + WEBHOOK_TIMEOUT_MS).toISOString();
-  const body = JSON.stringify({
+// What every builder agent gets: the bounty, the shared files, the rules.
+async function taskFor(bounty, pain, deadline) {
+  return {
     bounty: {
       id: bounty.id,
       title: bounty.title,
@@ -97,7 +106,12 @@ async function webhookFix(listing, bounty, pain) {
       `Paid only if the fix keeps passing for ${bounty.survivalDays} days; a regression is clawed back.`,
       "Return the complete new contents of every file you change, paths relative to the repo root.",
     ],
-  });
+  };
+}
+
+async function webhookFix(listing, bounty, pain) {
+  const deadline = new Date(Date.now() + WEBHOOK_TIMEOUT_MS).toISOString();
+  const body = JSON.stringify(await taskFor(bounty, pain, deadline));
   const timestamp = Math.floor(Date.now() / 1000);
   const res = await fetch(listing.webhookUrl, {
     method: "POST",
@@ -116,6 +130,14 @@ async function webhookFix(listing, bounty, pain) {
   if (!res.ok) throw new Error(`${listing.name}'s webhook answered HTTP ${res.status}`);
   if (Buffer.byteLength(text) > MAX_RESPONSE_BYTES) throw new Error(`${listing.name}'s webhook sent more than 4 MB`);
   return { fix: parseFix(text, listing.name, 0), cost: 0 };
+}
+
+// Uploaded code: the same task, in the sandbox, plus the models it may ask
+// (answered on the team's keys, never handed over).
+async function sandboxFix(listing, bounty, pain) {
+  const task = { ...(await taskFor(bounty, pain, new Date(Date.now() + WEBHOOK_TIMEOUT_MS).toISOString())), models: Object.keys(MODELS) };
+  const out = await runSandboxed(listing, task, askModel);
+  return { fix: parseFix(JSON.stringify(out.fix), listing.name, out.cost), cost: out.cost };
 }
 
 // A fix in Shoal's format, or a clear error.

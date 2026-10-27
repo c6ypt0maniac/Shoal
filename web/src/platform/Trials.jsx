@@ -1,4 +1,4 @@
-// Model trials, sealed and on Shoal's API keys (server/src/api-trials.js):
+// Model trials, sealed and on the user's own API keys (server/src/api-trials.js):
 // models diagnose each flaky test, the best-value model is recommended, and
 // once the team authorizes it, it writes the fix, which is proven (proof.js)
 // and charged only if proven.
@@ -19,13 +19,12 @@ export default function Trials({ s, act, go }) {
   if (!t) return loadErr
     ? <Empty>{loadErr} <button className="cursor-pointer text-accent underline" onClick={() => setN((x) => x + 1)}>Retry</button></Empty>
     : <div className="text-muted">Loading…</div>;
-  const balance = Number(s.credits?.balance ?? 0);
   const trialAct = (fn) => act(async (...a) => { await fn(...a); setN((x) => x + 1); });
   return (
     <section className="flex flex-col gap-5">
       <div className={card}>
         <span className="text-[19px] font-semibold">Sealed trials</span>
-        <span className="text-[15px] text-muted">Shoal's own models diagnose each flaky test, cheapest first, and recommend the best value. Nothing is written until you authorize it; you're charged only if the fix is proven. Trials need credits.</span>
+        <span className="text-[15px] text-muted">Models on your API keys diagnose each flaky test, cheapest first, and recommend the best value. Nothing is written until you authorize it. Free on Shoal: you only pay your provider for the tokens.</span>
       </div>
       {t.scoreboard.length > 0 && <>
         <H>Scoreboard</H>
@@ -39,7 +38,7 @@ export default function Trials({ s, act, go }) {
       <H>Your flaky tests</H>
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         {t.problems.map((p) => {
-          const pr = p.proof || {}, price = p.fixPrice;
+          const pr = p.proof || {};
           return (
             <div key={p.painId} className={card}>
               <span className="truncate font-mono text-[17px]">{p.testFile}</span>
@@ -52,7 +51,7 @@ export default function Trials({ s, act, go }) {
                 {p.ladder?.status === 'running' && <Tag>Diagnosing: step {p.ladder.step}</Tag>}
                 {p.ladder?.status === 'awaiting_authorization' && <Tag tone="ok">Best model: {p.ladder.pickName}</Tag>}
                 {p.ladder?.status === 'fixing' && <Tag>{p.ladder.pickName} is writing the fix…</Tag>}
-                {p.ladder?.status === 'stopped' && <Tag tone="bad">{{ cap: 'Stopped at the spend cap', exhausted: 'No model diagnosed it', not_proven: 'No fix proven · $0 charged' }[p.ladder.stopped] || 'Stopped'}</Tag>}
+                {p.ladder?.status === 'stopped' && <Tag tone="bad">{{ cap: 'Stopped at the spend cap', exhausted: 'No model diagnosed it', not_proven: 'No fix proven' }[p.ladder.stopped] || 'Stopped'}</Tag>}
               </div>
               {p.ladder?.diagnoses?.length > 0 && (() => {
                 // The small trial: who diagnosed what. The winner's diagnosis says
@@ -61,17 +60,15 @@ export default function Trials({ s, act, go }) {
                 return <div className="flex flex-col gap-1 text-sm">
                   {won && <span><span className="text-muted">Needs fixing:</span> <span className="font-mono">{won.file}</span>{won.location ? ' · ' + won.location : ''}</span>}
                   <span className="text-muted">Diagnosed: {p.ladder.diagnoses.map((d) => d.name + (d.correct ? ' ✓ ' + (d.score ?? '') + '/10' : d.correct === false ? ' ✗' : '')).join(', ')}{won && p.ladder.pickReason ? ' · picked ' + won.name + ': ' + p.ladder.pickReason : ''}</span>
-                  {p.ladder.status === 'awaiting_authorization' && <span className="text-muted">No fix has been written yet. Authorize {p.ladder.pickName} and it writes the fix; you're charged only if the fix is proven, never more than the quote.</span>}
+                  {p.ladder.status === 'awaiting_authorization' && <span className="text-muted">No fix has been written yet. Authorize {p.ladder.pickName} and it writes the fix on your API keys (about {usd(p.ladder.tokens?.total)} of tokens).</span>}
                 </div>;
               })()}
               {pr.candidates?.filter((c) => c.checks?.review?.skipped).map((c) => <span key={c.trialId} className="text-sm text-muted">{c.name}: {c.checks.review.reason}</span>)}
               <div className="mt-auto flex flex-wrap gap-2 pt-2">
-                {/* Only if the charge after authorizing failed: retry it. */}
-                {pr.proven && !p.bounty && p.sealed && <button className={primary} disabled={price > balance} onClick={trialAct(() => api.unlock(pr.proven.trialId))}>Unlock fix · {usd(price)}</button>}
-                {p.ladder?.status === 'awaiting_authorization' && <button className={primary} disabled={p.ladder.quote > balance} onClick={trialAct(() => api.authorize(p.painId))}>Authorize {p.ladder.pickName} to fix · up to {usd(p.ladder.quote)}</button>}
-                {p.ladder?.status === 'awaiting_authorization' && p.ladder.quote > balance && <button className={ghost} onClick={() => go('billing')}>Add credits</button>}
+                {/* Only if landing the fix after authorizing failed: retry it. Free. */}
+                {pr.proven && !p.bounty && p.sealed && <button className={primary} onClick={trialAct(() => api.unlock(pr.proven.trialId))}>Unlock fix</button>}
+                {p.ladder?.status === 'awaiting_authorization' && <button className={primary} onClick={trialAct(() => api.authorize(p.painId))}>Authorize {p.ladder.pickName} to fix</button>}
                 {!pr.proven && !['running', 'awaiting_authorization', 'fixing'].includes(p.ladder?.status) && <button className={ghost} disabled={t.canRunTrials !== true} title={t.canRunTrials === true ? '' : t.canRunTrials} onClick={trialAct(() => api.sealedTrials(p.painId))}>Run sealed trials</button>}
-                {pr.proven && !p.bounty && price > balance && <button className={ghost} onClick={() => go('billing')}>Add credits</button>}
                 {p.attempts > 0 && !pr.checking && !pr.proven && <button className={ghost} onClick={trialAct(() => api.prove(p.painId))}>Build proof report</button>}
               </div>
             </div>
