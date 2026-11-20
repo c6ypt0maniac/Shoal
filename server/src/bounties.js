@@ -3,18 +3,20 @@
 //                                                               \-> clawed_back
 //   (or failed: no verified fix, hold released, $0 charged)
 // The team sets the reward; it sits in escrow (Stripe hold, or simulated)
-// before any work starts. Agents never bid on price: every
-// agent attempts the fix privately and in parallel, each in its own sandbox,
-// and every attempt goes through the verifier. The verified ones are judged
-// best scorecard first by two judges (Claude and OpenAI, see proof.js); the
-// first that both pass wins, and only its fix reaches the team (as a PR). The team is charged then, but the agent is paid only after
-// the fix survives its window (survival.js); a regression claws it back.
+// before any work starts. The team pays every competitor's tokens, so each
+// has a bid, the most it may spend of them (bids.js), and only the best-value
+// bids race: privately and in parallel, each in its own sandbox. Every fix
+// goes through the verifier, then two judges (Claude and OpenAI, see
+// proof.js), cheapest first; the first both pass wins, and only its fix
+// reaches the team (as a PR). The team is charged then, but the agent is
+// paid only after the fix survives its window (survival.js); a regression
+// claws it back.
 //
 // Unlocking a sealed trial (unlock) skips the model call: the exact fix that
 // was proven lands, free (funding "free"; api-trials.js).
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { AGENTS, diagnosisPrompt, practiceOnly, requestDiagnosis, requestModelFix } from "./agents.js";
+import { AGENTS, diagnosisPrompt, fixPrompt, practiceOnly, requestDiagnosis, requestModelFix } from "./agents.js";
 import { attemptFix } from "./competitors.js";
 import { checkCompetitors, defaultCompetitors, nameFor } from "./marketplace.js";
 import { getStacks } from "./repo.js";
@@ -32,6 +34,7 @@ import { judgeAttempt } from "./proof.js";
 import { addCompute, recordRevenue } from "./spend.js";
 import { brief, grade, pickReason, rankDiagnoses, where } from "./api-trials.js";
 import { envLimit, mapLimit } from "./limit.js";
+import { admit, bidFor, cleanRaceSize, raceSize, winReason, winnerOrder } from "./bids.js";
 
 const TAKE_RATE = 0.15;
 // Statuses where the bounty is finished, one way or another.
@@ -66,7 +69,8 @@ export function recoverInterrupted() {
 // survivalDays: 7, 10 or 14 before the agent is paid. competitors: the
 // marketplace listings the team picked to compete (default: Shoal's
 // the Claude models, see defaultCompetitors); only those get the team's code. postedBy: GitHub login.
-export function createBounty({ painId, reward, funding = "simulated", apiModel = null, trialId = null, unlock = false, survivalDays, competitors, postedBy = null }) {
+// raceSize: how many of them race at most (bids.js; default SHOAL_RACE_SIZE).
+export function createBounty({ painId, reward, funding = "simulated", apiModel = null, trialId = null, unlock = false, survivalDays, competitors, raceSize, postedBy = null }) {
   const pain = state.pains.find((p) => p.id === painId);
   if (!pain) throw httpError(404, `Unknown pain ${painId}`);
   if (pain.healthy) throw httpError(400, `${pain.testFile} isn't flaky; nothing to fix`);
@@ -90,6 +94,8 @@ export function createBounty({ painId, reward, funding = "simulated", apiModel =
     reward: amount,
     survivalDays: cleanSurvivalDays(survivalDays),
     competitors: apiModel ? [apiModel] : checkCompetitors(competitors ?? defaultCompetitors()),
+    raceSize: cleanRaceSize(raceSize),
+    bids: [],
     language: stackFor(getStacks(), pain.testFile)?.def?.language ?? null,
     // The repo it's on and the scan it came from, so it keeps working after
     // you switch repos (see repos.js).
@@ -122,36 +128,7 @@ export function createBounty({ painId, reward, funding = "simulated", apiModel =
   return bounty;
 }
 
-export async function collectBids(bountyId) {
-  const bounty = getBounty(bountyId);
-  const pain = painFor(bounty);
-  bounty.status = "bidding";
-  emit("bounty.bidding", { bountyId, message: `Agents are reviewing ${pain.testFile}` });
-
-  await Promise.all(
-    AGENTS.filter((a) => a.enabled !== false).map(async (agent) => {
-      try {
-        const bid = await requestBid(agent, bounty, pain);
-        if (!bid.bid || bid.price > bounty.reward) {
-          emit("bid.passed", { bountyId, agentId: agent.id, message: `${agent.name} passed` });
-          return;
-        }
-        const entry = { agentId: agent.id, agentName: agent.name, price: Math.round(bid.price), confidence: clamp01(bid.confidence), plan: bid.plan, score: 0 };
-        entry.score = scoreBid(entry);
-        bounty.bids.push(entry);
-        emit("bid.placed", { bountyId, ...entry, message: `${agent.name} bid $${entry.price} (${Math.round(entry.confidence * 100)}% confident)` });
-      } catch (err) {
-        emit("bid.error", { bountyId, agentId: agent.id, message: `${agent.name} errored: ${err.message}` });
-      }
-    }),
-  );
-
-  bounty.bids.sort((a, b) => b.score - a.score);
-  bounty.status = bounty.bids.length ? "awarding" : "failed";
-  return bounty;
-}
-
-// Runs bidders best-first until one passes verification or we run out.
+// Runs the race (compete), or lands an unlocked trial fix (runUnlock).
 export async function runBounty(bountyId) {
   const bounty = getBounty(bountyId);
   const pain = painFor(bounty);
@@ -164,32 +141,62 @@ export async function runBounty(bountyId) {
   return inRepo(bounty, () => (bounty.unlock ? runUnlock(bounty, pain) : compete(bounty, pain))).catch((err) => crashed(bounty, err));
 }
 
-// Every competitor the team picked attempts the bounty at once, privately.
-// Nobody sees another's attempt, and the team only ever sees the winner's.
-// When every competitor is a model Shoal runs through the API (the default:
-// the Claude models), the race is a diagnosis race instead (diagnosisRace).
+// Every competitor's bid, and who races: the best value, at most raceSize.
+// Kept on the bounty (bids), so the team sees who sat out and why.
+function placeBids(bounty, prompt) {
+  bounty.bids = bounty.competitors.map((id) => ({ agentId: id, ...bidFor(id, state.listings.find((l) => l.id === id), prompt) }));
+  const admitted = admit(bounty.bids, raceSize(bounty), (id) => rank(cardFor(id)), recordOrder);
+  for (const b of bounty.bids) {
+    emit(b.admitted ? "bid.placed" : "bid.passed", {
+      bountyId: bounty.id,
+      agentId: b.agentId,
+      message: `${nameFor(b.agentId)} bid ${b.amount == null ? "an unknown amount" : `$${b.amount.toFixed(2)}`} in tokens${b.admitted ? "" : ", and sat out: other bids were better value"}`,
+    });
+  }
+  return admitted;
+}
+
+const recordOrder = (a, b) => byRecord(scorecard(a), scorecard(b));
+
+// The competitors the team picked bid (bids.js); the best-value ones attempt
+// the bounty at once, privately. Nobody sees another's attempt, and the team
+// only ever sees the winner's. When every competitor is a model Shoal runs
+// through the API (the default: the Claude models), the race is a diagnosis
+// race instead (diagnosisRace), which already picks the cheapest good model.
 async function compete(bounty, pain) {
-  const field = bounty.competitors;
-  if (field.every((id) => MODELS[id])) return diagnosisRace(bounty, pain);
+  if (bounty.competitors.every((id) => MODELS[id])) return diagnosisRace(bounty, pain);
+  const field = placeBids(bounty, await fixPrompt(pain));
   bounty.status = "competing";
+  const left = bounty.competitors.length - field.length;
   emit("bounty.competing", {
     bountyId: bounty.id,
-    message: `${field.length} competitor${field.length > 1 ? "s are" : " is"} attempting ${pain.testFile} in private sandboxes. $${bounty.reward} goes to the best-ranked verified fix, after it survives ${bounty.survivalDays} days.`,
+    message: `${field.length} competitor${field.length > 1 ? "s are" : " is"} attempting ${pain.testFile} in private sandboxes${left ? ` (${left} with weaker bids sat out)` : ""}. $${bounty.reward} goes to the cheapest fix that passes verification and both judges, after it survives ${bounty.survivalDays} days.`,
   });
 
   const fixes = await Promise.all(
     field.map(async (id) => {
       const card = cardFor(id);
+      const bid = bounty.bids.find((b) => b.agentId === id);
       card.attempts += 1;
       const started = Date.now();
       try {
-        const { fix, cost } = await attemptFix(id, bounty, pain);
+        const { fix, cost = 0 } = await attemptFix(id, bounty, pain, bid);
+        card.spent += cost;
+        bounty.apiCost += cost;
+        // The sandbox stops a capped agent before it overspends; this catches
+        // anything that got past it.
+        if (bid.kind === "cap" && cost > bid.amount + 1e-9) {
+          card.overBid += 1;
+          throw Object.assign(new Error(`it spent $${cost.toFixed(2)}, over its $${bid.amount.toFixed(2)} bid`), { counted: true });
+        }
         card.delivered += 1;
-        bounty.apiCost += cost ?? 0;
-        return { id, fix, started };
+        return { id, fix, started, spent: cost };
       } catch (err) {
-        bounty.apiCost += err.cost ?? 0;
-        bounty.attempts.push({ agentId: id, passed: false, reason: `No fix delivered: ${err.message}`, durationMs: Date.now() - started });
+        if (!err.counted) {
+          card.spent += err.cost ?? 0;
+          bounty.apiCost += err.cost ?? 0;
+        }
+        bounty.attempts.push({ agentId: id, passed: false, reason: `No fix delivered: ${err.message}`, durationMs: Date.now() - started, spent: err.cost ?? 0 });
         emit("work.error", { bountyId: bounty.id, message: `An attempt on ${pain.testFile} didn't deliver a fix` });
         return null;
       }
@@ -201,14 +208,17 @@ async function compete(bounty, pain) {
   // timing-sensitive tests flakier. SHOAL_VERIFY_CONCURRENCY sets the limit.
   bounty.status = "verifying";
   const stableTestFiles = bounty.stableTestFiles ?? state.pains.filter((p) => p.healthy).map((p) => p.testFile);
-  const attempts = await mapLimit(fixes.filter(Boolean), envLimit("SHOAL_VERIFY_CONCURRENCY", 2), async ({ id, fix, started }) => {
+  const attempts = await mapLimit(fixes.filter(Boolean), envLimit("SHOAL_VERIFY_CONCURRENCY", 2), async ({ id, fix, started, spent }) => {
     const result = await verify({ bountyId: bounty.id, agentId: nameFor(id), testFile: pain.testFile, files: fix.files, stableTestFiles, flakeRate: pain.flakeRate });
     const durationMs = Date.now() - started;
     const lines = await linesChanged(fix.files);
     if (result.passed) {
-      cardFor(id).verified += 1;
-      cardFor(id).verifiedMs += durationMs;
-      cardFor(id).verifiedLines += lines;
+      const card = cardFor(id);
+      card.verified += 1;
+      card.verifiedMs += durationMs;
+      card.verifiedLines += lines;
+      card.spentVerified += spent;
+      card.pricedFixes += 1;
       addLanguage(id, bounty.language);
     }
     return {
@@ -220,21 +230,22 @@ async function compete(bounty, pain) {
       reason: result.reason ?? null,
       runs: result.runs.map((r) => r.passed),
       durationMs,
+      spent,
     };
   });
   bounty.attempts.push(...attempts);
 
   const verified = bounty.attempts.filter((a) => a.passed);
   if (!verified.length) return fail(bounty, `No agent's fix for ${pain.testFile} passed verification. Hold released, $0 charged.`);
-  // Ranked on track record only, never price: best scorecard, then the
-  // smaller change. Judged in that order; the first both judges pass wins.
-  verified.sort((a, b) => byRecord(scorecard(a.agentId), scorecard(b.agentId)) || a.linesChanged - b.linesChanged);
+  // Cheapest first; close calls by track record (bids.js winnerOrder).
+  // Judged in that order; the first both judges pass wins.
+  const ordered = winnerOrder(verified, recordOrder);
   // Kept on each attempt, so the team can see afterwards why the winner won (publicBounty).
-  verified.forEach((v, i) => Object.assign(v, { rank: i + 1, score: Math.round(rank(cardFor(v.agentId)) * 1000) / 1000 }));
+  ordered.forEach((v, i) => Object.assign(v, { rank: i + 1, score: Math.round(rank(cardFor(v.agentId)) * 1000) / 1000 }));
   bounty.status = "judging";
   let winner = null;
-  for (const candidate of verified) {
-    const review = await judgeAttempt({ pain, files: candidate.files, author: candidate.agentId, others: verified.filter((v) => v !== candidate).map((v) => v.files) });
+  for (const candidate of ordered) {
+    const review = await judgeAttempt({ pain, files: candidate.files, author: candidate.agentId, others: ordered.filter((v) => v !== candidate).map((v) => v.files) });
     candidate.judged = true;
     candidate.judges = review.judges;
     recordJudges(candidate.agentId, review);
@@ -249,14 +260,15 @@ async function compete(bounty, pain) {
     }
   }
   if (!winner) {
-    const why = verified.flatMap((v) => v.judges).find((j) => j.unavailable)?.summary;
+    const why = verified.flatMap((v) => v.judges ?? []).find((j) => j.unavailable)?.summary;
     return fail(bounty, `${verified.length} fix${verified.length > 1 ? "es" : ""} passed verification, but none passed both judges${why ? ` (${why})` : ""}. Hold released, $0 charged.`);
   }
+  bounty.winReason = winReason(winner, verified);
   const name = nameFor(winner.agentId);
   emit("bounty.winner", {
     bountyId: bounty.id,
     agentId: winner.agentId,
-    message: `${verified.length} of ${field.length} attempts verified. ${name} wins on its track record and both judges passed it: ${winner.summary}`,
+    message: `${verified.length} of ${field.length} attempts verified. ${name} wins (${bounty.winReason}) and both judges passed it: ${winner.summary}`,
   });
   return win(bounty, pain, { id: winner.agentId, name, builder: providerOf(winner.agentId) }, winner);
 }
@@ -283,11 +295,13 @@ async function diagnosisRace(bounty, pain) {
         try {
           const { diagnosis, cost } = await requestDiagnosis(id, pain, prompt);
           bounty.apiCost += cost;
+          cardFor(id).spent += cost;
           cardFor(id).delivered += 1;
           emit("diagnosis.done", { bountyId: bounty.id, agentId: id, message: `${nameFor(id)} diagnosed ${pain.testFile}` });
           return { model: id, ...diagnosis, correct: null };
         } catch (err) {
           bounty.apiCost += err.cost ?? 0;
+          cardFor(id).spent += err.cost ?? 0;
           emit("work.error", { bountyId: bounty.id, agentId: id, message: `${nameFor(id)} returned no diagnosis` });
           return null;
         }
@@ -330,13 +344,16 @@ export async function buildFix(bountyId, model = null) {
         const name = nameFor(d.model);
         bounty.status = "competing";
         emit("bounty.building", { bountyId: bounty.id, agentId: d.model, message: `${name} is writing the fix for ${pain.testFile}` });
-        let fix;
+        let fix, spent = 0;
         try {
           const out = await requestModelFix(d.model, bounty, pain, { diagnosis: d, lastFailure });
           fix = out.fix;
           bounty.apiCost += out.cost;
+          cardFor(d.model).spent += out.cost;
+          spent = out.cost;
         } catch (err) {
           bounty.apiCost += err.cost ?? 0;
+          cardFor(d.model).spent += err.cost ?? 0;
           bounty.attempts.push({ agentId: d.model, passed: false, reason: `No fix delivered: ${err.message}` });
           emit("work.error", { bountyId: bounty.id, agentId: d.model, message: `${name} didn't deliver a fix` });
           continue;
@@ -344,11 +361,13 @@ export async function buildFix(bountyId, model = null) {
         emit("work.submitted", { bountyId: bounty.id, agentId: d.model, files: fix.files.map((f) => f.path), message: `${name} submitted a patch: ${brief(fix.summary)}` });
         bounty.status = "verifying";
         const result = await verify({ bountyId: bounty.id, agentId: name, testFile: pain.testFile, files: fix.files, stableTestFiles: bounty.stableTestFiles, flakeRate: pain.flakeRate });
-        const entry = { agentId: d.model, summary: fix.summary, files: fix.files, linesChanged: await linesChanged(fix.files), passed: result.passed, reason: result.reason ?? null, failureLog: result.failureLog ?? null, runs: result.runs.map((r) => r.passed) };
+        const entry = { agentId: d.model, summary: fix.summary, files: fix.files, linesChanged: await linesChanged(fix.files), passed: result.passed, reason: result.reason ?? null, failureLog: result.failureLog ?? null, runs: result.runs.map((r) => r.passed), spent };
         bounty.attempts.push(entry);
         if (!result.passed) { lastFailure = [result.reason, result.failureLog].filter(Boolean).join('\n'); continue; }
         cardFor(d.model).verified += 1;
         cardFor(d.model).verifiedLines += entry.linesChanged;
+        cardFor(d.model).spentVerified += spent;
+        cardFor(d.model).pricedFixes += 1;
         addLanguage(d.model, bounty.language);
         bounty.status = "judging";
         const review = await judgeAttempt({ pain, files: fix.files, author: d.model });
@@ -606,10 +625,6 @@ async function surfacePullRequest(bounty, pain, agent, attempt) {
   }
 }
 
-// --- Scorecards -----------------------------------------------------------------
-
-// How good an agent's record is, 0-1: how often its attempts verify, times
-// how often its wins survive. Smoothed so a new agent starts in the middle.
 // --- Ranking ------------------------------------------------------------------------
 // The score blends every rate Shoal measures, each taken at its 95% Wilson
 // lower bound: the rate the record shows *at least*, given how many tries
@@ -645,11 +660,12 @@ function rank(c) {
 // How much the score can be trusted: by how many attempts back it.
 const confidence = (attempts) => (attempts >= 30 ? "high" : attempts >= 10 ? "medium" : attempts >= 3 ? "low" : "new");
 
-// Best record first; ties go to more fixes that survived, then the faster,
-// then the smaller fix, then the name, so the order never flips at random.
+// Best record first; ties go to more fixes that survived, then the cheaper
+// fix in tokens, then the faster, then the smaller fix, then the name, so
+// the order never flips at random.
 export function byRecord(a, b) {
-  const slow = (x) => x.avgTimeToFixMs ?? Infinity, big = (x) => x.avgLinesChanged ?? Infinity;
-  return b.rankScore - a.rankScore || b.survived - a.survived || slow(a) - slow(b) || big(a) - big(b) || String(a.id).localeCompare(String(b.id));
+  const pricey = (x) => x.spendPerFix ?? Infinity, slow = (x) => x.avgTimeToFixMs ?? Infinity, big = (x) => x.avgLinesChanged ?? Infinity;
+  return b.rankScore - a.rankScore || b.survived - a.survived || pricey(a) - pricey(b) || slow(a) - slow(b) || big(a) - big(b) || String(a.id).localeCompare(String(b.id));
 }
 
 // A verified fix both judges reviewed counts toward judge approval. Not when
@@ -696,8 +712,12 @@ export function scorecard(id) {
     verifiedRate: c.attempts ? c.verified / c.attempts : null,
     survivalRate: judged ? c.survived / judged : null,
     clawbackRate: judged ? c.clawbacks / judged : null,
-    // What teams paid per fix that survived.
+    // What teams paid per fix that survived (bounty rewards).
     costPerOutcome: c.survived ? Math.round((c.paid / c.survived) * 100) / 100 : null,
+    // The team's tokens per verified fix, from fixes whose spend was
+    // measured, and times it went over its bid (bids.js).
+    spendPerFix: c.pricedFixes ? Math.round((c.spentVerified / c.pricedFixes) * 10_000) / 10_000 : null,
+    overBid: c.overBid,
     // Verified fixes both judges passed, and diagnoses graded correct.
     judgeApproval: c.judged ? c.judgedPassed / c.judged : null,
     diagnosisAccuracy: c.diagnoses ? c.diagnosesCorrect / c.diagnoses : null,
@@ -778,6 +798,7 @@ export function publicBounty(b) {
     rank: a.rank ?? null,
     score: a.score ?? null,
     judged: Boolean(a.judged ?? a.judges),
+    spent: a.spent ?? null,
     judges: (a.judges ?? []).map(({ name, ok, summary, unavailable, via }) => ({ name, ok, summary, via: via ?? null, unavailable: Boolean(unavailable) })),
   }));
   return {
@@ -785,7 +806,9 @@ export function publicBounty(b) {
     results,
     competition: { attempts: attempts.length, verified: attempts.filter((a) => a.passed).length },
     // Short on purpose: what was broken and where, not how (brief).
-    winningAttempt: winning && { agentId: winning.agentId, summary: brief(winning.summary), files: winning.files.map((f) => f.path), linesChanged: winning.linesChanged, runs: winning.runs, judges: (winning.judges ?? []).map((j) => ({ ...j, summary: brief(j.summary), remaining: j.remaining?.map(brief), risks: j.risks?.map(brief) })) },
+    // Every competitor's bid and whether it raced: prices, not code.
+    bids: (b.bids ?? []).map(({ agentId, amount, kind, value, admitted }) => ({ agentId, amount, kind, value, admitted })),
+    winningAttempt: winning && { agentId: winning.agentId, spent: winning.spent ?? null, summary: brief(winning.summary), files: winning.files.map((f) => f.path), linesChanged: winning.linesChanged, runs: winning.runs, judges: (winning.judges ?? []).map((j) => ({ ...j, summary: brief(j.summary), remaining: j.remaining?.map(brief), risks: j.risks?.map(brief) })) },
     // Diagnoses: which file and functions need fixing, never the cause or plan.
     diagnoses: (b.diagnoses ?? []).map((d) => ({ model: d.model, file: d.file, location: where(d.location), correct: d.correct, score: d.score ?? null, fixCost: d.fixCost ?? null })),
     // A single approved model has no rivals to hide: show why its tries failed.

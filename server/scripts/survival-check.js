@@ -1,6 +1,6 @@
 // End-to-end check of the core bounty loop on the bundled demo repo, with
 // mock agents and simulated escrow (no keys, no spend):
-//   private parallel attempts (no bids) -> only the winner's fix is shown ->
+//   bids, then private parallel attempts -> only the winner's fix is shown ->
 //   charged, payout pending -> survival checks on the fix as delivered: the
 //   team's own changes (reverting it, deleting the test) only warn, while a
 //   fix that fails on its own code is clawed back and refunded -> a fix that
@@ -9,6 +9,7 @@
 //   node scripts/survival-check.js
 import { mkdtemp, readFile, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { execSync } from "node:child_process";
 import path from "node:path";
 
 process.env.PORT = "4107";
@@ -53,6 +54,11 @@ const pains = await api("/api/pains");
 const cart = pains.find((p) => p.testFile === "test/cart.test.js");
 const orders = pains.find((p) => p.testFile === "test/orders.test.js");
 check("scan found both flaky tests", Boolean(cart && orders && !cart.healthy && !orders.healthy));
+// A git repo, like a connected GitHub repo, so survival windows freeze it.
+const git = (cmd) => execSync(`git -c user.name=t -c user.email=t@t ${cmd}`, { cwd: WORKSPACE, stdio: "pipe" }).toString().trim();
+git("init -q");
+git("add -A");
+git("commit -qm demo");
 
 // --- 1. Competition, then a regression inside the window ---------------------
 const bad = await api("/api/bounties", { painId: cart.id, reward: 300, competitors: PERSONAS, survivalDays: 21 });
@@ -62,7 +68,7 @@ const first = await api("/api/bounties", { painId: cart.id, reward: 300, competi
 await api(`/api/bounties/${first.id}/run`, {});
 let b1 = await waitFor(first.id, ["surviving", "failed"]);
 check("verified fix enters its survival window", b1.status === "surviving", b1.status);
-check("every agent attempted privately, no bids", b1.competition.attempts === 3 && !("bids" in b1), JSON.stringify(b1.competition));
+check("every agent bid and attempted privately", b1.competition.attempts === 3 && b1.bids.length === 3 && b1.bids.every((x) => x.admitted && x.kind === "estimate" && x.amount > 0), JSON.stringify(b1.bids));
 check("only the winner's fix is shown", !("attempts" in b1) && b1.winningAttempt?.agentId === "rootcause", JSON.stringify(b1.winningAttempt?.agentId));
 check("team charged the reward", b1.escrow.status === "charged" && b1.escrow.charged === 300, JSON.stringify(b1.escrow));
 check("window is 10 days", Math.round((Date.parse(b1.survival.endsAt) - Date.parse(b1.survival.startedAt)) / 86_400_000) === 10);
@@ -91,6 +97,15 @@ b1 = await api(`/api/bounties/${first.id}/survival/check`, {});
 check("the team reverting the fix or deleting the test isn't a refund", b1.status === "surviving" && b1.escrow.status === "charged" && b1.survival.checks.at(-1).ok === true, JSON.stringify(b1.survival.checks.at(-1)));
 check("...but it's flagged", b1.survival.checks.at(-1).drifted?.includes("src/cart.js"), JSON.stringify(b1.survival.checks.at(-1).drifted));
 await rename(path.join(WORKSPACE, "test/cart.test.js.gone"), path.join(WORKSPACE, "test/cart.test.js"));
+check("checks run on the repo as it was when the fix landed", b1.survival.frozen && b1.survival.checks.at(-1).frozen === true && git(`rev-parse refs/shoal/survival/${first.id}`) === b1.survival.frozen);
+
+// The team breaks a file the fix didn't touch and Shoal didn't pin (the
+// package's module type): its own change, so still no refund.
+const manifest = await readFile(path.join(WORKSPACE, "package.json"), "utf8");
+await writeFile(path.join(WORKSPACE, "package.json"), manifest.replace('"type": "module"', '"type": "commonjs"'));
+b1 = await api(`/api/bounties/${first.id}/survival/check`, {});
+check("breaking an unpinned file isn't a refund either", b1.status === "surviving" && b1.survival.checks.at(-1).ok === true, JSON.stringify(b1.survival.checks.at(-1)));
+await writeFile(path.join(WORKSPACE, "package.json"), manifest);
 
 // The fix itself doesn't hold (it hid the flakiness): stand in for one by
 // pinning the original bug as the delivered fix.
@@ -98,6 +113,9 @@ state.bounties.find((x) => x.id === first.id).survival.pinned.find((f) => f.path
 b1 = await api(`/api/bounties/${first.id}/survival/check`, {});
 check("a fix that fails on its own code is clawed back", b1.status === "clawed_back" && b1.survival.status === "regressed", b1.survival.reason);
 check("team refunded", b1.escrow.status === "refunded" && b1.escrow.refunded === 300, JSON.stringify(b1.escrow));
+let kept = true;
+try { git(`rev-parse --verify -q refs/shoal/survival/${first.id}`); } catch { kept = false; }
+check("its snapshot is let go once the window is over", !kept);
 ledger = await api("/api/ledger");
 check("ledger marks it clawed back", ledger.find((t) => t.bountyId === first.id)?.status === "clawed_back");
 

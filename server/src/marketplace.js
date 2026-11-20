@@ -17,6 +17,7 @@
 //   - agents builders publish with a webhook (publishAgent; competitors.js
 //     has the webhook protocol)
 // Imported and published listings are kept in state.listings (persist.js).
+import { cleanMaxSpend } from "./bids.js";
 import { hasKey } from "./user-keys.js";
 import { AGENTS, isMock, modelUnavailable } from "./agents.js";
 import { MODELS, TYPICAL_FIX_TOKENS, costPerFix, providerLabel } from "./trials.js";
@@ -222,22 +223,24 @@ export function avatarImage(id) {
 
 // How the agent runs (uploads.js), checked and ready to store: the fields
 // for its runtime only, so a listing never keeps another runtime's leftovers.
-async function howItRuns(runtime, { webhookUrl, prompt, bundle, image }) {
+// maxSpend: uploaded code's bid, the most of the team's tokens it may spend
+// on one bounty (bids.js). Shoal prices the other runtimes itself.
+async function howItRuns(runtime, { webhookUrl, prompt, bundle, image, maxSpend }) {
   if (!RUNTIMES.includes(runtime)) throw httpError(400, `runtime must be one of ${RUNTIMES.join(", ")}`);
   if (runtime === "webhook") return { runtime, webhookUrl: cleanWebhook(webhookUrl) };
   if (runtime === "prompt") return { runtime, prompt: cleanPrompt(prompt) };
-  if (runtime === "bundle") return { runtime, ...(await cleanBundle(bundle)) };
-  return { runtime, image: cleanImage(image) };
+  if (runtime === "bundle") return { runtime, ...(await cleanBundle(bundle)), maxSpend: cleanMaxSpend(maxSpend) };
+  return { runtime, image: cleanImage(image), maxSpend: cleanMaxSpend(maxSpend) };
 }
-const RUNTIME_FIELDS = ["runtime", "webhookUrl", "secretSealed", "prompt", "bundle", "image"];
+const RUNTIME_FIELDS = ["runtime", "webhookUrl", "secretSealed", "prompt", "bundle", "image", "maxSpend"];
 
-export async function publishAgent({ name, tagline, description, webhookUrl, pains, languages, avatar, runtime = "webhook", prompt, bundle, image }, user) {
+export async function publishAgent({ name, tagline, description, webhookUrl, pains, languages, avatar, runtime = "webhook", prompt, bundle, image, maxSpend }, user) {
   if (!user) throw httpError(401, "Sign in with GitHub to publish an agent");
   const title = String(name ?? "").trim().slice(0, 60);
   if (!title) throw httpError(400, "Give the agent a name");
   const id = `agent:${user.login}/${slug(title)}`;
   if (allListings().some((l) => l.id === id)) throw httpError(409, `You already have an agent called ${title}`);
-  const runs = await howItRuns(runtime, { webhookUrl, prompt, bundle, image });
+  const runs = await howItRuns(runtime, { webhookUrl, prompt, bundle, image, maxSpend });
   // Only webhooks are signed: the other runtimes run inside Shoal.
   const secret = runs.runtime === "webhook" ? newSecret() : null;
   const listing = {
@@ -271,7 +274,7 @@ export async function updateAgent(id, patch, user) {
   // Switching how it runs (or new code for it) replaces the old runtime's fields.
   if (patch.runtime != null && patch.runtime !== (listing.runtime ?? "webhook") || patch.prompt != null || patch.bundle != null || patch.image != null) {
     const runtime = patch.runtime ?? listing.runtime ?? "webhook";
-    const runs = await howItRuns(runtime, { webhookUrl: patch.webhookUrl ?? listing.webhookUrl, prompt: patch.prompt ?? listing.prompt, bundle: patch.bundle, image: patch.image ?? listing.image?.image });
+    const runs = await howItRuns(runtime, { webhookUrl: patch.webhookUrl ?? listing.webhookUrl, prompt: patch.prompt ?? listing.prompt, bundle: patch.bundle, image: patch.image ?? listing.image?.image, maxSpend: patch.maxSpend ?? listing.maxSpend });
     const keep = runtime === "webhook" && listing.secretSealed;
     for (const k of RUNTIME_FIELDS) if (!(k === "secretSealed" && keep)) delete listing[k];
     Object.assign(listing, runs);
@@ -281,6 +284,7 @@ export async function updateAgent(id, patch, user) {
       return { ...entry(listing, user), signingSecret: secret };
     }
   } else if (patch.webhookUrl != null) listing.webhookUrl = cleanWebhook(patch.webhookUrl);
+  else if (patch.maxSpend != null && "maxSpend" in listing) listing.maxSpend = cleanMaxSpend(patch.maxSpend);
   // null clears it (back to Shoal's default fish).
   if (patch.avatar !== undefined) setAvatar(listing, patch.avatar);
   return entry(listing, user);
@@ -403,8 +407,9 @@ function fixCost(l) {
   return { amount: (TYPICAL_FIX_TOKENS.input_tokens * p.input + TYPICAL_FIX_TOKENS.output_tokens * p.output) / 1e6, measured: false };
 }
 
-// Cost per surviving fix when Shoal has measured one, else the cost of one fix.
-const price = (l) => l.shoal.costPerOutcome ?? l.fixCost?.amount ?? null;
+// The team's tokens per verified fix when Shoal has measured it, else the
+// expected cost of one fix, else uploaded code's bid.
+const price = (l) => l.shoal.spendPerFix ?? l.fixCost?.amount ?? l.maxSpend ?? null;
 const last = (v) => v ?? Infinity;
 const first = (v) => v ?? -Infinity;
 

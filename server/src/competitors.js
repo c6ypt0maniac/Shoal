@@ -24,6 +24,7 @@ import { MODELS } from "./trials.js";
 import { hasKey, keyFor, needKey } from "./user-keys.js";
 import { FIX_SYSTEM, FixSchema, askModel, isMock, contextFiles, fixPrompt, getAgent, requestFix, requestModelFix } from "./agents.js";
 import { runSandboxed } from "./sandbox.js";
+import { DEFAULT_MAX_SPEND } from "./bids.js";
 import { mockFix } from "./mock.js";
 import { decrypt } from "./secrets.js";
 import { state } from "./store.js";
@@ -32,7 +33,8 @@ const WEBHOOK_TIMEOUT_MS = 10 * 60_000;
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 
 // -> { fix, cost }. Throws if the competitor can't deliver a fix.
-export async function attemptFix(id, bounty, pain) {
+// bid: its bid on this bounty (bids.js); uploaded code can't spend past it.
+export async function attemptFix(id, bounty, pain, bid = null) {
   const agent = getAgent(id);
   if (agent) return { fix: await requestFix(agent, bounty, pain), cost: 0 };
   if (MODELS[id]) return requestModelFix(id, bounty, pain);
@@ -41,7 +43,7 @@ export async function attemptFix(id, bounty, pain) {
   if (listing?.provider === "builder") {
     const runtime = listing.runtime ?? "webhook";
     if (runtime === "prompt") return requestModelFix(listing.prompt.model, bounty, pain, { instructions: listing.prompt.instructions });
-    if (runtime === "bundle" || runtime === "image") return sandboxFix(listing, bounty, pain);
+    if (runtime === "bundle" || runtime === "image") return sandboxFix(listing, bounty, pain, bid?.amount ?? listing.maxSpend ?? DEFAULT_MAX_SPEND);
     return webhookFix(listing, bounty, pain);
   }
   throw new Error(`${id} isn't a marketplace listing that can compete`);
@@ -104,6 +106,7 @@ async function taskFor(bounty, pain, deadline) {
       "Fix the real cause in application code. Test files, test folders, CI config and package manifests are protected; patches that touch them are rejected.",
       "Accepted only if the test passes enough runs in a row (at least 10; more for a test that rarely fails) and every previously stable test still passes.",
       `Paid only if the fix keeps passing for ${bounty.survivalDays} days; a regression is clawed back.`,
+      "Among fixes that pass verification and both judges, the one that cost the team the least in tokens wins; within 20% of the cheapest, the better track record wins.",
       "Return the complete new contents of every file you change, paths relative to the repo root.",
     ],
   };
@@ -133,10 +136,11 @@ async function webhookFix(listing, bounty, pain) {
 }
 
 // Uploaded code: the same task, in the sandbox, plus the models it may ask
-// (answered on the team's keys, never handed over).
-async function sandboxFix(listing, bounty, pain) {
-  const task = { ...(await taskFor(bounty, pain, new Date(Date.now() + WEBHOOK_TIMEOUT_MS).toISOString())), models: Object.keys(MODELS) };
-  const out = await runSandboxed(listing, task, askModel);
+// (answered on the team's keys, never handed over) and its budget: its bid,
+// which no model call may take it past.
+async function sandboxFix(listing, bounty, pain, budget) {
+  const task = { ...(await taskFor(bounty, pain, new Date(Date.now() + WEBHOOK_TIMEOUT_MS).toISOString())), models: Object.keys(MODELS), budget };
+  const out = await runSandboxed(listing, task, askModel, { budget });
   return { fix: parseFix(JSON.stringify(out.fix), listing.name, out.cost), cost: out.cost };
 }
 

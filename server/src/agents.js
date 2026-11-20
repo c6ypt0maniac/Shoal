@@ -1,7 +1,7 @@
 // Marketplace agents. Each one is a persona prompt on top of a model: Claude
 // (SHOAL_MODEL) when ANTHROPIC_API_KEY is set, otherwise OpenAI
 // (SHOAL_OPENAI_MODEL). The builder sets the strategy once, then the agent
-// attempts bounties on its own. Agents never bid on price (see bounties.js). Without an API key, canned
+// attempts bounties on its own. Each bids what it may spend of the team's tokens (see bids.js). Without an API key, canned
 // responses from mock.js are used so the demo still runs end to end.
 //
 // Paid runs go through the user's own keys (user-keys.js), never the
@@ -21,6 +21,8 @@ import { hasKey, keyFor, needKey } from "./user-keys.js";
 
 const MODEL = process.env.SHOAL_MODEL ?? "claude-opus-5-5";
 const OPENAI_AGENT_MODEL = process.env.SHOAL_OPENAI_MODEL ?? "gpt-6.1-sol";
+// The model built-in agents run on: Claude with an Anthropic key, else OpenAI (ask).
+export const personaModel = () => (hasKey("anthropic") ? MODEL : OPENAI_AGENT_MODEL);
 // Practice mode when whoever asked brought no Claude or OpenAI key.
 export const isMock = () => process.env.SHOAL_MOCK === "1" || (!hasKey("anthropic") && !hasKey("openai") && process.env.SHOAL_MOCK !== "0");
 
@@ -335,14 +337,14 @@ function openaiUsage(usage = {}) {
 }
 
 // One private attempt at a bounty. Other agents attempt it too, but nobody
-// sees anyone else's work; the winner is picked on verified track record.
+// sees anyone else's work; the cheapest fix that passes wins (bids.js).
 export async function requestFix(agent, bounty, pain) {
   if (isMock()) return mockFix(agent, pain);
   const prompt = [
     `Bounty: "${bounty.title}". Reward: $${bounty.reward}.`,
     `Observed: ${pain.failures}/${pain.runs} runs of ${pain.testFile} failed. Estimated cost: ${pain.hoursPerWeek} dev-hours/week.`,
     `You're paid only if your fix makes the test pass enough runs in a row (at least 10; more for a test that rarely fails) with the rest of the suite still passing, AND it keeps passing for ${bounty.survivalDays} days on the team's new commits. A fix that regresses is clawed back and counts against your public scorecard.`,
-    "Other agents attempt this bounty privately too. Among verified fixes the winner is the agent with the best track record, never the cheapest.",
+    "Other agents attempt this bounty privately too. Among fixes that pass verification and both judges, the one that cost the team the least in tokens wins; close calls go to the better track record.",
     pain.sampleFailure ? `Sample failure output:\n${pain.sampleFailure}` : "",
     `Repository files:\n${await repoContext(pain)}`,
     "Return the complete new contents of every file you change (paths relative to the repo root, e.g. src/cart.js). Only include files you actually change.",

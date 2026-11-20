@@ -7,19 +7,24 @@
 // bounty is clawed back: the team is refunded and the agent's scorecard
 // takes the hit. If it holds to the end, the payout clears.
 //
-// Checked on the fix as delivered: when the window starts, the test, the code
-// it imports and the fix's files are pinned, and every check writes them back
-// over the current repo before running. The team keeps the code once it has
-// it, so its own later changes (deleting the test, reverting or editing the
-// fix, never merging the PR) can't turn into a refund; only a fix that
-// fails on its own code (one that hid the flakiness instead of fixing it)
-// does. If the team's code no longer matches the fix, the check says so.
+// Checked on the fix as delivered, on the repo as it was then: when the
+// window starts the whole repo is frozen (a git snapshot of the working tree,
+// kept under refs/shoal/survival/<bounty>) and the test, the code it imports
+// and the fix's files are pinned. Every check restores that snapshot, writes
+// the pinned files over it, and runs. The team keeps the code once it has
+// it, so nothing it changes later (deleting the test, reverting the fix, a
+// config or dependency change, never merging the PR) can turn into a
+// refund; only a fix that fails on its own code (one that hid the
+// flakiness instead of fixing it) does. If the team's code no longer matches
+// the fix, the check says so. Repos without git (the demo) pin the files
+// only, over the current code; installed dependencies are always the
+// current ones.
 //
 // Measured in a sandbox with the repo's own test runner, never with numbers
 // an agent or platform reports.
 import { access } from "node:fs/promises";
 import path from "node:path";
-import { createSandbox, destroySandbox, readRepoFile, runTestMany, workspaceDir, writeFiles } from "./repo.js";
+import { createSandbox, destroySandbox, readRepoFile, runTestMany, sh, workspaceDir, writeFiles } from "./repo.js";
 import { inRepo, isActive, refreshParked } from "./repos.js";
 import { emit } from "./events.js";
 import { state, scoped, withWorkspace, workspaces } from "./store.js";
@@ -53,6 +58,7 @@ export function cleanSurvivalDays(days) {
 // Starts the window for a bounty whose fix was just applied (files: the fix).
 export async function startSurvival(bounty, files = []) {
   const now = Date.now();
+  const frozen = await freeze(bounty.id);
   const paths = [...new Set([bounty.testFile, ...(bounty.pain?.sourceFiles ?? []), ...files.map((f) => f.path)])];
   const pinned = (await Promise.all(paths.map(async (p) => ({ path: p, content: await readRepoFile(p).catch(() => null) })))).filter((f) => f.content != null);
   const length = windowMs(bounty.survivalDays);
@@ -64,8 +70,39 @@ export async function startSurvival(bounty, files = []) {
     nextCheckAt: new Date(now + checkEveryMs(length)).toISOString(),
     checks: [],
     pinned,
+    frozen,
     fixFiles: files.map((f) => f.path),
   };
+}
+
+// The repo as it is now, uncommitted changes and all (git stash create makes
+// that commit without touching the working tree), kept alive by a ref so a
+// pull or git gc can't lose it. -> the commit, or null without git.
+const GIT = "git -c user.name=Shoal -c user.email=shoal@localhost -c core.hooksPath=/dev/null";
+const refFor = (bountyId) => `refs/shoal/survival/${bountyId.replace(/[^\w-]/g, "_")}`;
+async function freeze(bountyId) {
+  const dir = workspaceDir();
+  if (!(await sh("git rev-parse --is-inside-work-tree", dir)).ok) return null;
+  const stash = (await sh(`${GIT} stash create`, dir)).output.trim();
+  const commit = /^[0-9a-f]{40,64}$/.test(stash) ? stash : (await sh("git rev-parse HEAD", dir)).output.trim();
+  if (!/^[0-9a-f]{40,64}$/.test(commit)) return null;
+  return (await sh(`git update-ref ${refFor(bountyId)} ${commit}`, dir)).ok ? commit : null;
+}
+
+// Lets the snapshot go once the window is over.
+export async function unfreeze(bounty) {
+  if (!bounty.survival?.frozen) return;
+  await inRepo(bounty, () => sh(`git update-ref -d ${refFor(bounty.id)}`, workspaceDir())).catch(() => {});
+}
+
+// Puts a sandbox copy of the repo back to the snapshot: tracked files as they
+// were, files added since removed (ignored ones, like installed dependencies,
+// stay). False if the snapshot is gone, so the check runs on current code.
+async function restore(sandbox, commit) {
+  const reset = await sh(`${GIT} reset -q --hard ${commit}`, sandbox);
+  if (!reset.ok) return false;
+  await sh(`${GIT} clean -fdq`, sandbox);
+  return true;
 }
 
 // Demo mode (SHOAL_SURVIVAL_MINUTES) also shortens windows that started before
@@ -137,13 +174,13 @@ async function checkOne(bounty, trigger) {
     message: `Survival check (${trigger}) for ${bounty.testFile}: ${result.ok ? "still fixed" : "REGRESSED"} (${result.passed}/${result.runs} runs passed)`,
   });
   if (result.drifted?.length) emit("survival.warning", { bountyId: bounty.id, message: `Your code no longer matches the delivered fix in ${result.drifted.join(", ")}. The guarantee covers the fix as delivered; merge it as is to keep ${bounty.testFile} fixed.` });
-  if (!result.ok) return clawBack(bounty, result.reason);
-  if (Date.now() >= Date.parse(bounty.survival.endsAt)) return releasePayout(bounty);
+  if (!result.ok) return clawBack(bounty, result.reason).finally(() => unfreeze(bounty));
+  if (Date.now() >= Date.parse(bounty.survival.endsAt)) return releasePayout(bounty).finally(() => unfreeze(bounty));
   bounty.survival.nextCheckAt = new Date(Date.now() + checkEveryMs(windowMs(bounty.survival.days))).toISOString();
 }
 
-// Runs the test on the current workspace with the pinned files written back
-// over it. drifted: the fix's files the team's code no longer matches.
+// Runs the test on the frozen snapshot (or, without one, the current
+// workspace) with the pinned files written back over it. drifted: the fix's files the team's code no longer matches.
 // Windows started before pinning run on the workspace as it is, where a
 // test that's gone can't confirm the fix and counts as a regression.
 async function measure(bounty) {
@@ -161,6 +198,8 @@ async function measure(bounty) {
   for (const f of pinned ?? []) if (fixFiles.has(f.path) && (await readRepoFile(f.path).catch(() => null)) !== f.content) drifted.push(f.path);
   const sandbox = await createSandbox();
   try {
+    const frozen = bounty.survival.frozen ? await restore(sandbox, bounty.survival.frozen) : false;
+    if (bounty.survival.frozen && !frozen) emit("survival.warning", { bountyId: bounty.id, message: `The snapshot of your repo from when the fix landed is gone, so ${testFile} is checked on your current code.` });
     if (pinned?.length) await writeFiles(sandbox, pinned);
     let runs = await runTestMany(sandbox, testFile, CHECK_RUNS);
     if (runs.some((r) => !r.passed)) runs = [...runs, ...(await runTestMany(sandbox, testFile, CONFIRM_RUNS))];
@@ -172,6 +211,7 @@ async function measure(bounty) {
       runs: runs.length,
       reason: ok ? null : `${testFile} failed ${failures} of ${runs.length} runs again`,
       failureLog: runs.find((r) => !r.passed)?.log?.slice(0, 2000) ?? null,
+      frozen,
       drifted,
     };
   } finally {

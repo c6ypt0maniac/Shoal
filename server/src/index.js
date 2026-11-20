@@ -532,15 +532,17 @@ app.post('/api/fixes/:key/pull-request',requireFixReviewUser,async(req,res)=>{ c
 app.get('/api/fixes/:key/repo',requireFixReviewUser,async(req,res)=>res.attachment(`shoal-${req.params.key.replace(/[^\w.-]/g,'-')}-fixed.zip`).type('application/zip').send(await downloadFix(req.params.key)));
 // Post a bounty. With Stripe set up, the reward is held via Checkout first:
 // the response carries checkoutUrl and the bounty runs once funding clears.
-// Body: { painId, reward, survivalDays?: 7 | 10 | 14, competitors?: [listing ids] }
+// Body: { painId, reward, survivalDays?: 7 | 10 | 14, competitors?: [listing ids], raceSize?: 1-10 }
 // competitors: who may compete (and see the shared code); default Shoal's
 // built-in agents. Any marketplace listing that's available can be picked.
+// raceSize: how many of them race, the best-value bids first (bids.js).
 app.post("/api/bounties", async (req, res) =>
   openBounty(req, res, {
     painId: req.body?.painId,
     reward: req.body?.reward,
     survivalDays: req.body?.survivalDays,
     competitors: req.body?.competitors,
+    raceSize: req.body?.raceSize,
     postedBy: (await currentUser(req))?.login ?? null,
   }),
 );

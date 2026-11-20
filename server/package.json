@@ -19,6 +19,7 @@
     "check:uploads": "node scripts/uploads-check.js",
     "check:supabase": "node --env-file=.env scripts/supabase-check.js",
     "check:fix-review": "node --test scripts/fix-review-check.js",
+    "check:bids": "node --test scripts/bids-check.js",
     "check:test-evidence": "node --test scripts/test-evidence-check.js"
   },
   "dependencies": {

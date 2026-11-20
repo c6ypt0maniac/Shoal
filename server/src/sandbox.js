@@ -9,23 +9,28 @@
 // Without either, uploaded agents are listed but can't compete.
 //
 // The agent talks to Shoal over stdin/stdout, one JSON object per line:
-//   Shoal -> agent  {"type":"task","task":{bounty, files, rules, models}}
+//   Shoal -> agent  {"type":"task","task":{bounty, files, rules, models, budget}}
 //   agent -> Shoal  {"type":"model","id":1,"model":"claude-sonnet-5-5","system":"...","prompt":"..."}
 //   Shoal -> agent  {"type":"model_result","id":1,"text":"..."}  (or "error")
 //   agent -> Shoal  {"type":"fix","summary":"...","files":[{"path","content"}]}
 // Model calls run on the team's API keys (user-keys.js) and only their text
 // comes back, so no key, token or network access ever enters the sandbox.
+// budget: the agent's bid in dollars (bids.js). A call that could take its
+// spend past it (its prompt plus the most it may write) is refused, not made.
 // Anything else on stdout is ignored; stderr is dropped.
 import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { LANGUAGES, bundleFiles } from "./uploads.js";
+import { estimate } from "./spend.js";
 
 const TIMEOUT_MS = Number(process.env.SHOAL_AGENT_TIMEOUT_MS) || 10 * 60_000;
 const MAX_MODEL_CALLS = 20;
 const MAX_PROMPT_CHARS = 400_000;
 const MAX_STDOUT = 8 * 1024 * 1024;
+// The most one answer may write (askModel), for the budget check.
+const MODEL_OUTPUT = 16_000;
 
 export const sandboxMode = () => process.env.SHOAL_SANDBOX ?? null;
 
@@ -42,8 +47,8 @@ export function sandboxProblem(runtime) {
 
 // listing: a builder listing with runtime "bundle" or "image". task: what
 // webhooks get (competitors.js). ask(model, system, prompt) -> { text, cost }.
-// -> { fix (unchecked JSON), cost }.
-export async function runSandboxed(listing, task, ask) {
+// -> { fix (unchecked JSON), cost }. budget: the most it may spend, in $.
+export async function runSandboxed(listing, task, ask, { budget = Infinity } = {}) {
   const why = sandboxProblem(listing.runtime);
   if (why) throw new Error(`${listing.name} can't run: ${why}`);
   const dir = await mkdtemp(path.join(tmpdir(), "shoal-agent-"));
@@ -61,7 +66,7 @@ export async function runSandboxed(listing, task, ask) {
     } else {
       [cmd, args] = ["docker", [...dockerArgs(), "--pull", "missing", listing.image.image]];
     }
-    return await converse(listing, cmd, args, dir, task, ask);
+    return await converse(listing, cmd, args, dir, task, ask, budget);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -77,7 +82,7 @@ const dockerArgs = () => [
   "-e", "HOME=/tmp",
 ];
 
-function converse(listing, cmd, args, dir, task, ask) {
+function converse(listing, cmd, args, dir, task, ask, budget) {
   return new Promise((resolve, reject) => {
     // An empty environment: nothing of the server's (keys, database URL) leaks in.
     const child = spawn(cmd, args, { cwd: dir, env: { PATH: process.env.PATH, HOME: dir }, stdio: ["pipe", "pipe", "ignore"] });
@@ -114,6 +119,11 @@ function converse(listing, cmd, args, dir, task, ask) {
         const prompt = String(msg.prompt ?? ""), system = String(msg.system ?? "");
         if (prompt.length + system.length > MAX_PROMPT_CHARS) {
           send({ type: "model_result", id: msg.id, error: `Prompts are at most ${MAX_PROMPT_CHARS} characters` });
+          continue;
+        }
+        const could = estimate(String(msg.model ?? ""), system + prompt, MODEL_OUTPUT);
+        if (cost + could > budget) {
+          send({ type: "model_result", id: msg.id, error: `Over your bid: this call could cost $${could.toFixed(2)} and $${Math.max(0, budget - cost).toFixed(2)} of your $${budget.toFixed(2)} bid is left` });
           continue;
         }
         try {

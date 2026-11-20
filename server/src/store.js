@@ -142,7 +142,10 @@ export const newId = (prefix) => `${prefix}_${run}${nextId++}`;
 //   verifiedLines total lines changed, over verified attempts
 //   judged / judgedPassed  verified fixes both judges reviewed, and passed
 //   diagnoses / diagnosesCorrect  diagnoses graded, and graded correct
-export const CARD_COUNTS = ["attempts", "delivered", "verified", "verifiedMs", "verifiedLines", "judged", "judgedPassed", "diagnoses", "diagnosesCorrect", "wins", "survived", "clawbacks", "earned", "paid"];
+//   spent         the team's tokens over every attempt ($)
+//   spentVerified / pricedFixes  tokens over verified fixes whose spend was measured, and how many
+//   overBid       attempts that spent more than their bid (bids.js)
+export const CARD_COUNTS = ["attempts", "delivered", "verified", "verifiedMs", "verifiedLines", "judged", "judgedPassed", "diagnoses", "diagnosesCorrect", "wins", "survived", "clawbacks", "earned", "paid", "spent", "spentVerified", "pricedFixes", "overBid"];
 export function cardFor(id) {
   const card = (state.agents[id] ??= {});
   for (const k of CARD_COUNTS) card[k] ??= 0;

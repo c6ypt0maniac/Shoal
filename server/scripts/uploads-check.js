@@ -27,6 +27,8 @@ await import("../src/index.js");
 const { zip } = await import("../src/zip.js");
 const { sandboxProblem } = await import("../src/sandbox.js");
 const { saveState } = await import("../src/persist.js");
+const { runSandboxed } = await import("../src/sandbox.js");
+const { state } = await import("../src/store.js");
 const BASE = "http://localhost:4140";
 const BUILDER = "builder-bo", TEAM = "team-tia";
 let ok = true;
@@ -104,6 +106,19 @@ try {
   check("its fix was verified and won", b.winner === bundleId && b.status === "surviving", b.status);
   check("it asked a model through Shoal", /model=Practice mode/.test(summary), summary);
   check("it saw only PATH and HOME of the environment, nothing of the server's", /env=HOME,PATH /.test(summary) && /leak=false/.test(summary), summary);
+  const bid = b.bids?.find((x) => x.agentId === bundleId);
+  check("its bid was its cap, and it raced", bid?.kind === "cap" && bid.amount === 1 && bid.admitted, JSON.stringify(b.bids));
+  check("the team sees what the winning fix cost", b.winningAttempt?.spent === 0 && /\$0\.00 in tokens/.test(b.winReason ?? ""), b.winReason);
+
+  console.log("3b. Bids are enforced");
+  r = await publish({ name: "Thrifty", runtime: "bundle", maxSpend: 0.05, bundle: { language: "node", entry: "index.js", zip: b64([{ path: "index.js", data: AGENT }]) } });
+  check("published with its bid", r.status === 201 && r.json.maxSpend === 0.05, r.json.error);
+  r = await publish({ name: "Greedy", runtime: "bundle", maxSpend: 500, bundle: { language: "node", entry: "index.js", zip: b64([{ path: "index.js", data: AGENT }]) } });
+  check("a bid over $50 is refused", r.status === 400 && /maxSpend/.test(r.json.error), r.json.error);
+  const thrifty = state.listings.find((l) => l.name === "Thrifty");
+  const task = { models: ["claude-opus-5-5"], files: [{ path: "src/cart.js", content: "    lookupDiscount(code).then(" }], budget: 0.05 };
+  const out = await runSandboxed(thrifty, task, async () => ({ text: "called", cost: 0 }), { budget: 0.05 });
+  check("a model call that could go over the bid isn't made", /model=Over your bid/.test(out.fix.summary), out.fix.summary);
 
   console.log("4. Production and keys");
   const was = process.env.NODE_ENV;
