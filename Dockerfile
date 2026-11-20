@@ -1,7 +1,14 @@
-# Shoal's API server (server/) for Railway or any Docker host. The website
-# (web/) deploys separately on Vercel, which forwards /api/* here (see
-# web/middleware.js; set SHOAL_API_URL there to this server's URL). Settings and keys come from the host's environment
-# variables, never from a file baked into the image.
+# Shoal on Render or any Docker host: the server (server/) and the website
+# (web/), built here and served by the server from web/dist. Settings and
+# keys come from the host's environment variables, never from a file baked
+# into the image.
+FROM node:22-bookworm-slim AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web ./
+RUN npm run build
+
 FROM node:22-bookworm-slim
 
 # git clones the teams' repos; Python runs Python projects' tests.
@@ -15,6 +22,7 @@ RUN npm --prefix server ci --omit=dev
 COPY server server
 # The bundled demo repo ("Use the demo repo").
 COPY demo-repo demo-repo
+COPY --from=web /web/dist web/dist
 
 # Teams' tests run in here, so not as root. The server writes clones, the
 # workspace and (without Supabase) its state under server/.

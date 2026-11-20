@@ -1,9 +1,9 @@
-# Only server/ and demo-repo/ go into the API image (see Dockerfile).
+# Only server/, demo-repo/ and web/ (built) go into the image (see Dockerfile).
 **/node_modules
 .git
 .claude
 .vscode
-web
+web/dist
 desktop
 sim
 verify-repo

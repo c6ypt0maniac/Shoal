@@ -113,8 +113,7 @@ app.use(async (req, res, next) => {
 // the SSE stream instead of waiting on the HTTP response.
 const background = (fn) => fn().catch((err) => emit("error", { message: err.message }));
 
-// Pages: / (landing, built from web/), /start (sign in + choose path), /team (dashboard), /builder
-const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../public");
+// Pages: / (landing) and /app (the platform), both built from web/.
 const WEB_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
 const hasLanding = existsSync(path.join(WEB_DIR, "index.html"));
 // Only the root `npm start` rebuilds web/. Starting the server any other way
@@ -126,17 +125,17 @@ const staleLanding = (() => {
   const sources = ["index.html", "app.html", "vite.config.js", ...readdirSync(path.join(web, "src"), { recursive: true }).map((f) => path.join("src", f))];
   return sources.some((f) => existsSync(path.join(web, f)) && statSync(path.join(web, f)).mtimeMs > built);
 })();
-// Where Stripe sends the team back to: the React dashboard when it is built, else the old one.
-const dashboard = (query, view) => (hasLanding ? `/app?${query}#${view}` : `/team?${query}`);
-// Older GitHub sign-ins return to "/?github=…"; that, ?switch and a missing build all go to the sign-in page.
+// Where Stripe sends the team back to.
+const dashboard = (query, view) => `/app?${query}#${view}`;
+const notBuilt = (res) => res.status(503).type("text").send("The website isn't built: run `npm run build` from the repo root, or start with `npm start` there.");
+// GitHub sign-ins that started without a return page come back to "/?github=…": the platform shows that.
 app.get("/", (req, res) => {
-  const signIn = !hasLanding || "github" in req.query || "github_error" in req.query || "switch" in req.query;
-  res.sendFile(path.join(signIn ? PUBLIC_DIR : WEB_DIR, "index.html"));
+  if (!hasLanding) return notBuilt(res);
+  if ("github" in req.query || "github_error" in req.query) return res.redirect(`/app${req.originalUrl.slice(1)}`);
+  res.sendFile(path.join(WEB_DIR, "index.html"));
 });
-app.get("/start", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "index.html")));
 // The platform (marketplace, races, settlement), built from web/app.html.
-app.get("/app", (_req, res) => res.sendFile(hasLanding ? path.join(WEB_DIR, "app.html") : path.join(PUBLIC_DIR, "team.html")));
-app.use(express.static(PUBLIC_DIR, { index: false }));
+app.get("/app", (_req, res) => (hasLanding ? res.sendFile(path.join(WEB_DIR, "app.html")) : notBuilt(res)));
 // Built files in assets/ have a content hash in their name, so browsers can
 // keep them for good instead of re-checking each one on every page load.
 const cacheAssets = (res, file) => file.includes(`${path.sep}assets${path.sep}`) && res.set("Cache-Control", "public, max-age=31536000, immutable");
@@ -381,10 +380,6 @@ app.post("/api/me/role", (req, res) => {
   state.role = role;
   res.json({ role });
 });
-
-app.get("/team", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "team.html")));
-app.get("/setup", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "setup.html")));
-app.get("/builder", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "builder.html")));
 
 // Point Shoal at a GitHub repo: read metadata + Actions history, clone,
 // install, then rescan. Body: { repo: "owner/name" | url, testCommand?,
@@ -809,7 +804,7 @@ app.get("/api/escrow/return", async (req, res) => {
   const bounty = getBounty(req.query.bounty);
   try {
     const starting = await fundAndStart(bounty, req.query.session_id);
-    res.redirect(starting ? dashboard("funding=held", "bounties") : hasLanding ? "/app#bounties" : "/team");
+    res.redirect(starting ? dashboard("funding=held", "bounties") : "/app#bounties");
   } catch (err) {
     emit("escrow.error", { bountyId: bounty.id, message: `Funding didn't go through: ${err.message}` });
     res.redirect(dashboard("funding=failed", "bounties"));
