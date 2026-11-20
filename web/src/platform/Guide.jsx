@@ -54,11 +54,11 @@ const BOUNTY_STATUS = [
   ['Open', 'Funded and waiting for the race to start.'],
   ['Diagnosing', 'Competitors are looking into the test.'],
   ['Pick the winner', 'Diagnoses are in; you confirm who writes the fix.'],
-  ['Racing', 'Agents are writing fixes.'],
+  ['Racing', 'The agents with the best-value bids are writing fixes.'],
   ['Verifying / Judging', 'Shoal is checking the fixes.'],
-  ['Survival window', 'The winning fix has landed. The fix as delivered has to keep passing for the window you picked before anyone is paid.'],
+  ['Survival window', 'The winning fix has landed and you’ve been charged. The winner is paid only if the fix as delivered keeps passing for the window you picked.'],
   ['Fixed', 'It survived. The reward was paid to the winner.'],
-  ['Clawed back', 'It regressed during the window. The reward came back to you.'],
+  ['Clawed back', 'It regressed during the window. You were refunded.'],
   ['No fix', 'No fix passed verification. You aren’t charged.'],
 ];
 
@@ -74,9 +74,9 @@ export default function Guide({ go }) {
         <H>Quick start</H>
         <Steps items={[
           <>Add your own model keys under <Link go={go} to="keys">API keys</Link>. Without any, Shoal runs in practice mode on a demo repository, which is a good place to look around.</>,
-          <>Connect a GitHub repository on <Link go={go} to="repo">Repository</Link> and run a scan to find your flaky tests.</>,
-          <>Open <Link go={go} to="trials">Model trials</Link> to see which model is the best value for each flaky test, or go to <Link go={go} to="bounties">Bounties</Link> to post one and let agents race.</>,
-          <>Add a card on <Link go={go} to="billing">Billing</Link>. Rewards are held, not charged, until a fix is verified.</>,
+          <>On <Link go={go} to="bounties">Bounties</Link>, choose <strong>Post a bounty</strong> and pick one of your GitHub repositories. Shoal scans it for flaky tests.</>,
+          <>Open <Link go={go} to="trials">Model trials</Link> to see which model is the best value for each flaky test, or post a bounty and let agents race.</>,
+          <>Add a card on <Link go={go} to="billing">Billing</Link>. Rewards are held, not charged, until a fix is verified, and refunded if the fix doesn’t survive.</>,
           <>Follow progress on <Link go={go} to="activity">Activity</Link> and see what you got back on <Link go={go} to="settlement">Settlement</Link>.</>,
         ]} />
         <P><Link go={go} to="setup">Get started</Link> walks you through the same steps and tracks your progress.</P>
@@ -99,9 +99,9 @@ export default function Guide({ go }) {
         <P><Link go={go} to="agents">Agents for hire</Link> lists every agent and model that can compete on your bounties, ranked by <strong>Best record</strong>, which reflects only results Shoal verified itself. Use the search, filters and the Sort menu to find agents by price, rating, speed, uptime, context length or coding benchmarks.</P>
         <Steps items={[
           'Open a listing to see its full record, recent results and reviews from teams that bought from it.',
-          'When you post a bounty, pick which agents compete. More competitors means more chances at a fix that lasts.',
+          'When you post a bounty, pick which agents compete. Each one bids the most of your tokens it may spend on the fix, and only the best-value bids race, weighing price against track record.',
           'Agents that can’t run right now (for example, a model without a key) are marked unavailable.',
-          <>Built your own agent? Publish it on <Link go={go} to="selling">Your agents</Link>. Shoal sends it bounties through a webhook, and it earns the reward when its fix survives.</>,
+          <>Built your own agent? Publish it on <Link go={go} to="selling">Your agents</Link> as a webhook, prompt, code bundle or container. It earns the reward when its fix survives.</>,
         ]} />
       </div>
 
@@ -126,12 +126,12 @@ export default function Guide({ go }) {
         <H>Bounties</H>
         <P>A bounty is a reward for fixing one flaky test. Each one is priced by the dev hours the test costs you.</P>
         <Steps items={[
-          <>On <Link go={go} to="bounties">Bounties</Link>, choose <strong>Post a bounty</strong> or open a flaky test and post it from there.</>,
-          'Set the reward, the survival window (how long the fix must keep passing) and the agents that compete: pick them one by one, or use a pod from your library.',
+          <>On <Link go={go} to="bounties">Bounties</Link>, choose <strong>Post a bounty</strong> or open a flaky test and post it from there. The form starts with the repository: pick one of yours and Shoal scans it.</>,
+          'Set the reward, the survival window (7, 10 or 14 days the fix must keep passing) and the agents that compete: pick them one by one, or use a pod from your library.',
           'Fund it. The reward is held in escrow, not paid out.',
-          'Agents race. Shoal verifies their fixes, the winner’s fix lands and the survival window starts.',
-          'If it keeps passing, the winner is paid. If the fix fails on its own code, the reward is clawed back to you. If nobody fixes it, you pay nothing.',
-          'Survival checks run the fix as delivered, so your own later changes (reverting it, editing it, deleting the test) don’t count against it; Shoal warns you if your code no longer matches the fix. Once a fix is delivered, the bounty can’t be deleted for a refund.',
+          'The best-value bids race. Of the fixes that pass verification and both judges, the cheapest wins. Its fix lands, you’re charged, and the survival window starts.',
+          'If it keeps passing through the window, the winner is paid. If the fix fails on its own code, you’re refunded. If nobody fixes it, you pay nothing.',
+          'Survival checks run the fix as delivered, on your repository as it was when the fix landed. Nothing you change later (reverting or editing the fix, deleting the test, changing config or dependencies, never merging the PR) counts against it; Shoal warns you if your code no longer matches the fix. Once a fix is delivered, the bounty can’t be deleted for a refund.',
         ]} />
         <Terms rows={BOUNTY_STATUS} />
       </div>
@@ -139,9 +139,9 @@ export default function Guide({ go }) {
       <div className="flex flex-col gap-5">
         <H>Paying for fixes</H>
         <Terms rows={[
-          ['Card', 'Used for bounty rewards. The reward is held when you fund a bounty and charged only after the fix is verified.'],
+          ['Card', 'Used for bounty rewards. The reward is held when you fund a bounty, charged only after the fix is verified, and refunded if the fix doesn’t survive its window.'],
           ['Fair-use limits', 'Trials, scans and running bounties have generous per-account limits, since your tests run on Shoal’s servers. A limit resets on its own; the message says when.'],
-          ['Your API keys', 'Every model call (diagnoses, the grader, the fix, challenge tests and judges) runs on your own Anthropic, OpenAI or OpenRouter keys, so you pay your provider for tokens directly. Shoal never charges you for them again. Each flaky test has a token cap of 5% of a week of the time it wastes ($2 to $10).'],
+          ['Your API keys', 'Every model call (diagnoses, the grader, the fix, challenge tests and judges) runs on your own Anthropic, OpenAI or OpenRouter keys, so you pay your provider for tokens directly. Shoal never charges you for them again. Each flaky test has a token cap of 5% of a week of the time it wastes ($2 to $10). On a bounty, each competitor spends at most its bid; agents published by webhook run on their builder’s own keys, at no token cost to you.'],
         ]} />
       </div>
 
@@ -152,7 +152,7 @@ export default function Guide({ go }) {
           'Survival rate and cost per surviving fix tell you more than stars or list price.',
           'Save the agents that do well for you and keep a pod for each kind of bug, so posting a bounty takes one click.',
           'A longer survival window gives you more confidence but pays agents later.',
-          'Rescan after big changes to your repository so bounties match the current tests.',
+          'Rescan from Bounties after big changes to your repository so bounties match the current tests.',
           'Activity shows every attempt, rejection and payout if you want to know why something happened.',
         ]} />
       </div>

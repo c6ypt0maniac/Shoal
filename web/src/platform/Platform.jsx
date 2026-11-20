@@ -6,18 +6,18 @@ import Race from './Race.jsx';
 import Shore from './Shore.jsx';
 import ShoreCard from './ShoreCard.jsx';
 import { Agents, CompetitorPicker, Library, ListingDetail, PublishAgent, nameOf } from './Market.jsx';
-import { Repo, Setup } from './Repo.jsx';
+import { Setup } from './Setup.jsx';
 import Trials from './Trials.jsx';
 import FixReview from './FixReview.jsx';
 import Guide from './Guide.jsx';
 import { overlay, Browse, Empty, Group, Icon, ItemCard, Label, LIVE, Modal, STATUS, Tag, btn, card, field, ghost, money, primary, signInHref, tone } from './ui.jsx';
 
 // Messages for ?funding= / ?payments= when Stripe Checkout sends the team back.
-const RETURNS = { 'payments=saved': ['Payment method saved. Bounties are held on this card from now on.'], 'payments=failed': ["The card wasn't saved. Try again from Profile.", true], 'funding=held': ['Reward held in escrow. The race is starting.'], 'funding=cancelled': ['Funding cancelled. The bounty is waiting for funding.', true], 'funding=failed': ["Funding didn't go through. Try again from the bounty.", true], 'github=signed-in': ['Signed in with GitHub. Pick a repository to connect.'] };
+const RETURNS = { 'payments=saved': ['Payment method saved. Bounties are held on this card from now on.'], 'payments=failed': ["The card wasn't saved. Try again from Profile.", true], 'funding=held': ['Reward held in escrow. The race is starting.'], 'funding=cancelled': ['Funding cancelled. The bounty is waiting for funding.', true], 'funding=failed': ["Funding didn't go through. Try again from the bounty.", true], 'github=signed-in': ['Signed in with GitHub. Pick one of your repositories when you post a bounty.'] };
 
 const NAV = [
   ['Account', [['account', 'Profile', 'user'], ['billing', 'Billing', 'card'], ['keys', 'API keys', 'key']]],
-  ['Workspace', [['setup', 'Get started', 'play'], ['repo', 'Repository', 'repo'], ['activity', 'Activity', 'pulse']]],
+  ['Workspace', [['setup', 'Get started', 'play'], ['activity', 'Activity', 'pulse']]],
   ['Marketplace', [['bounties', 'Bounties', 'bounty'], ['agents', 'Agents for hire', 'fish'], ['library', 'Library', 'bookmark'], ['trials', 'Model trials', 'flask'], ['selling', 'Your agents', 'plus']]],
   ['Results', [['settlement', 'Settlement', 'chart']]],
   ['Help', [['guide', 'Guide', 'help']]],
@@ -26,8 +26,7 @@ const TITLES = {
   account: ['Profile', 'Your GitHub account and role'],
   keys: ['API keys', 'Your own Anthropic, OpenAI and OpenRouter keys. Every model call runs on them; without any, Shoal runs in practice mode on the demo repo.'],
   billing: ['Billing', 'Your card for bounties. Rewards are held, never charged until a fix is verified.'],
-  setup: ['Get started', 'Three steps to your first bounty. Pick or switch repos on the Repository page.'],
-  repo: ['Repository', 'What agents can see, and how Shoal stays in sync'],
+  setup: ['Get started', 'Three steps to your first bounty. You pick the repo when you post it.'],
   activity: ['Activity', 'Every attempt, green run, rejection and payout'],
   bounties: ['Bounties', 'Flaky tests from your repo, priced by the dev-hours they cost'],
   agents: ['Agents for hire', 'Agents and models ranked by verified fixes that survived. Pick who competes when you post a bounty.'],
@@ -136,7 +135,6 @@ export default function Platform() {
             {v === 'settlement' && <Settlement s={s} setOpen={setOpen} />}
             {v === 'billing' && <Billing s={s} act={act} />}
             {v === 'keys' && <ApiKeys s={s} />}
-            {v === 'repo' && <Repo s={s} act={act} go={go} />}
             {v === 'account' && <Account s={s} act={act} />}
             {v === 'guide' && <Guide go={go} />}
     </>
@@ -320,7 +318,7 @@ function Results({ b, name }) {
           {r.judges.map((j) => <span key={j.name} className="text-sm"><span className={j.ok ? 'text-accent' : 'text-bad'}>{j.ok ? 'Pass' : 'Fail'}</span> · {j.name}{j.via ? ' via ' + j.via : ''}: <span className="text-muted">{j.summary}</span></span>)}
         </div>
       ))}
-      <span className="text-sm text-muted">Fixes that pass 10 runs in a row with no regressions are ranked by each agent’s record of verified and surviving fixes, never by price, and ties go to the smaller change. Judges review them in that order; the first both pass wins. Other agents’ code stays private.</span>
+      <span className="text-sm text-muted">Only the best-value bids race. Fixes that pass verification and both judges compete on cost: the cheapest wins, and close calls go to the agent with the better record of surviving fixes. Other agents’ code stays private.</span>
     </Section>
   );
 }
