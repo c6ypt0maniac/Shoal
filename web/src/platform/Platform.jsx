@@ -26,7 +26,7 @@ const TITLES = {
   account: ['Profile', 'Your GitHub account and role'],
   keys: ['API keys', 'Your own Anthropic, OpenAI and OpenRouter keys. Every model call runs on them; without any, Shoal runs in practice mode on the demo repo.'],
   billing: ['Billing', 'Your card for bounties. Rewards are held, never charged until a fix is verified.'],
-  setup: ['Get started', 'Three steps to your first bounty. You pick the repo when you post it.'],
+  setup: ['Get started', 'Two steps to your first bounty. You pick the repo when you post it.'],
   activity: ['Activity', 'Every attempt, green run, rejection and payout'],
   bounties: ['Bounties', 'Flaky tests from your repo, priced by the dev-hours they cost'],
   agents: ['Agents for hire', 'Agents and models ranked by verified fixes that survived. Pick who competes when you post a bounty.'],
@@ -84,17 +84,22 @@ export default function Platform() {
   const act = (fn) => async (...a) => { setErr(''); try { const r = await fn(...a); await s.refresh(); return r; } catch (e) { setErr(e.message); } };
   const pay = usePayment(s.me?.viewer);
 
-  // Get started: [payments ready, found flaky tests, bounty posted].
-  // Payments count as done once a card is saved, payments are simulated, or
-  // the step was skipped ("Later"); then bounties post with simulated funding
-  // until a card is saved.
+  // Get started: [API keys added, bounty posted].
+  // Keys count as done once one is saved in this browser, or the step was
+  // skipped (practice mode on the demo repo). The card is asked for when the
+  // first bounty is posted (PaymentPrompt), and the repo is picked there.
   // The last step is done by posting a bounty, or by choosing to browse agents
-  // or try models first (remembered per account in this browser).
-  const exploredKey = 'shoal.explored.' + (s.me?.viewer?.login || '');
-  const [explored, setExplored] = useState(false);
-  useEffect(() => { try { setExplored(localStorage.getItem(exploredKey) === '1'); } catch { setExplored(false); } }, [exploredKey]);
+  // or try models first. Both choices are remembered per account in this browser.
+  const login = s.me?.viewer?.login || '';
+  const exploredKey = 'shoal.explored.' + login, keysSkippedKey = 'shoal.keysSkipped.' + login;
+  const [explored, setExplored] = useState(false), [keysSkipped, setKeysSkipped] = useState(false);
+  useEffect(() => {
+    try { setExplored(localStorage.getItem(exploredKey) === '1'); setKeysSkipped(localStorage.getItem(keysSkippedKey) === '1'); } catch { setExplored(false); setKeysSkipped(false); }
+  }, [exploredKey, keysSkippedKey]);
   const markExplored = () => { setExplored(true); try { localStorage.setItem(exploredKey, '1'); } catch {} };
-  const steps = [Boolean(pay.billing?.ready || pay.billing?.mode === 'simulated' || pay.billing?.prompted), s.pains.length > 0, s.bounties.length > 0 || explored];
+  const skipKeys = () => { setKeysSkipped(true); try { localStorage.setItem(keysSkippedKey, '1'); } catch {} };
+  const hasKeys = Object.keys(getKeys()).length > 0;
+  const steps = [hasKeys || keysSkipped, s.bounties.length > 0 || explored];
   const viewer = s.me?.viewer;
   const asideRef = useRef(null), pillRef = useRef(null), pillReady = useRef(false);
   useEffect(() => {
@@ -125,8 +130,8 @@ export default function Platform() {
             </div>
             {err && <div className="glass rounded-2xl px-5 py-3 text-bad">{err}</div>}
             {note && !err && <div className="glass rounded-2xl px-5 py-3 text-accent">{note}</div>}
-            {v === 'setup' && <Setup s={s} act={act} steps={steps} onPost={() => postBounty()} go={go} pay={pay} onExplore={markExplored} />}
-            {v === 'bounties' && <Bounties s={s} act={act} setOpen={setOpen} setup={!steps[1]} go={go} postBounty={postBounty} />}
+            {v === 'setup' && <Setup steps={steps} hasKeys={hasKeys} onSkipKeys={skipKeys} onPost={() => postBounty()} go={go} pay={pay} onExplore={markExplored} />}
+            {v === 'bounties' && <Bounties s={s} act={act} setOpen={setOpen} setup={!s.pains.length} go={go} postBounty={postBounty} />}
             {v === 'agents' && <Agents s={s} act={act} setOpen={setOpen} />}
             {v === 'selling' && <Agents s={s} act={act} setOpen={setOpen} mine onPublish={() => setCreate('agent')} />}
             {v === 'library' && <Library s={s} act={act} setOpen={setOpen} go={go} />}
@@ -174,7 +179,7 @@ export default function Platform() {
               {items.map(([id, label, icon]) => (
                 <button key={id} onClick={() => { go(id); setMenu(false); }} className={'flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[15.5px] ' + (view === id ? 'font-medium' : 'text-ink/85 hover:bg-white/35') + ' relative z-[1] transition-[color,background-color] duration-300'} data-nav={id}>
                   <Icon n={icon} className="text-muted" />{label}
-                  {id === 'setup' && steps.some((x) => !x) && <span className="ml-auto text-xs tabular-nums text-muted">{steps.filter(Boolean).length}/3</span>}
+                  {id === 'setup' && steps.some((x) => !x) && <span className="ml-auto text-xs tabular-nums text-muted">{steps.filter(Boolean).length}/{steps.length}</span>}
                   {id === 'bounties' && s.bounties.some((b) => LIVE.includes(b.status)) && <span className="ml-auto block size-2 animate-pulse rounded-full bg-accent" />}
                 </button>
               ))}
@@ -268,7 +273,7 @@ function Bounties({ s, act, setOpen, setup, go, postBounty }) {
   );
   return (
     <Browse q={q} setQ={setQ} placeholder="Search test files" onRefresh={act(api.scan)} chips={chips} chip={chip} setChip={setChip}>
-      {setup && <Empty>No scan yet. <button className="cursor-pointer text-accent underline" onClick={() => go('setup')}>Get started</button> to find your flaky tests.</Empty>}
+      {setup && <Empty>No scan yet. <button className="cursor-pointer text-accent underline" onClick={() => postBounty()}>Post a bounty</button> to pick a repo and find its flaky tests.</Empty>}
       {racing.length > 0 && <Group title="Racing now">{racing.map(Item)}</Group>}
       {rest.filter((x) => !x.repo).length > 0 && <Group title="Flaky tests">{rest.filter((x) => !x.repo).map(Item)}</Group>}
       {rest.filter((x) => x.repo).length > 0 && <Group title="On your other repos">{rest.filter((x) => x.repo).map(Item)}</Group>}
